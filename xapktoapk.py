@@ -101,6 +101,9 @@ def check_if_executable_exists_in_path(executable):
     path_to_cmd = shutil.which(executable)
     return path_to_cmd is not None
 
+def get_executable_in_path(executable):
+    return shutil.which(executable)
+
 def get_path_to_batch(batch):
     paths = os.environ['PATH'].split(os.pathsep)
     name = batch + ".bat"
@@ -310,8 +313,9 @@ def merge_apk_assets(dir_apk_main, dir_apk_with_asset_pack):
 def unpack_apk(path_dir_tmp, apk_file, number_current, number_total):
     print('[*] unpacking %d of %d' % (number_current, number_total))
     os.chdir(path_dir_tmp)
-    if check_if_executable_exists_in_path('apktool'):
-        rc = execute_command_subprocess(['apktool', 'd', '-s', apk_file])
+    apktool = get_executable_in_path('apktool')
+    if not apktool is None:
+        rc = execute_command_subprocess([apktool, 'd', '-s', apk_file])
         if rc != 0:
             raise Exception("failed to unpack %s" % apk_file)
     else:
@@ -326,8 +330,9 @@ def unpack_apk(path_dir_tmp, apk_file, number_current, number_total):
 def pack_apk(path_dir_tmp, main_apk_dir):
     print('[*] repack apk')
     os.chdir(path_dir_tmp)
-    if check_if_executable_exists_in_path('apktool'):
-        rc = execute_command_subprocess(['apktool', 'b', main_apk_dir])
+    apktool = get_executable_in_path('apktool')
+    if not apktool is None:
+        rc = execute_command_subprocess([apktool, 'b', main_apk_dir])
         if rc != 0:
             raise Exception("failed to pack apk")
     else:
