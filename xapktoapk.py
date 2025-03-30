@@ -182,7 +182,7 @@ def get_do_not_compress_lines(config_file_lines):
 
 def parse_apktool_config(config_file_path):
     config_file_lines = list()
-    with open(config_file_path, 'r') as file:
+    with open(config_file_path, 'r', encoding='UTF-8') as file:
         config_file_lines = file.readlines()
 
     do_not_compress_lines, do_not_compress_index_start, do_not_compress_index_end = get_do_not_compress_lines(config_file_lines)
@@ -214,7 +214,7 @@ def insert_new_lines_do_not_compress(config_file_path, lines_to_insert):
         config_file_lines_updated.append(config_file_line)
     config_file_lines_updated[config_file_lines_index_start:config_file_lines_index_end] = do_not_compress_lines_updated
 
-    with open(config_file_path, 'w') as file:
+    with open(config_file_path, 'w', encoding='UTF-8') as file:
         file.writelines(config_file_lines_updated)
 
 
@@ -421,13 +421,13 @@ def update_main_manifest_file(path_main_apk):
         '<meta-data android:name="com.android.vending.splits" android:resource="@xml/splits0"/>': ''
     }
 
-    with open(path_manifest, 'r') as file:
+    with open(path_manifest, 'r', encoding='UTF-8') as file:
         data = file.read()
 
     for from_str, to_str in replacements.items():
         data = data.replace(from_str, to_str)    
     
-    with open(path_manifest, 'w') as file:
+    with open(path_manifest, 'w', encoding='UTF-8') as file:
         file.write(data)
 
 
@@ -439,7 +439,7 @@ def load_sign_properties():
             return None
 
     sign_config_file_lines = list()
-    with open(path_sign_config_file, 'r') as sign_config_file:
+    with open(path_sign_config_file, 'r', encoding='UTF-8') as sign_config_file:
         sign_config_file_lines = sign_config_file.readlines()
 
     properties = dict()
