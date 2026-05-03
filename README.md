@@ -2,6 +2,9 @@
 
 A simple standalone Python script with no extra library dependencies that converts the `.xapk` file into a normal `.apk` file.
 
+## Note
+This is a modernized and actively maintained fork of **[LuigiVampa92/xapk-to-apk]**(https://github.com/LuigiVampa92/xapk-to-apk). The original project appeared unmaintained and I needed something that I could call from the command line and not a browser, so this repository includes recent updates, and bug fixes.
+
 ### Usage
 
 The usage is very simple.
@@ -30,7 +33,9 @@ The result apk file `application.apk` will be placed next to your xapk file, in 
 
 ### Requirements
 
-You do not need any Python dependencies to run the script; however, you **MUST** have some tools installed in your OS, and paths to their executable **MUST** be set to the `$PATH` environment variable. The script relies on that.
+Requires **Python 3.7+** (uses `dataclasses` and `from __future__ import annotations`). No third-party Python dependencies.
+
+You **MUST** have some tools installed in your OS, and paths to their executable **MUST** be set to the `$PATH` environment variable. The script relies on that.
 
 These tools are [apktool](https://github.com/iBotPeaches/Apktool), [zipalign](https://developer.android.com/tools/zipalign) and [apksigner](https://developer.android.com/tools/apksigner).
 
@@ -42,19 +47,29 @@ Do not forget to make symlinks of these tools to the system's `$PATH` environmen
 
 Since repackaging the splitted app bundle into the universal apk requires changing the original app's manifest file, the original signature will be broken, and the app must be resigned before you can install it on a real device.
 
-The easiest way to do it is to create an `xapktoapk.sign.properties` file with the values of your keystore file (see `xapktoapk.sign.properties.example` for an example).
-This file must be placed in the same directory with `xapktoapk.py` script, OR you can put it in your user home directory (`~`).
-This way, repacked apk files will be signed automatically. 
+Signing is configured via environment variables. When all four required variables are set, the script signs the resulting apk automatically. When none are set, signing is skipped and the apk is left unsigned.
 
-If you don't want to create a dedicated keystore to sign the result apk files, you can use your default Android SDK debug keystore. In this case, the contents of the `xapktoapk.sign.properties` file should look like this:
-```
-sign.enabled=true
-sign.keystore.file=/home/username/.android/debug.keystore 
-sign.keystore.password=android
-sign.key.alias=androiddebugkey
-sign.key.password=android
-```
-The `sign.keystore.file` value in the example above is for Linux. Set the absolute path according to your OS and system user name.
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `XAPKTOAPK_KEYSTORE_FILE` | yes | Absolute path to your keystore file (`~` is expanded) |
+| `XAPKTOAPK_KEYSTORE_PASSWORD` | yes | Keystore password |
+| `XAPKTOAPK_KEY_ALIAS` | yes | Key alias inside the keystore |
+| `XAPKTOAPK_KEY_PASSWORD` | yes | Key password for the alias |
+| `XAPKTOAPK_MIN_SDK_VERSION` | no | Pin the `--min-sdk-version` passed to `apksigner` |
 
-By default, the resigning of the result apk files is disabled.
-If you do not want to sign it automatically, you don't have to do it. You can just sign the apk file manually after the conversion is completed.
+Passwords are passed to `apksigner` via its `env:` form, so they never appear on the process command line.
+
+Example using the default Android SDK debug keystore on Linux:
+```
+export XAPKTOAPK_KEYSTORE_FILE=$HOME/.android/debug.keystore
+export XAPKTOAPK_KEYSTORE_PASSWORD=android
+export XAPKTOAPK_KEY_ALIAS=androiddebugkey
+export XAPKTOAPK_KEY_PASSWORD=android
+python xapktoapk.py application.xapk
+```
+
+After signing, the script runs `apksigner verify --verbose --print-certs` and requires both APK Signature Scheme v2 and v3 to validate. The signer's SHA-256 fingerprint is printed on success.
+
+If `keytool` is available on the `$PATH`, a pre-flight check validates the keystore + alias + password before unpacking begins, and warns if the certificate expires within 90 days.
+
+> **Breaking change**: previous versions accepted a `xapktoapk.sign.properties` file in the working or home directory. That file is no longer read; migrate to the environment variables above.
