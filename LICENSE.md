@@ -1,5 +1,6 @@
 MIT License
 
+Copyright (c) 2026 3therealm
 Copyright (c) 2023 Pavel Vasiliev
 
 Permission is hereby granted, free of charge, to any person obtaining a copy

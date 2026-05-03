@@ -1,0 +1,39 @@
+# Tool configuration for xapktoapk.py.
+# This project has no Python dependencies and ships as a single script;
+# this file only configures linters/type-checkers and adds no install requirements.
+
+[tool.ruff]
+target-version = "py37"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # bugbear
+    "UP",   # pyupgrade
+    "SIM",  # simplify
+    "C4",   # comprehensions
+    "PTH",  # use pathlib
+    "RET",  # return statements
+    "RUF",  # ruff-specific
+    "BLE",  # blind except
+    "DTZ",  # datetime tz-awareness
+]
+ignore = [
+    "E501",  # line length handled by formatter, not linter
+    "B008",  # function call in default argument
+]
+
+[tool.mypy]
+strict = true
+# Mypy ≥1.11 dropped `python_version = "3.7"` support; runtime still 3.7+ via `from __future__ import annotations`.
+python_version = "3.9"
+files = ["xapktoapk.py"]
+
+[tool.pyright]
+include = ["xapktoapk.py"]
+pythonVersion = "3.7"
+typeCheckingMode = "strict"
