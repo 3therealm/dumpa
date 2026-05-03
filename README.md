@@ -1,9 +1,9 @@
+## Note
+This is a modernized and actively maintained fork of **[LuigiVampa92/xapk-to-apk]**(https://github.com/LuigiVampa92/xapk-to-apk). The original project appeared unmaintained and I needed something that I could call from the command line and not a browser, so this repository includes recent updates, and bug fixes.
+
 # XapkToApk
 
 A simple standalone Python script with no extra library dependencies that converts the `.xapk` file into a normal `.apk` file.
-
-## Note
-This is a modernized and actively maintained fork of **[LuigiVampa92/xapk-to-apk]**(https://github.com/LuigiVampa92/xapk-to-apk). The original project appeared unmaintained and I needed something that I could call from the command line and not a browser, so this repository includes recent updates, and bug fixes.
 
 ### Usage
 
