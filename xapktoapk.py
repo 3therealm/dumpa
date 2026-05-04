@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime
+import errno
+import functools
 import json
 import os
 import platform
@@ -48,6 +50,9 @@ const_env_keystore_password = 'XAPKTOAPK_KEYSTORE_PASSWORD'
 const_env_key_alias = 'XAPKTOAPK_KEY_ALIAS'
 const_env_key_password = 'XAPKTOAPK_KEY_PASSWORD'
 const_env_min_sdk_version = 'XAPKTOAPK_MIN_SDK_VERSION'
+const_env_profile = 'XAPKTOAPK_PROFILE'
+const_env_unpack_workers = 'XAPKTOAPK_UNPACK_WORKERS'
+const_env_jvm_heap = 'XAPKTOAPK_JVM_HEAP'  # `-Xmx` value for apktool JVMs; default 2048m
 
 
 # === SECTION: Data classes ===
@@ -152,14 +157,19 @@ def run(cmd: list[str],
     return proc
 
 
-def resolve_executable(name: str) -> list[str] | None:
-    """Resolve an executable name to argv prefix; check $PATH then .bat fallback."""
+@functools.lru_cache(maxsize=None)
+def resolve_executable(name: str) -> tuple[str, ...] | None:
+    """Resolve an executable name to argv prefix; check $PATH then .bat fallback.
+
+    Cached: the lookup hits the filesystem (which/stat) and is invoked many times
+    across splits — apktool especially. Cache lifetime = single process run.
+    """
     direct = shutil.which(name)
     if direct is not None:
-        return [direct]
+        return (direct,)
     batch = get_path_to_batch(name)
     if batch is not None:
-        return [batch]
+        return (batch,)
     return None
 
 
@@ -214,14 +224,20 @@ def create_or_recreate_dir(dir_path: Path) -> None:
 
 @contextmanager
 def working_tmp_dir(parent: Path) -> Generator[Path, None, None]:
-    """Create the .xapktoapk tmp dir and clean it up on exit even when interrupted."""
+    """Create the .xapktoapk tmp dir and clean it up on exit even when interrupted.
+
+    Set XAPKTOAPK_KEEP_TMP=1 to retain the tmp dir after the run (debug aid).
+    """
     tmp = (parent / const_dir_tmp).absolute()
     create_or_recreate_dir(tmp)
+    keep = os.environ.get('XAPKTOAPK_KEEP_TMP', '') == '1'
     try:
         yield tmp
     finally:
-        if tmp.exists():
+        if not keep and tmp.exists():
             shutil.rmtree(tmp, ignore_errors=True)
+        elif keep:
+            print(f'[D] tmp retained: {tmp}')
 
 
 def delete_file_if_exists(path_to_file: Path) -> None:
@@ -344,10 +360,28 @@ def iter_resource_files(res_dir: Path, skip_parts: tuple[str, ...] | None) -> It
             yield src, rel
 
 
+def _link_or_copy(src: Any, dst: Any, *, follow_symlinks: bool = True) -> None:
+    """Hardlink src→dst when same FS; fall back to data copy on EXDEV/EPERM.
+
+    Hardlinks are zero-copy: a 2nd dirent pointing at the same inode. Since the
+    merge tmp dir lives on the same FS as the unpacked split dirs, near every
+    merged file is link-able — slashing wall time on resource/asset-heavy splits.
+    Safe here: split dirs are read-only after unpack and are wiped at run end.
+    """
+    src_str = str(src)
+    dst_str = str(dst)
+    try:
+        os.link(src_str, dst_str)
+    except OSError as e:
+        if e.errno not in (errno.EXDEV, errno.EPERM):
+            raise
+        shutil.copy(src_str, dst_str, follow_symlinks=follow_symlinks)
+
+
 def copy_resource_file(src: Path, dst: Path) -> None:
-    """Copy a single file, creating parent dirs as needed."""
+    """Place a single file at dst (hardlink when possible), creating parent dirs as needed."""
     dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy(src, dst)
+    _link_or_copy(src, dst)
 
 
 def merge_apk_arch(dir_apk_main: Path, dir_apk_arch: Path) -> None:
@@ -357,11 +391,26 @@ def merge_apk_arch(dir_apk_main: Path, dir_apk_arch: Path) -> None:
     path_libs_dst.mkdir(exist_ok=True)
 
     for entry in path_libs_src.iterdir():
-        shutil.copytree(entry, path_libs_dst / entry.name)
+        shutil.copytree(entry, path_libs_dst / entry.name, copy_function=_link_or_copy)
 
     cfg_src = parse_apktool_config(dir_apk_arch / const_apk_file_apktool_config)
     insert_new_lines_do_not_compress(dir_apk_main / const_apk_file_apktool_config,
                                      cfg_src.lines_do_not_compress)
+
+
+def _existing_rel_files(target_dir: Path) -> set[Path]:
+    """Pre-walk target_dir once; returns a set of relative paths of existing files.
+    Replaces a per-file dst.exists() stat with one O(1) set lookup. Newly-written
+    files get added by the caller as they land.
+    """
+    if not target_dir.is_dir():
+        return set()
+    out: set[Path] = set()
+    for root, _dirs, files in os.walk(target_dir):
+        root_path = Path(root)
+        for fname in files:
+            out.add((root_path / fname).relative_to(target_dir))
+    return out
 
 
 def merge_apk_resources(dir_apk_main: Path, dir_apk_with_resources: Path) -> None:
@@ -372,11 +421,12 @@ def merge_apk_resources(dir_apk_main: Path, dir_apk_with_resources: Path) -> Non
         return
     target_res_dir.mkdir(parents=True, exist_ok=True)
 
+    existing = _existing_rel_files(target_res_dir)
     for src, rel in iter_resource_files(res_dir, ('values', 'public.xml')):
-        dst = target_res_dir / rel
-        if dst.exists():
+        if rel in existing:
             continue
-        copy_resource_file(src, dst)
+        copy_resource_file(src, target_res_dir / rel)
+        existing.add(rel)
 
 
 def merge_apk_assets(dir_apk_main: Path, dir_apk_with_asset_pack: Path) -> None:
@@ -391,11 +441,12 @@ def merge_apk_assets(dir_apk_main: Path, dir_apk_with_asset_pack: Path) -> None:
     target_assets = dir_apk_main / 'assets'
     target_assets.mkdir(parents=True, exist_ok=True)
 
+    existing = _existing_rel_files(target_assets)
     for src, rel in iter_resource_files(src_assets, None):
-        dst = target_assets / rel
-        if dst.exists():
+        if rel in existing:
             continue
-        copy_resource_file(src, dst)
+        copy_resource_file(src, target_assets / rel)
+        existing.add(rel)
 
     cfg_path = dir_apk_with_asset_pack / const_apk_file_apktool_config
     if cfg_path.exists():
@@ -428,15 +479,50 @@ def prioritize_dpi_apk_list(apks_dpi: list[ApkPart]) -> list[ApkPart]:
 
 # === SECTION: Build pipeline ===
 
-def unpack_apk(path_dir_tmp: Path, apk_file: str, number_current: int, number_total: int) -> None:
-    """Unpack a single APK into the tmp dir via `apktool d -s`."""
-    print(f'[*] unpacking {number_current} of {number_total}')
+# Per-split-type apktool decode flags. `-s` skips smali disassembly (classes.dex
+# stays in original/ so the rebuilt apk is identical). `-r` skips resource decode.
+# Splits that contribute only lib/ or assets/ skip both — saves a pass over the
+# resource table and significant wall time on big asset packs.
+_UNPACK_FLAGS_BY_TYPE: dict[str, tuple[str, ...]] = {
+    const_split_apk_type_main: ('-s',),
+    const_split_apk_type_arch: ('-r', '-s'),
+    const_split_apk_type_dpi: ('-s',),
+    const_split_apk_type_locale: ('-s',),
+    const_split_apk_type_assetpack: ('-r', '-s'),
+}
+
+
+def _apktool_jvm_env() -> dict[str, str]:
+    """Build extra-env dict that lifts apktool's JVM heap above the wrapper's 1G default."""
+    heap = os.environ.get(const_env_jvm_heap, '2048m').strip() or '2048m'
+    # `_JAVA_OPTIONS` is appended after command-line args, so it overrides the
+    # `-Xmx1024M` set by the apktool bash wrapper.
+    return {'_JAVA_OPTIONS': f'-Xmx{heap}'}
+
+
+def unpack_apk(path_dir_tmp: Path, apk_file: str, split_type: str) -> None:
+    """Unpack a single APK into the tmp dir via `apktool d` with type-specific flags.
+
+    On first failure, retries once with `-f --keep-broken-res` — some splits carry
+    minor resource quirks (orphan attr refs, mangled types) that the strict path
+    rejects but that aapt2 will still link at rebuild after we strip the dummies.
+    """
     apktool = resolve_executable('apktool')
     if apktool is None:
         raise Exception("apktool not found in PATH")
+    flags = _UNPACK_FLAGS_BY_TYPE.get(split_type, ('-s',))
     # `--` sentinel prevents a malicious split filename like `-Dfoo.apk` from being parsed as a flag.
-    run([*apktool, 'd', '-s', '--', apk_file], cwd=path_dir_tmp,
-        fail_msg=f'failed to unpack {apk_file}')
+    cmd = [*apktool, 'd', *flags, '--', apk_file]
+    try:
+        run(cmd, cwd=path_dir_tmp,
+            fail_msg=f'failed to unpack {apk_file}',
+            extra_env=_apktool_jvm_env())
+    except Exception:  # noqa: BLE001 - retry on any apktool failure; second pass uses --keep-broken-res to tolerate non-fatal res quirks
+        sys.stderr.write(f'[!] retry unpack with --keep-broken-res: {apk_file}\n')
+        run([*apktool, 'd', *flags, '-f', '--keep-broken-res', '--', apk_file],
+            cwd=path_dir_tmp,
+            fail_msg=f'failed to unpack {apk_file} (even with --keep-broken-res)',
+            extra_env=_apktool_jvm_env())
     (path_dir_tmp / apk_file).unlink()
 
 
@@ -447,14 +533,14 @@ def pack_apk(path_dir_tmp: Path, main_apk_dir: Path) -> None:
     if apktool is None:
         raise Exception("apktool not found in PATH")
     run([*apktool, 'b', '--', str(main_apk_dir)], cwd=path_dir_tmp,
-        fail_msg=f'failed to pack {main_apk_dir.name}')
+        fail_msg=f'failed to pack {main_apk_dir.name}',
+        extra_env=_apktool_jvm_env())
     built = main_apk_dir / 'dist' / f'{main_apk_dir.name}{const_ext_apk}'
     if not built.exists():
         raise Exception("result apk not found")
     target = path_dir_tmp / f'{const_file_target_file}{const_ext_apk}'
-    if target.exists():
-        target.unlink()
-    shutil.copy(built, target)
+    # Same-FS rename: instant. No copy of the (possibly hundreds of MB) built apk.
+    built.replace(target)
 
 
 def zipalign_apk(path_dir_tmp: Path) -> None:
@@ -475,8 +561,7 @@ def zipalign_apk(path_dir_tmp: Path) -> None:
         cwd=path_dir_tmp, fail_msg='failed to zipalign apk')
     if not aligned.exists():
         raise Exception("failed to zipalign apk (output missing)")
-    target.unlink()
-    shutil.move(aligned, target)
+    aligned.replace(target)
 
 
 def build_single_apk(path_dir_tmp: Path, main_apk_dir: Path, sign: SignConfig | None) -> None:
@@ -635,6 +720,42 @@ _split_attr_pattern = re.compile(
 )
 
 
+# Matches a single XML element on its own line whose tag (or attribute) contains
+# APKTOOL_DUMMY_*. Covers: <attr .../>, <public .../>, <item ...>val</item>.
+_apktool_dummy_line = re.compile(
+    r'^[ \t]*<[^>]*\bAPKTOOL_DUMMY_[^>]*>(?:[^<\n]*</\w+>)?[ \t]*\n',
+    re.MULTILINE,
+)
+
+
+def strip_apktool_dummies(main_apk_dir: Path) -> int:
+    """Remove APKTOOL_DUMMY_* placeholder entries from merged values XML.
+
+    Apktool emits APKTOOL_DUMMY_<hex> when decoding a config split alone — those
+    attr IDs only resolve in the base apk's public table. Once merged into base,
+    aapt2 link rejects the dummies at rebuild. Stripping is safe: real attrs
+    defined in base remain; only unresolvable per-config overrides are dropped.
+
+    Returns the number of XML files modified.
+    """
+    res_dir = main_apk_dir / 'res'
+    if not res_dir.is_dir():
+        return 0
+    modified = 0
+    for top in res_dir.iterdir():
+        if not top.is_dir() or not top.name.startswith('values'):
+            continue
+        for xml_path in top.rglob('*.xml'):
+            text = xml_path.read_text(encoding='UTF-8')
+            if 'APKTOOL_DUMMY_' not in text:
+                continue
+            new_text = _apktool_dummy_line.sub('', text)
+            if new_text != text:
+                xml_path.write_text(new_text, encoding='UTF-8')
+                modified += 1
+    return modified
+
+
 def update_main_manifest_file(path_main_apk: Path) -> None:
     """Strip split-bundle attributes from the merged AndroidManifest.xml."""
     path_manifest = path_main_apk / 'AndroidManifest.xml'
@@ -656,19 +777,80 @@ def update_main_manifest_file(path_main_apk: Path) -> None:
     tmp_path = path_manifest.with_suffix('.xml.tmp')
     with tmp_path.open('w', encoding='UTF-8') as f:
         f.write(data)
-    os.replace(tmp_path, path_manifest)
+    tmp_path.replace(path_manifest)
 
 
 # === SECTION: Validation ===
 
-def report_output_apk(apk_path: Path, expected_pkg: str, signed_expected: bool) -> None:
-    """Inspect the final APK; print a one-line sanity report and any issues."""
+_aapt_badging_pattern = re.compile(
+    r"package: name='([^']+)' versionCode='([^']*)' versionName='([^']*)'"
+)
+
+
+def _parse_aapt_badging(apk_path: Path) -> tuple[str | None, str | None, str | None]:
+    """Run aapt2/aapt dump badging on apk_path; return (package, versionCode, versionName).
+
+    Returns (None, None, None) if no aapt available or invocation fails — this
+    inspection is opportunistic, never blocking.
+    """
+    aapt = resolve_executable('aapt2') or resolve_executable('aapt')
+    if aapt is None:
+        return (None, None, None)
+    try:
+        proc = subprocess.run([*aapt, 'dump', 'badging', str(apk_path)],
+                              capture_output=True, text=True, check=False)
+    except (OSError, FileNotFoundError):
+        return (None, None, None)
+    if proc.returncode != 0:
+        return (None, None, None)
+    m = _aapt_badging_pattern.search(proc.stdout or '')
+    if not m:
+        return (None, None, None)
+    return (m.group(1), m.group(2), m.group(3))
+
+
+def verify_zipalign(apk_path: Path) -> str | None:
+    """Run `zipalign -c -v 4` to verify alignment; returns error message or None."""
+    zipalign = resolve_executable('zipalign')
+    if zipalign is None:
+        return None
+    try:
+        proc = subprocess.run([*zipalign, '-c', '-v', '4', str(apk_path)],
+                              capture_output=True, text=True, check=False)
+    except (OSError, FileNotFoundError) as e:
+        return f'zipalign verify skipped: {e}'
+    if proc.returncode != 0:
+        return 'zipalign verify failed (alignment broken)'
+    return None
+
+
+def verify_zip_crc(apk_path: Path) -> str | None:
+    """ZipFile.testzip() — read every entry's CRC; returns first bad name or None."""
+    try:
+        with ZipFile(apk_path, 'r') as zf:
+            bad = zf.testzip()
+    except Exception as e:  # noqa: BLE001 - inspection should never block; report and move on
+        return f'zip CRC scan failed: {e}'
+    if bad:
+        return f'zip entry CRC bad: {bad}'
+    return None
+
+
+def report_output_apk(apk_path: Path, expected_pkg: str, signed_expected: bool,
+                      input_size_bytes: int) -> None:
+    """Inspect the final APK; print a one-line sanity report plus any integrity issues."""
     if not apk_path.is_file():
+        print(f'[!] output apk missing: {apk_path}')
         return
+
     size_mb = apk_path.stat().st_size / (1024.0 * 1024.0)
-    has_manifest = False
-    has_dex = False
-    has_signature = False
+    issues: list[str] = []
+
+    crc_err = verify_zip_crc(apk_path)
+    if crc_err:
+        issues.append(crc_err)
+
+    has_manifest = has_dex = has_signature = False
     entry_count = 0
     try:
         with ZipFile(apk_path, 'r') as zf:
@@ -680,11 +862,9 @@ def report_output_apk(apk_path: Path, expected_pkg: str, signed_expected: bool) 
                     has_dex = True
                 elif name.startswith('META-INF/') and (name.endswith('.RSA') or name.endswith('.EC') or name.endswith('.DSA')):
                     has_signature = True
-    except Exception as e:  # noqa: BLE001 - intentional: cosmetic post-build report; never block on inspection failure
-        print(f'[!] could not inspect output apk: {e}')
-        return
+    except Exception as e:  # noqa: BLE001 - cosmetic inspection
+        issues.append(f'apk inspect failed: {e}')
 
-    issues: list[str] = []
     if not has_manifest:
         issues.append('missing AndroidManifest.xml')
     if not has_dex:
@@ -692,10 +872,28 @@ def report_output_apk(apk_path: Path, expected_pkg: str, signed_expected: bool) 
     if signed_expected and not has_signature:
         issues.append('expected signature block missing')
 
-    print(f'[*] result: {size_mb:.2f} MB, {entry_count} entries, '
-          f'package={expected_pkg}, signed={has_signature}')
+    align_err = verify_zipalign(apk_path)
+    if align_err:
+        issues.append(align_err)
+
+    aapt_pkg, _, aapt_ver = _parse_aapt_badging(apk_path)
+    if aapt_pkg and aapt_pkg != expected_pkg:
+        issues.append(f'package mismatch: apk={aapt_pkg!r} expected={expected_pkg!r}')
+
+    if input_size_bytes > 0:
+        ratio = apk_path.stat().st_size / input_size_bytes
+        if ratio < 0.5:
+            in_mb = input_size_bytes / (1024.0 * 1024.0)
+            issues.append(f'output {size_mb:.1f}MB << input {in_mb:.1f}MB (ratio {ratio:.0%}); merge may have lost data')
+
+    summary = f'[*] result: {size_mb:.2f} MB, {entry_count} entries, package={expected_pkg}'
+    if aapt_ver:
+        summary += f', version={aapt_ver}'
+    summary += f', signed={has_signature}'
+    print(summary)
     if issues:
-        print(f'[!] sanity issues: {"; ".join(issues)}')
+        for issue in issues:
+            print(f'[!] {issue}')
 
 
 # === SECTION: Phases ===
@@ -722,15 +920,9 @@ def _safe_extract_zip(zip_path: Path, dest: Path) -> None:
 
 
 def phase_extract_xapk(xapk_abs_path: Path, tmp: Path) -> dict[str, Any]:
-    """Copy the xapk into tmp, unzip it, parse manifest.json, return the parsed dict."""
-    target_xapk = tmp / f'{const_file_target_file}{const_ext_xapk}'
-    shutil.copy(xapk_abs_path, target_xapk)
-    target_zip = tmp / f'{const_file_target_file}{const_ext_zip}'
-    target_xapk.rename(target_zip)
-
+    """Unzip the xapk in place into tmp, parse manifest.json, return the parsed dict."""
     print('[*] unpacking xapk')
-    _safe_extract_zip(target_zip, tmp)
-    target_zip.unlink()
+    _safe_extract_zip(xapk_abs_path, tmp)
 
     manifest_path = tmp / const_file_xapk_manifest
     with manifest_path.open(encoding='UTF-8') as f:
@@ -758,11 +950,47 @@ def phase_classify_splits(tmp: Path, package_name: str) -> list[ApkPart]:
     return parts
 
 
+def _resolve_unpack_workers(num_parts: int) -> int:
+    """Decide unpack thread count: env override > min(cpu_count, parts, 4)."""
+    raw = os.environ.get(const_env_unpack_workers, '').strip()
+    if raw:
+        if not raw.isdigit() or int(raw) < 1:
+            raise SystemExit(f'{const_env_unpack_workers} must be a positive integer')
+        return min(int(raw), num_parts)
+    cpu = os.cpu_count() or 1
+    # Default cap = 4: each apktool JVM holds ~1GB heap; 4x keeps memory bounded on 16GB hosts.
+    return max(1, min(cpu, num_parts, 4))
+
+
 def phase_unpack_splits(tmp: Path, parts: list[ApkPart]) -> None:
-    """Run apktool d -s on every split; fail-fast on any error (corrupt base = unrecoverable)."""
+    """Run apktool d -s on every split (parallel when workers>1); fail-fast on any error."""
     total = len(parts)
-    for index, part in enumerate(parts):
-        unpack_apk(tmp, part.file_name, index + 1, total)
+    if total == 0:
+        return
+    workers = _resolve_unpack_workers(total)
+    if workers == 1:
+        for index, part in enumerate(parts):
+            print(f'[*] unpacking {index + 1} of {total}')
+            unpack_apk(tmp, part.file_name, part.split_type)
+        return
+
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    print(f'[*] unpacking {total} splits with {workers} workers')
+    counter = [0]
+    lock = threading.Lock()
+
+    def _task(part: ApkPart) -> None:
+        unpack_apk(tmp, part.file_name, part.split_type)
+        with lock:
+            counter[0] += 1
+            print(f'[*] unpacked {counter[0]} of {total} ({part.file_name})')
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = [ex.submit(_task, p) for p in parts]
+        for fut in as_completed(futures):
+            fut.result()
 
 
 def _safe_merge(part: ApkPart, phase: str, fn: Callable[[], None],
@@ -774,8 +1002,18 @@ def _safe_merge(part: ApkPart, phase: str, fn: Callable[[], None],
         failures.append(StepFailure(apk_file=part.file_name, phase=phase, error=str(e)))
 
 
+def _drop_split_dir(part: ApkPart) -> None:
+    """Free a split's expanded dir once its content is merged into main; cuts peak disk."""
+    if part.dir_path.is_dir():
+        shutil.rmtree(part.dir_path, ignore_errors=True)
+
+
 def phase_merge_splits(parts: list[ApkPart]) -> tuple[ApkPart, list[StepFailure]]:
-    """Merge arch + dpi + locale + assetpack splits into the main APK dir; collect non-fatal failures."""
+    """Merge arch + dpi + locale + assetpack splits into the main APK dir; collect non-fatal failures.
+
+    Each split's expanded dir is dropped immediately after its merge — peak disk
+    falls roughly in proportion to the largest split, not the sum of all splits.
+    """
     main = get_main_apk(parts)
     arch_parts = get_apks_of_type(parts, const_split_apk_type_arch)
     dpi_parts = get_apks_of_type(parts, const_split_apk_type_dpi)
@@ -786,24 +1024,31 @@ def phase_merge_splits(parts: list[ApkPart]) -> tuple[ApkPart, list[StepFailure]
     for p in arch_parts:
         _safe_merge(p, 'merge_arch',
                     partial(merge_apk_arch, main.dir_path, p.dir_path), failures)
+        _drop_split_dir(p)
     for p in prioritize_dpi_apk_list(dpi_parts):
         _safe_merge(p, 'merge_resources',
                     partial(merge_apk_resources, main.dir_path, p.dir_path), failures)
+        _drop_split_dir(p)
     for p in locale_parts:
         _safe_merge(p, 'merge_resources',
                     partial(merge_apk_resources, main.dir_path, p.dir_path), failures)
         _safe_merge(p, 'merge_assets',
                     partial(merge_apk_assets, main.dir_path, p.dir_path), failures)
+        _drop_split_dir(p)
     for p in assetpack_parts:
         _safe_merge(p, 'merge_assets',
                     partial(merge_apk_assets, main.dir_path, p.dir_path), failures)
+        _drop_split_dir(p)
 
     return main, failures
 
 
 def phase_finalize_main_apk(main: ApkPart) -> None:
-    """Strip leftover signature files and rewrite AndroidManifest for the merged APK."""
+    """Strip leftover signature files, drop apktool dummy refs, and rewrite AndroidManifest."""
     delete_signature_related_files(main.dir_path)
+    stripped = strip_apktool_dummies(main.dir_path)
+    if stripped:
+        print(f'[*] stripped APKTOOL_DUMMY refs from {stripped} merged xml file(s)')
     update_main_manifest_file(main.dir_path)
 
 
@@ -822,9 +1067,8 @@ def copy_single_apk_to_working_dir(tmp: Path, working_dir: Path, target_name: st
     dst = working_dir / f'{target_name}{const_ext_apk}'
     if dst.is_dir():
         raise Exception(f"refusing to overwrite directory at {dst}")
-    if dst.exists():
-        dst.unlink()
-    shutil.copy(src, dst)
+    # Same-FS rename (tmp lives inside working_dir): instant. Tmp is wiped after.
+    src.replace(dst)
     return dst
 
 
@@ -879,10 +1123,35 @@ def main() -> None:
         phase_build_and_sign(tmp, main_part, sign_config)
 
         final_apk = copy_single_apk_to_working_dir(tmp, cwd, original_stem)
-        report_output_apk(final_apk, package_name, sign_config is not None)
+        report_output_apk(final_apk, package_name, sign_config is not None,
+                          xapk_abs.stat().st_size)
 
     print('[*] complete')
 
 
+def _run_with_profile(profile_target: str) -> None:
+    """Run main() under cProfile; dump stats to file, print top 20 by cumtime."""
+    import cProfile
+    import pstats
+    from pstats import SortKey
+
+    profiler = cProfile.Profile()
+    profiler.enable()
+    try:
+        main()
+    finally:
+        profiler.disable()
+        out_path = Path(profile_target if profile_target != '1' else '.xapktoapk-profile.prof').resolve()
+        stats = pstats.Stats(profiler).sort_stats(SortKey.CUMULATIVE)
+        stats.dump_stats(str(out_path))
+        print(f'\n[P] profile written to {out_path}')
+        print('[P] top 20 by cumulative time:')
+        stats.print_stats(20)
+
+
 if __name__ == '__main__':
-    main()
+    profile_target = os.environ.get(const_env_profile, '').strip()
+    if profile_target:
+        _run_with_profile(profile_target)
+    else:
+        main()

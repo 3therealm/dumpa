@@ -73,3 +73,30 @@ After signing, the script runs `apksigner verify --verbose --print-certs` and re
 If `keytool` is available on the `$PATH`, a pre-flight check validates the keystore + alias + password before unpacking begins, and warns if the certificate expires within 90 days.
 
 > **Breaking change**: previous versions accepted a `xapktoapk.sign.properties` file in the working or home directory. That file is no longer read; migrate to the environment variables above.
+
+### Performance tuning
+
+Splits are unpacked in parallel and apktool runs with a tunable JVM heap. Defaults are safe for 16GB hosts. Override only when needed.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `XAPKTOAPK_UNPACK_WORKERS` | `min(cpu, splits, 4)` | Number of concurrent `apktool d` invocations. Set to `1` for serial behavior. |
+| `XAPKTOAPK_JVM_HEAP` | `2048m` | `-Xmx` for every `apktool` JVM (decode + build). Raise on very large apps, can lower on hosts like cellphones. |
+
+### Debug aids
+
+| Variable | Description |
+|----------|-------------|
+| `XAPKTOAPK_KEEP_TMP=1` | Retain the `.xapktoapk` working dir after the run. |
+| `XAPKTOAPK_PROFILE=<path>` | Run the whole conversion under `cProfile` to dump stats to the given path. Will print the top 20 by cumulative time. Set to `1` to write to `.xapktoapk-profile.prof` in the current dir. |
+
+### Output validation
+
+After build, the script reports a one-line summary and runs integrity checks:
+- Zip CRC scan
+- Mandatory entry presence (`AndroidManifest.xml`, `classes*.dex`)
+- `zipalign -c -v 4` re-verify
+- `aapt dump badging` package match (when `aapt2`/`aapt` is on `$PATH`)
+- Output size sanity vs. input xapk size
+
+Anything wrong will be reported as a `[!] …` line after the result line.
