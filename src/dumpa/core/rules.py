@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import importlib.resources
 import logging
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -52,6 +53,8 @@ const_max_locations_per_rule = 10
 const_default_content_targets = ("**/*.dex", "lib/**/*.so", "AndroidManifest.xml", "resources.arsc")
 const_content_chunk_size = 1 << 20          # 1 MiB streaming reads (never load whole-file)
 const_max_content_scan_bytes = 512 << 20    # skip individual files larger than 512 MiB
+const_regex_overlap = 1024                  # chunk overlap for regex matches near an edge
+const_max_match_text = 200                  # cap a captured match (e.g. a secret) in evidence
 
 
 def _empty_attrs() -> dict[str, str]:
@@ -71,6 +74,7 @@ class Rule:
     confidence: Confidence
     globs: tuple[str, ...] = ()
     strings: tuple[str, ...] = ()
+    regex: tuple[str, ...] = ()
     targets: tuple[str, ...] = ()
     match: str = const_match_any
     state: FindingState = FindingState.PRESENT
@@ -78,7 +82,12 @@ class Rule:
 
     @property
     def is_content(self) -> bool:
-        return bool(self.strings)
+        return bool(self.strings or self.regex)
+
+    @property
+    def keys(self) -> tuple[str, ...]:
+        """The pattern keys (literal strings or regex sources) this content rule matches on."""
+        return self.strings or self.regex
 
 
 @dataclass(frozen=True)
@@ -89,6 +98,7 @@ class RuleBundle:
     source: str
     updated: str
     rules: tuple[Rule, ...]
+    default_targets: tuple[str, ...] = ()   # content-scan targets for rules that omit their own
 
 
 def _require_str(table: dict[str, Any], key: str, ctx: str) -> str:
@@ -166,18 +176,26 @@ def _parse_rule(raw: object, index: int) -> Rule:
     except ValueError as e:
         raise ConfigError(f"{ctx}: invalid confidence {conf_raw!r}") from e
 
-    has_globs = "globs" in table
-    has_strings = "strings" in table
-    if has_globs == has_strings:
-        raise ConfigError(f"{ctx}: a rule needs exactly one of 'globs' or 'strings'")
+    present = [k for k in ("globs", "strings", "regex") if k in table]
+    if len(present) != 1:
+        raise ConfigError(f"{ctx}: a rule needs exactly one of 'globs', 'strings', or 'regex'")
 
     globs: tuple[str, ...] = ()
     strings: tuple[str, ...] = ()
+    regex: tuple[str, ...] = ()
     targets: tuple[str, ...] = ()
-    if has_globs:
+    if "globs" in table:
         globs = _parse_globs(table.get("globs"), ctx)
     else:
-        strings = _parse_str_list(table.get("strings"), "strings", ctx)
+        if "strings" in table:
+            strings = _parse_str_list(table.get("strings"), "strings", ctx)
+        else:
+            regex = _parse_str_list(table.get("regex"), "regex", ctx)
+            for pattern in regex:
+                try:
+                    re.compile(pattern.encode())
+                except re.error as e:
+                    raise ConfigError(f"{ctx}: invalid regex {pattern!r}: {e}") from e
         if "targets" in table:
             targets = tuple(_validate_glob(g, ctx) for g in _parse_str_list(table.get("targets"), "targets", ctx))
 
@@ -193,7 +211,7 @@ def _parse_rule(raw: object, index: int) -> Rule:
 
     return Rule(
         kind=kind, subject=subject, confidence=confidence,
-        globs=globs, strings=strings, targets=targets, match=match,
+        globs=globs, strings=strings, regex=regex, targets=targets, match=match,
         state=state, attributes=_parse_attributes(table, ctx),
     )
 
@@ -208,6 +226,13 @@ def _parse_bundle(data: dict[str, Any], *, default_source: str) -> RuleBundle:
     source = bundle_tbl.get("source") if isinstance(bundle_tbl.get("source"), str) else default_source
     updated = _require_str(bundle_tbl, "updated", "[bundle]")
 
+    default_targets: tuple[str, ...] = ()
+    if "default_targets" in bundle_tbl:
+        default_targets = tuple(
+            _validate_glob(g, "[bundle]")
+            for g in _parse_str_list(bundle_tbl.get("default_targets"), "default_targets", "[bundle]")
+        )
+
     rules_raw = data.get("rule", [])
     if not isinstance(rules_raw, list):
         raise ConfigError("rule bundle: [[rule]] must be an array of tables")
@@ -215,7 +240,8 @@ def _parse_bundle(data: dict[str, Any], *, default_source: str) -> RuleBundle:
     if not rules:
         raise ConfigError(f"rule bundle {name!r}: no rules defined")
 
-    return RuleBundle(name=name, version=version, source=str(source), updated=updated, rules=rules)
+    return RuleBundle(name=name, version=version, source=str(source), updated=updated,
+                      rules=rules, default_targets=default_targets)
 
 
 def load_bundle(path: Path) -> RuleBundle:
@@ -297,14 +323,22 @@ def _content_targets(extracted_dir: Path, targets: tuple[str, ...]) -> list[Path
     return files
 
 
-def _scan_for_patterns(files: list[Path], patterns: dict[str, bytes],
-                       extracted_dir: Path) -> dict[str, tuple[str, int]]:
-    """First-hit (relpath, byte offset) for each pattern across files; streams with overlap."""
-    remaining = dict(patterns)            # key -> needle bytes
-    found: dict[str, tuple[str, int]] = {}
-    overlap = max((len(p) for p in patterns.values()), default=1) - 1
+# A content hit: (relpath, byte offset, matched text). For a literal the text is the
+# needle; for a regex it is the (capped) matched substring — e.g. the secret value.
+_Hit = tuple[str, int, str]
+
+
+def _scan_content(files: list[Path], literals: dict[str, bytes],
+                  regexes: dict[str, re.Pattern[bytes]], extracted_dir: Path) -> dict[str, _Hit]:
+    """First-hit (relpath, offset, text) for each literal/regex key; streams with overlap."""
+    found: dict[str, _Hit] = {}
+    pending_literals = set(literals)
+    pending_regex = set(regexes)
+    overlap = max((len(v) for v in literals.values()), default=1)
+    overlap = max(overlap - 1, const_regex_overlap if regexes else 0)
+
     for path in files:
-        if not remaining:
+        if not pending_literals and not pending_regex:
             break
         try:
             if path.stat().st_size > const_max_content_scan_bytes:
@@ -313,17 +347,24 @@ def _scan_for_patterns(files: list[Path], patterns: dict[str, bytes],
             rel = path.relative_to(extracted_dir).as_posix()
             with path.open("rb") as f:
                 tail = b""
-                base = 0  # absolute offset of the first byte of `chunk`
+                base = 0
                 while True:
                     chunk = f.read(const_content_chunk_size)
                     if not chunk:
                         break
                     window = tail + chunk
                     window_start = base - len(tail)
-                    for key in [k for k in remaining if remaining[k] in window]:
-                        found[key] = (rel, window_start + window.find(remaining[key]))
-                        del remaining[key]
-                    if not remaining:
+                    for key in [k for k in pending_literals if literals[k] in window]:
+                        found[key] = (rel, window_start + window.find(literals[key]),
+                                      key)
+                        pending_literals.discard(key)
+                    for key in list(pending_regex):
+                        m = regexes[key].search(window)
+                        if m is not None:
+                            text = m.group()[:const_max_match_text].decode("latin-1")
+                            found[key] = (rel, window_start + m.start(), text)
+                            pending_regex.discard(key)
+                    if not pending_literals and not pending_regex:
                         break
                     base += len(chunk)
                     tail = window[-overlap:] if overlap > 0 else b""
@@ -333,17 +374,18 @@ def _scan_for_patterns(files: list[Path], patterns: dict[str, bytes],
     return found
 
 
-def _content_finding(rule: Rule, bundle: RuleBundle,
-                     hits: dict[str, tuple[str, int]]) -> Finding:
+def _content_finding(rule: Rule, bundle: RuleBundle, hits: dict[str, _Hit]) -> Finding:
     evidence: list[Evidence] = []
     locations: list[Location] = []
-    for needle in rule.strings:
-        if needle not in hits:
+    is_regex = bool(rule.regex)
+    for key in rule.keys:
+        if key not in hits:
             continue
-        rel, offset = hits[needle]
+        rel, offset, text = hits[key]
+        description = (f"pattern /{key}/ matched {text!r} in {rel}" if is_regex
+                      else f"string '{key}' found in {rel}")
         evidence.append(Evidence(
-            description=f"string '{needle}' found in {rel}",
-            snippet=needle, tool="rules", rule_version=bundle.version,
+            description=description, snippet=text, tool="rules", rule_version=bundle.version,
         ))
         if len(locations) < const_max_locations_per_rule:
             locations.append(Location(file_path=rel, file_offset=offset))
@@ -356,18 +398,20 @@ def _content_finding(rule: Rule, bundle: RuleBundle,
 
 def _apply_content_rules(rules: list[Rule], bundle: RuleBundle,
                          extracted_dir: Path) -> list[Finding]:
-    """Scan each target-set once for all its rules' strings, then assemble findings."""
+    """Scan each target-set once for all its rules' patterns, then assemble findings."""
+    fallback = bundle.default_targets or const_default_content_targets
     by_targets: dict[tuple[str, ...], list[Rule]] = {}
     for rule in rules:
-        by_targets.setdefault(rule.targets or const_default_content_targets, []).append(rule)
+        by_targets.setdefault(rule.targets or fallback, []).append(rule)
 
     findings: list[Finding] = []
     for targets, group in by_targets.items():
-        patterns = {needle: needle.encode() for rule in group for needle in rule.strings}
-        hits = _scan_for_patterns(_content_targets(extracted_dir, targets), patterns, extracted_dir)
+        literals = {s: s.encode() for rule in group for s in rule.strings}
+        regexes = {p: re.compile(p.encode()) for rule in group for p in rule.regex}
+        hits = _scan_content(_content_targets(extracted_dir, targets), literals, regexes, extracted_dir)
         for rule in group:
-            rule_hits = {s: hits[s] for s in rule.strings if s in hits}
-            fired = (len(rule_hits) == len(rule.strings)) if rule.match == const_match_all else bool(rule_hits)
+            rule_hits = {k: hits[k] for k in rule.keys if k in hits}
+            fired = (len(rule_hits) == len(rule.keys)) if rule.match == const_match_all else bool(rule_hits)
             if fired:
                 findings.append(_content_finding(rule, bundle, rule_hits))
     return findings

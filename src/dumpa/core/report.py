@@ -315,10 +315,11 @@ def render_markdown(report: Report) -> str:
 
     trackers = [x for x in report.findings if x.kind == "tracker"]
     protections = [x for x in report.findings if x.kind == "protection"]
+    secrets = [x for x in report.findings if x.kind == "secret"]
     data_access = [x for x in report.findings if x.kind in ("capability", "data-access")]
     endpoints = [x for x in report.findings if x.kind == "endpoint"]
-    others = [x for x in report.findings
-              if x.kind not in ("tracker", "protection", "capability", "data-access", "endpoint")]
+    _sectioned = ("tracker", "protection", "secret", "capability", "data-access", "endpoint")
+    others = [x for x in report.findings if x.kind not in _sectioned]
 
     lines.append("## Trackers")
     if not trackers:
@@ -348,6 +349,16 @@ def render_markdown(report: Report) -> str:
             category = p.attributes.get("category", "")
             tag = f" [{category}]" if category else ""
             lines.append(f"- {p.subject}{tag} (confidence: {p.confidence.value})")
+    lines.append("")
+
+    lines.append("## Secrets")
+    if not secrets:
+        lines.append("_none_")
+    else:
+        for s in sorted(secrets, key=lambda i: i.subject):
+            category = s.attributes.get("category", "")
+            tag = f" [{category}]" if category else ""
+            lines.append(f"- {s.subject}{tag} (confidence: {s.confidence.value})")
     lines.append("")
 
     lines.append("## Data access")
