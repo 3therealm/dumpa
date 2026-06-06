@@ -125,9 +125,18 @@ def _parse_globs(raw: object, ctx: str) -> tuple[str, ...]:
 
 
 def _parse_str_list(raw: object, key: str, ctx: str) -> tuple[str, ...]:
-    if not isinstance(raw, list) or not raw or not all(isinstance(s, str) and s for s in raw):
+    if not isinstance(raw, list):
         raise ConfigError(f"{ctx}: '{key}' must be a non-empty list of strings")
-    return tuple(cast("list[str]", raw))
+    raw_items = cast("list[object]", raw)
+    if not raw_items:
+        raise ConfigError(f"{ctx}: '{key}' must be a non-empty list of strings")
+
+    values: list[str] = []
+    for item in raw_items:
+        if not isinstance(item, str) or not item:
+            raise ConfigError(f"{ctx}: '{key}' must be a non-empty list of strings")
+        values.append(item)
+    return tuple(values)
 
 
 def _parse_attributes(table: dict[str, Any], ctx: str) -> dict[str, str]:

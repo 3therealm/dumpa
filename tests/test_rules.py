@@ -195,6 +195,13 @@ def test_rule_requires_exactly_one_matcher(tmp_path: Path) -> None:
         load_bundle(_write(tmp_path, neither))
 
 
+def test_content_strings_must_be_non_empty_strings(tmp_path: Path) -> None:
+    text = ('[bundle]\nname="t"\nversion="1"\nupdated="d"\n\n'
+            '[[rule]]\nkind="tracker"\nsubject="X"\nconfidence="high"\nstrings=["ok", 3]\n')
+    with pytest.raises(ConfigError, match="strings"):
+        load_bundle(_write(tmp_path, text))
+
+
 def test_trackers_builtin_loads() -> None:
     bundle = load_builtin("trackers")
     assert bundle.name == "trackers"
