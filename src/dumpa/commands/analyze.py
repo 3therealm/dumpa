@@ -24,7 +24,7 @@ from dumpa.core.env import env_positive_int
 from dumpa.core.errors import DumpaError, ToolNotFoundError
 from dumpa.core.fs import link_or_copy, working_tmp_dir
 from dumpa.core.hashing import sha256_file
-from dumpa.core.report import write_json
+from dumpa.core.report import Report, write_json
 from dumpa.core.tools import ToolRegistry, build_default_registry
 from dumpa.core.workspace import Workspace, decide_reuse, make_meta, open_workspace
 from dumpa.reporting import build_report
@@ -129,6 +129,30 @@ def _report_workspace(registry: ToolRegistry, ws: Workspace, *,
     logger.info("  extracted: %s", ws.extracted_dir)
     logger.info("  dumps:     %s", ws.dumps_dir)
     logger.info("  report:    %s", report_path)
+
+
+def report_for_input(input_path: Path) -> Report:
+    """Build a Report for an apk/xapk (ephemeral workspace) or an existing workspace dir.
+
+    Shared by `diff` and `load`: an apk/xapk is extracted into a throwaway workspace
+    and reported unsigned; a directory is treated as an existing dumpa workspace.
+    """
+    config = load_config()
+    registry = build_default_registry(config.tool_paths)
+    input_abs = input_path.resolve()
+
+    if input_abs.is_dir():
+        ws = Workspace(root=input_abs)
+        if ws.read_meta() is None:
+            raise DumpaError(f"{input_abs} is not a dumpa workspace; pass an .apk/.xapk or run analyze first")
+        return build_report(registry, ws)
+
+    in_type = input_type(input_abs)
+    if in_type == "xapk":
+        prepare_convert(registry, None)
+    with open_workspace(None) as ws:
+        build_workspace(registry, ws, input_abs, in_type, sha256_file(input_abs), None)
+        return build_report(registry, ws)
 
 
 def analyze(input_file: Path, *, workspace: Path | None = None,

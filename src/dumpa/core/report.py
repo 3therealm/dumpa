@@ -282,6 +282,25 @@ def density_score(report: Report) -> dict[str, float]:
     return out
 
 
+def report_domains(report: Report) -> list[str]:
+    """Sorted unique hosts/domains from the report (endpoint hosts + any domain locations)."""
+    domains: set[str] = set()
+    for finding in report.findings:
+        if finding.kind == "endpoint":
+            domains.add(finding.subject)
+        for loc in finding.locations:
+            if loc.domain:
+                domains.add(loc.domain)
+    return sorted(d for d in domains if d)
+
+
+def render_blocklist(report: Report, fmt: str) -> str:
+    """Render a domain blocklist: 'hosts' (0.0.0.0 lines) or 'adguard' (||host^)."""
+    domains = report_domains(report)
+    lines = [f"||{d}^" for d in domains] if fmt == "adguard" else [f"0.0.0.0 {d}" for d in domains]
+    return "\n".join(lines) + "\n" if lines else ""
+
+
 def render_markdown(report: Report) -> str:
     """Render a human-readable Markdown view of a report."""
     f = report.facts

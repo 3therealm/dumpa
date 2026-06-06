@@ -1,8 +1,8 @@
 """`dumpa export` — render a workspace's analysis report in a chosen format.
 
 Reads `<workspace>/reports/report.json` (rebuilding it from the workspace if it is
-missing) and emits JSON or Markdown to stdout or a file. CSV/HTML/SARIF are not yet
-supported — CSV needs the tracker/domain lists that arrive with the Phase 5 scanners.
+missing) and emits JSON, Markdown, or a domain blocklist (Pi-hole-style `hosts` or
+AdGuard `||host^`) to stdout or a file. CSV/HTML/SARIF are not yet supported.
 """
 
 from __future__ import annotations
@@ -13,15 +13,23 @@ from pathlib import Path
 from dumpa.commands.analyze import const_file_report_json
 from dumpa.core.config import load_config
 from dumpa.core.errors import DumpaError
-from dumpa.core.report import Report, read_json, render_markdown, to_json
+from dumpa.core.report import Report, read_json, render_blocklist, render_markdown, to_json
 from dumpa.core.tools import build_default_registry
 from dumpa.core.workspace import Workspace
 from dumpa.reporting import build_report
 
 logger = logging.getLogger("dumpa")
 
-const_export_formats = ("json", "md", "markdown")
+const_export_formats = ("json", "md", "markdown", "hosts", "adguard")
 _NOT_YET = ("csv", "html", "sarif")
+
+
+def _render(report: Report, name: str) -> str:
+    if name == "json":
+        return to_json(report)
+    if name in ("hosts", "adguard"):
+        return render_blocklist(report, name)
+    return render_markdown(report)
 
 
 def _load_report(workspace: Path) -> Report:
@@ -42,12 +50,12 @@ def export(workspace: Path, *, fmt: str, out: Path | None = None) -> None:
     """Render the report for a workspace as JSON or Markdown."""
     name = fmt.lower()
     if name in _NOT_YET:
-        raise DumpaError(f"export format {name!r} is not supported yet (try json or md)")
+        raise DumpaError(f"export format {name!r} is not supported yet")
     if name not in const_export_formats:
-        raise DumpaError(f"unknown export format {fmt!r} (expected json or md)")
+        raise DumpaError(f"unknown export format {fmt!r} (expected json, md, hosts, or adguard)")
 
     report = _load_report(workspace)
-    text = to_json(report) if name == "json" else render_markdown(report)
+    text = _render(report, name)
 
     if out is not None:
         out.write_text(text, encoding="UTF-8")

@@ -12,11 +12,14 @@ from pathlib import Path
 import typer
 
 from dumpa.commands import analyze as analyze_cmd
+from dumpa.commands import clean as clean_cmd
 from dumpa.commands import convert as convert_cmd
+from dumpa.commands import diff as diff_cmd
 from dumpa.commands import doctor as doctor_cmd
 from dumpa.commands import dump_il2cpp as dump_il2cpp_cmd
 from dumpa.commands import export as export_cmd
 from dumpa.commands import info as info_cmd
+from dumpa.commands import load as load_cmd
 from dumpa.commands import rules as rules_cmd
 from dumpa.commands.base import run_command
 from dumpa.core.logging import configure_logging
@@ -85,12 +88,41 @@ def export(
         ..., exists=True, file_okay=False, readable=True,
         help="Workspace directory produced by `dumpa analyze`.",
     ),
-    fmt: str = typer.Option("json", "--format", help="Report format: json | md."),
+    fmt: str = typer.Option("json", "--format", help="Report format: json | md | hosts | adguard."),
     out: Path | None = typer.Option(
         None, "--out", help="Write to this file instead of stdout."),
 ) -> None:
-    """Render a workspace's analysis report as JSON or Markdown."""
+    """Render a workspace's report as JSON, Markdown, or a domain blocklist."""
     run_command(lambda: export_cmd.export(workspace, fmt=fmt, out=out))
+
+
+@app.command()
+def diff(
+    old: Path = typer.Argument(..., exists=True, readable=True, help="Old .apk/.xapk or workspace dir."),
+    new: Path = typer.Argument(..., exists=True, readable=True, help="New .apk/.xapk or workspace dir."),
+) -> None:
+    """Show what changed between two apps (trackers, protections, engine, ...)."""
+    run_command(lambda: diff_cmd.diff(old, new))
+
+
+@app.command(name="load")
+def load(
+    directory: Path = typer.Argument(
+        ..., exists=True, file_okay=False, readable=True,
+        help="Directory of .apk/.xapk files to summarize.",
+    ),
+) -> None:
+    """Analyze a directory of APK/XAPK files into one combined summary."""
+    run_command(lambda: load_cmd.load(directory))
+
+
+@app.command()
+def clean(
+    workspace: Path = typer.Argument(
+        ..., exists=True, file_okay=False, help="Workspace directory to remove."),
+) -> None:
+    """Remove a dumpa workspace directory (refuses non-workspace dirs)."""
+    run_command(lambda: clean_cmd.clean(workspace))
 
 
 rules_app = typer.Typer(
