@@ -15,6 +15,7 @@ from dumpa import __version__
 from dumpa.core.config import const_default_validation_timeout, const_env_validation_timeout
 from dumpa.core.env import env_positive_int
 from dumpa.core.errors import ToolExecutionError, ToolNotFoundError
+from dumpa.core.privacy import permission_findings
 from dumpa.core.report import AppFacts, Report
 from dumpa.core.tools import ToolRegistry
 from dumpa.core.workspace import Workspace
@@ -59,6 +60,7 @@ def build_report(registry: ToolRegistry, ws: Workspace) -> Report:
     schemes = list(signer.schemes) if signer else []
 
     findings = run_all(ws)
+    findings.extend(permission_findings(list(badging.permissions)))
 
     facts = AppFacts(
         input_sha256=meta.input_sha256,

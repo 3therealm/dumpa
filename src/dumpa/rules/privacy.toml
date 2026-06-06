@@ -1,0 +1,86 @@
+# Data-access API detection rules (content matchers).
+#
+# These look for references to privacy-sensitive Android APIs inside the dex/native
+# code (class paths and method names as they appear in classes*.dex). A string hit
+# means the API is *referenced* (state = "referenced"), which is a stronger signal
+# than a mere declared permission but weaker than an observed runtime call — hence
+# mostly medium confidence. The Advertising ID client is distinctive enough to be
+# high confidence.
+
+[bundle]
+name = "privacy"
+version = "2026.06.1"
+source = "dumpa built-in"
+updated = "2026-06-06"
+
+[[rule]]
+kind = "data-access"
+subject = "Advertising ID API"
+category = "advertising id"
+confidence = "high"
+state = "referenced"
+strings = ["com/google/android/gms/ads/identifier/AdvertisingIdClient"]
+
+[[rule]]
+kind = "data-access"
+subject = "Android ID"
+category = "android id"
+confidence = "medium"
+state = "referenced"
+strings = ["android_id"]
+
+[[rule]]
+kind = "data-access"
+subject = "Device identifiers (IMEI / serial / subscriber)"
+category = "device identifiers"
+confidence = "medium"
+state = "referenced"
+strings = ["getDeviceId", "getImei", "getSubscriberId", "getSimSerialNumber"]
+
+[[rule]]
+kind = "data-access"
+subject = "Location APIs"
+category = "location"
+confidence = "medium"
+state = "referenced"
+strings = ["getLastKnownLocation", "requestLocationUpdates", "com/google/android/gms/location/FusedLocationProviderClient"]
+
+[[rule]]
+kind = "data-access"
+subject = "Contacts provider"
+category = "contacts"
+confidence = "medium"
+state = "referenced"
+strings = ["android/provider/ContactsContract"]
+
+[[rule]]
+kind = "data-access"
+subject = "Clipboard access"
+category = "clipboard"
+confidence = "medium"
+state = "referenced"
+strings = ["android/content/ClipboardManager", "getPrimaryClip"]
+
+[[rule]]
+kind = "data-access"
+subject = "Installed-packages enumeration"
+category = "installed packages"
+confidence = "medium"
+state = "referenced"
+strings = ["getInstalledPackages", "getInstalledApplications"]
+
+[[rule]]
+kind = "data-access"
+subject = "Microphone / audio capture"
+category = "microphone"
+confidence = "medium"
+state = "referenced"
+strings = ["android/media/MediaRecorder", "android/media/AudioRecord"]
+
+[[rule]]
+kind = "data-access"
+subject = "MAC / hardware address"
+category = "network"
+confidence = "medium"
+state = "referenced"
+strings = ["getMacAddress", "getHardwareAddress"]

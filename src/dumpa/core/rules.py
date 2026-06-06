@@ -73,6 +73,7 @@ class Rule:
     strings: tuple[str, ...] = ()
     targets: tuple[str, ...] = ()
     match: str = const_match_any
+    state: FindingState = FindingState.PRESENT
     attributes: dict[str, str] = field(default_factory=_empty_attrs)
 
     @property
@@ -184,10 +185,16 @@ def _parse_rule(raw: object, index: int) -> Rule:
     if match not in _MATCH_MODES:
         raise ConfigError(f"{ctx}: 'match' must be one of {_MATCH_MODES}")
 
+    state_raw = table.get("state", FindingState.PRESENT.value)
+    try:
+        state = FindingState(state_raw)
+    except ValueError as e:
+        raise ConfigError(f"{ctx}: invalid state {state_raw!r}") from e
+
     return Rule(
         kind=kind, subject=subject, confidence=confidence,
         globs=globs, strings=strings, targets=targets, match=match,
-        attributes=_parse_attributes(table, ctx),
+        state=state, attributes=_parse_attributes(table, ctx),
     )
 
 
@@ -272,7 +279,7 @@ def _path_finding(rule: Rule, bundle: RuleBundle, matched: dict[str, list[Path]]
             locations.append(Location(file_path=hit.relative_to(extracted_dir).as_posix()))
     return Finding(
         kind=rule.kind, subject=rule.subject, confidence=rule.confidence,
-        state=FindingState.PRESENT, attributes=dict(rule.attributes),
+        state=rule.state, attributes=dict(rule.attributes),
         evidence=evidence, locations=locations,
     )
 
@@ -342,7 +349,7 @@ def _content_finding(rule: Rule, bundle: RuleBundle,
             locations.append(Location(file_path=rel, file_offset=offset))
     return Finding(
         kind=rule.kind, subject=rule.subject, confidence=rule.confidence,
-        state=FindingState.PRESENT, attributes=dict(rule.attributes),
+        state=rule.state, attributes=dict(rule.attributes),
         evidence=evidence, locations=locations,
     )
 

@@ -314,7 +314,10 @@ def render_markdown(report: Report) -> str:
     lines.append("")
 
     trackers = [x for x in report.findings if x.kind == "tracker"]
-    others = [x for x in report.findings if x.kind != "tracker"]
+    data_access = [x for x in report.findings if x.kind in ("capability", "data-access")]
+    endpoints = [x for x in report.findings if x.kind == "endpoint"]
+    others = [x for x in report.findings
+              if x.kind not in ("tracker", "capability", "data-access", "endpoint")]
 
     lines.append("## Trackers")
     if not trackers:
@@ -335,6 +338,28 @@ def render_markdown(report: Report) -> str:
                 suffix = f" — {owner}" if owner else ""
                 lines.append(f"- {t.subject}{suffix} (confidence: {t.confidence.value})")
             lines.append("")
+
+    lines.append("## Data access")
+    if not data_access:
+        lines.append("_none_")
+        lines.append("")
+    else:
+        by_cat: dict[str, list[Finding]] = {}
+        for x in data_access:
+            by_cat.setdefault(x.attributes.get("category", "other"), []).append(x)
+        for category in sorted(by_cat):
+            lines.append(f"### {category}")
+            for x in sorted(by_cat[category], key=lambda i: i.subject):
+                lines.append(f"- {x.subject} ({x.state.value}, confidence: {x.confidence.value})")
+            lines.append("")
+
+    lines.append("## Endpoints")
+    if not endpoints:
+        lines.append("_none_")
+    else:
+        for x in sorted(endpoints, key=lambda i: i.subject):
+            lines.append(f"- {x.subject}")
+    lines.append("")
 
     lines.append("## Findings")
     if not others:
