@@ -1,0 +1,103 @@
+# Data-driven game-engine detection rules.
+#
+# Matchers are path globs evaluated against a workspace's extracted/ tree (the raw
+# apk contents). High confidence = an engine-specific native library; medium =
+# an asset/layout heuristic that a few engines could share.
+#
+# Each rule documents the files/libraries/assets it keys on (ROADMAP: "Each engine
+# module should document the files, assets, libraries, and config locations it uses
+# for detection").
+
+[bundle]
+name = "engines"
+version = "2026.06.1"
+source = "dumpa built-in"
+updated = "2026-06-06"
+
+[[rule]]
+kind = "engine"
+subject = "Unity"
+confidence = "high"
+match = "any"
+# IL2CPP or Mono native runtime, or the Unity data dir.
+globs = ["lib/*/libil2cpp.so", "lib/*/libunity.so", "lib/*/libmono*.so", "assets/bin/Data/**"]
+
+[[rule]]
+kind = "engine"
+subject = "Cocos2d-x"
+confidence = "high"
+match = "any"
+globs = ["lib/*/libcocos2d*.so", "lib/*/libcocos2djs.so", "lib/*/libcocos2dlua.so"]
+
+[[rule]]
+kind = "engine"
+subject = "Godot"
+confidence = "high"
+match = "any"
+# Godot native lib, or a packed resource archive (standalone .pck).
+globs = ["lib/*/libgodot_android.so", "lib/*/libgodot.so", "**/*.pck"]
+
+[[rule]]
+kind = "engine"
+subject = "Unreal Engine"
+confidence = "high"
+match = "any"
+globs = ["lib/*/libUE4.so", "lib/*/libUnreal.so", "lib/*/libUE*.so"]
+
+[[rule]]
+kind = "engine"
+subject = "Flutter"
+confidence = "high"
+match = "any"
+globs = ["lib/*/libflutter.so", "assets/flutter_assets/**"]
+
+[[rule]]
+kind = "engine"
+subject = "GameMaker"
+confidence = "high"
+match = "any"
+globs = ["lib/*/libyoyo.so", "**/game.droid"]
+
+[[rule]]
+kind = "engine"
+subject = "libGDX"
+confidence = "high"
+match = "any"
+globs = ["lib/*/libgdx.so", "lib/*/libgdx-box2d.so"]
+
+[[rule]]
+kind = "engine"
+subject = "Corona/Solar2D"
+confidence = "high"
+match = "any"
+globs = ["lib/*/libcorona.so", "**/resource.car"]
+
+[[rule]]
+kind = "engine"
+subject = "Defold"
+confidence = "medium"
+match = "any"
+# Defold's packed archive + project descriptor.
+globs = ["**/game.arcd", "**/game.projectc", "**/game.dmanifest"]
+
+[[rule]]
+kind = "engine"
+subject = "Ren'Py"
+confidence = "medium"
+match = "any"
+globs = ["**/renpy/**", "**/*.rpa", "assets/x-game/**"]
+
+[[rule]]
+kind = "engine"
+subject = "RPG Maker"
+confidence = "medium"
+match = "any"
+globs = ["**/www/js/rmmz_core.js", "**/www/js/rpg_core.js", "**/www/data/System.json"]
+
+[[rule]]
+kind = "engine"
+subject = "Kivy"
+confidence = "medium"
+match = "any"
+# python-for-android bundles a private Python runtime into assets.
+globs = ["**/_python_bundle/**", "**/kivy_install/**"]

@@ -1,0 +1,65 @@
+[project]
+name = "dumpa"
+version = "0.1.0"
+description = "Unity/Android reverse-engineering toolkit (xapk->apk conversion, il2cpp dumping, and more)."
+readme = "README.md"
+requires-python = ">=3.14"
+license = { file = "LICENSE.md" }
+dependencies = [
+    "typer>=0.12",
+]
+
+[project.scripts]
+dumpa = "dumpa.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dumpa"]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 120
+src = ["src"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # bugbear
+    "UP",   # pyupgrade
+    "SIM",  # simplify
+    "C4",   # comprehensions
+    "PTH",  # use pathlib
+    "RET",  # return statements
+    "RUF",  # ruff-specific
+    "BLE",  # blind except
+    "DTZ",  # datetime tz-awareness
+]
+ignore = [
+    "E501",  # line length handled by formatter, not linter
+    "B008",  # function call in default argument (Typer uses this pattern)
+]
+
+[tool.mypy]
+strict = true
+python_version = "3.14"
+files = ["src"]
+
+[tool.pyright]
+include = ["src"]
+pythonVersion = "3.14"
+typeCheckingMode = "strict"

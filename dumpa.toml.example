@@ -1,0 +1,82 @@
+# dumpa configuration — EXAMPLE
+#
+# Copy to one of these locations (first match wins):
+#   1.  $DUMPA_CONFIG                                             (any .toml path)
+#   2.  ./dumpa.toml                                             (current directory)
+#   3.  ~/.config/dumpa/config.toml  ($XDG_CONFIG_HOME/dumpa/)   (lowest priority)
+#
+#   cp dumpa.toml.example dumpa.toml      # then edit
+#
+# Everything here is OPTIONAL. With no config file, dumpa runs on built-in defaults
+# and finds tools on $PATH. Environment variables (DUMPA_*) OVERRIDE file values, so
+# the file is for stable defaults and env is for per-run / secret overrides.
+#
+# Only [signing], [tools], and [il2cpp] are read from this file. The operational
+# knobs at the bottom are environment-only (documented here for reference).
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [signing] — re-sign the rebuilt apk (apksigner). OMIT the whole section to leave
+# the output unsigned. Signing activates only when keystore + alias + BOTH passwords
+# are present; a partial configuration is an error.
+#
+# SECURITY: passwords are NEVER read from this file. They come from the environment:
+#     export DUMPA_KEYSTORE_PASSWORD='...'
+#     export DUMPA_KEY_PASSWORD='...'
+# and are passed to apksigner via its env: form (never on the command line).
+# ─────────────────────────────────────────────────────────────────────────────
+# [signing]
+# keystore_file   = "~/keys/release.jks"   # ~ is expanded; must be an existing file
+# key_alias       = "release"
+# min_sdk_version = 21                      # optional; pins apksigner --min-sdk-version
+#
+# Env equivalents (override the above):
+#   DUMPA_KEYSTORE_FILE, DUMPA_KEY_ALIAS, DUMPA_MIN_SDK_VERSION
+#   DUMPA_KEYSTORE_PASSWORD, DUMPA_KEY_PASSWORD   (passwords: env-only, required)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [tools] — override how each external tool is located. Each value may be:
+#     • a bare command name resolved on $PATH      "il2cpp-dumper"
+#     • a full path to an executable               "/usr/bin/il2cpp-dumper"
+#     • a command with fixed leading arguments      "dotnet /opt/Il2CppDumper.dll"
+# If a configured command cannot be resolved, the tool is reported as missing
+# (run `dumpa doctor`) rather than silently falling back to $PATH.
+#
+# Known logical tool names: apktool, zipalign, apksigner, aapt, keytool,
+#                           il2cppdumper, il2cppinspector
+# Omit any you want resolved from $PATH automatically.
+# ─────────────────────────────────────────────────────────────────────────────
+# [tools]
+# apktool         = "/opt/apktool/apktool"
+# zipalign        = "/opt/android-sdk/build-tools/34.0.0/zipalign"
+# apksigner       = "/opt/android-sdk/build-tools/34.0.0/apksigner"
+# il2cppdumper    = "il2cpp-dumper"
+# il2cppinspector = "dotnet /opt/Il2CppInspector/Il2CppInspector.dll"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [il2cpp] — defaults for `dumpa dump-il2cpp`.
+# ─────────────────────────────────────────────────────────────────────────────
+# [il2cpp]
+# engine = "dumper"     # "dumper" (Il2CppDumper) | "inspector" (Il2CppInspector)
+#
+# Env equivalent (overrides the above): DUMPA_IL2CPP_ENGINE
+# Per-run override: dumpa dump-il2cpp <apk> --engine inspector
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Operational knobs — ENVIRONMENT-ONLY (not read from this file). Listed for
+# reference; defaults shown.
+#
+#   DUMPA_CONFIG                       # path to this config file (see lookup order)
+#   DUMPA_JVM_HEAP=2048m               # -Xmx for apktool's JVM (e.g. 2g, 4096m)
+#   DUMPA_UNPACK_WORKERS               # parallel apktool decode workers (default: min(cpu, splits, 4))
+#   DUMPA_TOOL_TIMEOUT_SECONDS=1800    # per external-tool timeout
+#   DUMPA_VALIDATION_TIMEOUT_SECONDS=300  # timeout for verify/badging/keystore probes
+#   DUMPA_MAX_ZIP_ENTRIES=10000        # zip-bomb guard: max entries in an archive
+#   DUMPA_MAX_ZIP_UNCOMPRESSED_BYTES   # zip-bomb guard: max total uncompressed bytes (default 8 GiB)
+#   DUMPA_KEEP_TMP=1                   # keep the .dumpa.* working dir for debugging
+#   DUMPA_PROFILE=1                    # run under cProfile; =<path> to set the output file
+#
+# Tip: `dumpa --debug <cmd>` enables debug logging and full tracebacks.

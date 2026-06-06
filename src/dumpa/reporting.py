@@ -1,0 +1,86 @@
+"""Build a unified Report from a workspace.
+
+This is the one place that turns external-tool output (aapt badging, apksigner
+verify) plus the workspace marker into the pure `core.report` model. Scanners (Phase
+5+) will append `Finding`s here; for now the report is facts-only with an empty
+findings list, which is exactly the "model before any scanner" Phase 2 ordering.
+"""
+
+from __future__ import annotations
+
+import datetime
+import logging
+
+from dumpa import __version__
+from dumpa.core.config import const_default_validation_timeout, const_env_validation_timeout
+from dumpa.core.env import env_positive_int
+from dumpa.core.errors import ToolExecutionError, ToolNotFoundError
+from dumpa.core.report import AppFacts, Report
+from dumpa.core.tools import ToolRegistry
+from dumpa.core.workspace import Workspace
+from dumpa.tools import aapt, apksigner
+
+logger = logging.getLogger("dumpa")
+
+
+def _validation_timeout() -> int:
+    return env_positive_int(const_env_validation_timeout, const_default_validation_timeout)
+
+
+def _read_badging(registry: ToolRegistry, ws: Workspace) -> aapt.BadgingInfo:
+    try:
+        tool = registry.resolve('aapt')
+    except ToolNotFoundError:
+        return aapt.BadgingInfo()
+    return aapt.read_badging(tool, ws.app_apk, _validation_timeout())
+
+
+def _read_signer(registry: ToolRegistry, ws: Workspace) -> apksigner.SignerInfo | None:
+    try:
+        tool = registry.resolve('apksigner')
+    except ToolNotFoundError:
+        return None
+    try:
+        out = apksigner.verify(tool, ws.app_apk, _validation_timeout(), quiet=True)
+    except ToolExecutionError:
+        return None  # unsigned -> verify exits non-zero
+    return apksigner.parse_verify_output(out)
+
+
+def build_report(registry: ToolRegistry, ws: Workspace) -> Report:
+    """Assemble a facts-only Report for a populated workspace (findings empty for now)."""
+    meta = ws.read_meta()
+    if meta is None:
+        raise ValueError(f"workspace {ws.root} has no marker; run `dumpa analyze` first")
+
+    badging = _read_badging(registry, ws)
+    signer = _read_signer(registry, ws)
+    schemes = list(signer.schemes) if signer else []
+
+    facts = AppFacts(
+        input_sha256=meta.input_sha256,
+        input_size=meta.input_size,
+        package=badging.package,
+        version_name=badging.version_name,
+        version_code=badging.version_code,
+        min_sdk=badging.min_sdk,
+        target_sdk=badging.target_sdk,
+        abis=list(badging.abis),
+        permissions=list(badging.permissions),
+        signer_cert_sha256=signer.cert_sha256 if signer else None,
+        signing_schemes=schemes,
+    )
+
+    warnings: list[str] = []
+    if not schemes:
+        warnings.append("apk is unsigned")
+
+    return Report(
+        dumpa_version=__version__,
+        created=datetime.datetime.now(datetime.UTC).isoformat(),
+        input_path=meta.input_path,
+        facts=facts,
+        tool_versions=dict(meta.tool_versions),
+        findings=[],
+        warnings=warnings,
+    )
