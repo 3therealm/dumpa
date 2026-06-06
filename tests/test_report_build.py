@@ -31,10 +31,21 @@ def test_build_report_facts_from_marker(tmp_path: Path) -> None:
     assert report.facts.input_sha256 == "c" * 64
     assert report.facts.input_size == 999
     assert report.tool_versions == {"apktool": "3.0.2"}
-    assert report.findings == []
+    assert report.findings == []          # manifest-only tree -> no engine detected
+    assert report.facts.engine is None
     # corrupt/unsigned synthetic apk -> unsigned warning, no schemes
     assert "apk is unsigned" in report.warnings
     assert report.facts.signing_schemes == []
+
+
+def test_build_report_detects_engine(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path / "ws")
+    (ws.extracted_dir / "lib" / "arm64-v8a").mkdir(parents=True)
+    (ws.extracted_dir / "lib" / "arm64-v8a" / "libil2cpp.so").write_bytes(b"\x7fELF")
+    report = build_report(build_default_registry(), ws)
+    assert report.facts.engine == "Unity"
+    assert any(f.kind == "engine" and f.subject == "Unity" for f in report.findings)
+    assert any(f.kind == "engine-detail" for f in report.findings)
 
 
 def test_report_json_file_round_trip(tmp_path: Path) -> None:

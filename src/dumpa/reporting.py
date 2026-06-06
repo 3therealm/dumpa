@@ -1,9 +1,9 @@
 """Build a unified Report from a workspace.
 
 This is the one place that turns external-tool output (aapt badging, apksigner
-verify) plus the workspace marker into the pure `core.report` model. Scanners (Phase
-5+) will append `Finding`s here; for now the report is facts-only with an empty
-findings list, which is exactly the "model before any scanner" Phase 2 ordering.
+verify), the registered scanners, and the workspace marker into the pure
+`core.report` model. Scanners (engine detection from Phase 4 onward) contribute the
+findings; the rest is the facts header.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from dumpa.core.errors import ToolExecutionError, ToolNotFoundError
 from dumpa.core.report import AppFacts, Report
 from dumpa.core.tools import ToolRegistry
 from dumpa.core.workspace import Workspace
+from dumpa.scanners import primary_engine, run_all
 from dumpa.tools import aapt, apksigner
 
 logger = logging.getLogger("dumpa")
@@ -57,6 +58,8 @@ def build_report(registry: ToolRegistry, ws: Workspace) -> Report:
     signer = _read_signer(registry, ws)
     schemes = list(signer.schemes) if signer else []
 
+    findings = run_all(ws)
+
     facts = AppFacts(
         input_sha256=meta.input_sha256,
         input_size=meta.input_size,
@@ -65,6 +68,7 @@ def build_report(registry: ToolRegistry, ws: Workspace) -> Report:
         version_code=badging.version_code,
         min_sdk=badging.min_sdk,
         target_sdk=badging.target_sdk,
+        engine=primary_engine(findings),
         abis=list(badging.abis),
         permissions=list(badging.permissions),
         signer_cert_sha256=signer.cert_sha256 if signer else None,
@@ -81,6 +85,6 @@ def build_report(registry: ToolRegistry, ws: Workspace) -> Report:
         input_path=meta.input_path,
         facts=facts,
         tool_versions=dict(meta.tool_versions),
-        findings=[],
+        findings=findings,
         warnings=warnings,
     )
