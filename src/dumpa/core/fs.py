@@ -75,7 +75,7 @@ def delete_file_if_exists(path_to_file: Path) -> None:
         path_to_file.unlink()
 
 
-def _link_or_copy(src: Any, dst: Any, *, follow_symlinks: bool = True) -> None:
+def link_or_copy(src: Any, dst: Any, *, follow_symlinks: bool = True) -> None:
     """Hardlink src→dst when same FS; fall back to data copy on EXDEV/EPERM.
 
     Hardlinks are zero-copy: a 2nd dirent pointing at the same inode. Since the

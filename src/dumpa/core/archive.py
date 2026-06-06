@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path, PurePosixPath
 from zipfile import ZipFile
 
-from dumpa.core.env import _env_positive_int
+from dumpa.core.env import env_positive_int
 from dumpa.core.errors import UnsafeArchiveError
 
 const_env_max_xapk_entries = 'DUMPA_MAX_ZIP_ENTRIES'
@@ -20,8 +20,8 @@ _ZIP_SYMLINK_MODE = 0o120000
 def _zip_limits() -> tuple[int, int]:
     """Return configured (max_entries, max_uncompressed_bytes) limits."""
     return (
-        _env_positive_int(const_env_max_xapk_entries, const_default_max_xapk_entries),
-        _env_positive_int(const_env_max_xapk_uncompressed, const_default_max_xapk_uncompressed),
+        env_positive_int(const_env_max_xapk_entries, const_default_max_xapk_entries),
+        env_positive_int(const_env_max_xapk_uncompressed, const_default_max_xapk_uncompressed),
     )
 
 
@@ -44,7 +44,7 @@ def _safe_zip_member_path(name: str) -> PurePosixPath:
     return path
 
 
-def _safe_extract_zip(zip_path: Path, dest: Path) -> None:
+def safe_extract_zip(zip_path: Path, dest: Path) -> None:
     """Extract a zip into dest, rejecting traversal, symlinks, duplicates, and oversized archives.
 
     Python's ZipFile.extractall sanitizes `..` and absolute paths since 3.6.2 but

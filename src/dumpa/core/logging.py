@@ -18,6 +18,6 @@ def _sanitize_log_value(value: object) -> str:
     return re.sub(r'[\x00-\x1f\x7f-\x9f]', '?', str(value))
 
 
-def _format_command(cmd: list[str]) -> str:
+def format_command(cmd: list[str]) -> str:
     """Return a shell-like command string for logs without invoking a shell."""
     return ' '.join(shlex.quote(_sanitize_log_value(part)) for part in cmd)

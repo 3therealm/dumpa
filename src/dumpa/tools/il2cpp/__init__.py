@@ -17,6 +17,11 @@ from dumpa.core.tools import ResolvedTool
 
 logger = logging.getLogger("dumpa")
 
+def _empty_artifacts() -> dict[str, Path]:
+    """Typed default factory for the artifacts map (keeps inference concrete)."""
+    return {}
+
+
 _METADATA_NAME = 'global-metadata.dat'
 _BINARY_NAME = 'libil2cpp.so'
 # Preference when an apk ships multiple ABIs and the user did not pin one.
@@ -36,7 +41,7 @@ class Il2CppResult:
     """What an engine produced."""
     engine: str
     out_dir: Path
-    artifacts: dict[str, Path] = field(default_factory=dict)
+    artifacts: dict[str, Path] = field(default_factory=_empty_artifacts)
 
 
 class Il2CppEngine(Protocol):

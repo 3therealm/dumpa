@@ -27,6 +27,10 @@ class Il2CppInspectorEngine:
     def dump(self, tool: ResolvedTool, inputs: Il2CppInputs, out_dir: Path) -> Il2CppResult:
         out_dir.mkdir(parents=True, exist_ok=True)
         cs_out = out_dir / 'dump.cs'
+        # out_dir may be reused; drop a stale dump.cs so the existence check below
+        # reflects this run rather than a prior one.
+        if cs_out.exists():
+            cs_out.unlink()
         run(tool.argv('-i', str(inputs.binary), '-m', str(inputs.metadata), '--cs-out', str(cs_out)),
             fail_msg='Il2CppInspector failed')
         artifacts = {'dump_cs': cs_out} if cs_out.exists() else {}

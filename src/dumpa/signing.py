@@ -11,8 +11,8 @@ from dumpa.core.config import (
     const_default_validation_timeout,
     const_env_validation_timeout,
 )
-from dumpa.core.env import _env_positive_int
-from dumpa.core.errors import ToolExecutionError, ToolNotFoundError
+from dumpa.core.env import env_positive_int
+from dumpa.core.errors import ConfigError, ToolExecutionError, ToolNotFoundError
 from dumpa.core.process import run
 from dumpa.core.tools import ToolRegistry
 
@@ -33,12 +33,12 @@ def preflight_keystore(sign: SigningConfig, registry: ToolRegistry) -> None:
                 '-alias', sign.key_alias,
                 '-storepass:env', sign.keystore_password_env,
             ),
-            timeout=_env_positive_int(const_env_validation_timeout, const_default_validation_timeout),
+            timeout=env_positive_int(const_env_validation_timeout, const_default_validation_timeout),
             capture_stdout=True,
             capture_stderr=True,
         )
     except ToolExecutionError as e:
-        raise SystemExit('keystore preflight failed; check keystore path, alias, and password') from e
+        raise ToolExecutionError('keystore preflight failed; check keystore path, alias, and password') from e
 
     m = re.search(r'Valid from:.*?until:\s*(.+)$', proc.stdout or '', re.MULTILINE)
     if not m:
@@ -57,6 +57,6 @@ def preflight_keystore(sign: SigningConfig, registry: ToolRegistry) -> None:
     now = datetime.datetime.now(expiry.tzinfo) if expiry.tzinfo else datetime.datetime.now()  # noqa: DTZ005
     days_left = (expiry - now).days
     if days_left < 0:
-        raise SystemExit(f'keystore certificate expired on {expiry_str}')
+        raise ConfigError(f'keystore certificate expired on {expiry_str}')
     if days_left < 90:
         logger.warning("keystore cert expires in %s days (%s)", days_left, expiry_str)

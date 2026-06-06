@@ -17,7 +17,7 @@ import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from dumpa.core.errors import ConfigError
 
@@ -37,6 +37,11 @@ const_il2cpp_engines = ('dumper', 'inspector')
 const_config_filename = 'dumpa.toml'
 
 
+def _empty_str_map() -> dict[str, str]:
+    """Typed default factory for str->str config maps (keeps inference concrete)."""
+    return {}
+
+
 @dataclass(frozen=True)
 class SigningConfig:
     """Resolved signing parameters. Passwords live in the named env vars, not here."""
@@ -51,7 +56,7 @@ class SigningConfig:
 class Config:
     """Top-level resolved configuration."""
     signing: SigningConfig | None = None
-    tool_paths: dict[str, str] = field(default_factory=dict)
+    tool_paths: dict[str, str] = field(default_factory=_empty_str_map)
     il2cpp_engine: str = const_default_il2cpp_engine
 
 
@@ -86,10 +91,12 @@ def _load_toml(path: Path | None) -> dict[str, Any]:
 
 
 def _section(toml: dict[str, Any], name: str) -> dict[str, Any]:
-    sec = toml.get(name, {})
+    sec = toml.get(name)
+    if sec is None:
+        return {}
     if not isinstance(sec, dict):
         raise ConfigError(f"[{name}] must be a table")
-    return sec
+    return cast("dict[str, Any]", sec)
 
 
 def _positive_int_or_none(raw: object, label: str) -> int | None:

@@ -10,6 +10,7 @@ already includes any required `dotnet` prefix.
 from __future__ import annotations
 
 import logging
+import shutil
 from pathlib import Path
 
 from dumpa.core.errors import DumpaError, ToolExecutionError
@@ -34,6 +35,15 @@ class Il2CppDumperEngine:
 
     def dump(self, tool: ResolvedTool, inputs: Il2CppInputs, out_dir: Path) -> Il2CppResult:
         out_dir.mkdir(parents=True, exist_ok=True)
+        # Clear this run's artifacts first: out_dir may be reused (default
+        # <stem>-il2cpp), and the success check below is "did dump.cs land?".
+        # A stale dump.cs from a prior run would otherwise mask a failed run.
+        for _key, fname in _ARTIFACTS:
+            stale = out_dir / fname
+            if stale.is_dir():
+                shutil.rmtree(stale, ignore_errors=True)
+            elif stale.exists():
+                stale.unlink()
         dump_cs = out_dir / 'dump.cs'
         try:
             run(tool.argv(str(inputs.binary), str(inputs.metadata), str(out_dir)),

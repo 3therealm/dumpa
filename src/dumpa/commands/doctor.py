@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dumpa.core.config import load_config
-from dumpa.core.tools import build_default_registry
+from dumpa.core.tools import ProbeResult, build_default_registry
 
 
 def doctor() -> None:
@@ -12,7 +12,7 @@ def doctor() -> None:
     results = registry.probe_all()
     name_width = max(len(r.spec.name) for r in results)
 
-    missing_required = []
+    missing_required: list[ProbeResult] = []
     for r in results:
         if r.found:
             mark, status = "+", "ok"

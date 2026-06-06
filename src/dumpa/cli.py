@@ -26,7 +26,7 @@ app = typer.Typer(
 
 
 @app.callback()
-def _root(
+def root(
     debug: bool = typer.Option(False, "--debug", help="Enable debug logging and full tracebacks."),
 ) -> None:
     """Unity/Android reverse-engineering toolkit."""

@@ -1,10 +1,9 @@
 # dumpa configuration — EXAMPLE
 #
 # Copy to one of these locations (first match wins):
-#   1.  the path given to --config / load_config(explicit_path)   (highest priority)
-#   2.  $DUMPA_CONFIG                                             (any .toml path)
-#   3.  ./dumpa.toml                                             (current directory)
-#   4.  ~/.config/dumpa/config.toml  ($XDG_CONFIG_HOME/dumpa/)   (lowest priority)
+#   1.  $DUMPA_CONFIG                                             (any .toml path)
+#   2.  ./dumpa.toml                                             (current directory)
+#   3.  ~/.config/dumpa/config.toml  ($XDG_CONFIG_HOME/dumpa/)   (lowest priority)
 #
 #   cp dumpa.toml.example dumpa.toml      # then edit
 #

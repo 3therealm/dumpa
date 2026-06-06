@@ -9,9 +9,9 @@ import tempfile
 from pathlib import Path
 from typing import BinaryIO
 
-from dumpa.core.env import _env_positive_int
+from dumpa.core.env import env_positive_int
 from dumpa.core.errors import ToolExecutionError, ToolTimeoutError
-from dumpa.core.logging import _format_command
+from dumpa.core.logging import format_command
 
 logger = logging.getLogger("dumpa")
 
@@ -58,7 +58,7 @@ def run(cmd: list[str],
     if extra_env:
         env = os.environ.copy()
         env.update(extra_env)
-    resolved_timeout = timeout or _env_positive_int(const_env_tool_timeout, const_default_tool_timeout)
+    resolved_timeout = timeout or env_positive_int(const_env_tool_timeout, const_default_tool_timeout)
 
     with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
         try:
@@ -74,7 +74,7 @@ def run(cmd: list[str],
         except subprocess.TimeoutExpired as e:
             stderr_tail = _read_output_tail(stderr_file)
             stdout_tail = _read_output_tail(stdout_file, max_lines=20)
-            logger.error("command timed out after %ss: %s", resolved_timeout, _format_command(cmd))
+            logger.error("command timed out after %ss: %s", resolved_timeout, format_command(cmd))
             if stderr_tail:
                 logger.error("stderr tail:\n%s", stderr_tail)
             if stdout_tail:
@@ -86,7 +86,7 @@ def run(cmd: list[str],
         if proc.returncode != 0:
             stderr_tail = _read_output_tail(stderr_file)
             stdout_tail = _read_output_tail(stdout_file, max_lines=20)
-            logger.error("command failed (rc=%s): %s", proc.returncode, _format_command(cmd))
+            logger.error("command failed (rc=%s): %s", proc.returncode, format_command(cmd))
             if stderr_tail:
                 logger.error("stderr tail:\n%s", stderr_tail)
             if stdout_tail:

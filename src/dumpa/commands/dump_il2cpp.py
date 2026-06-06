@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from dumpa.core.archive import _safe_extract_zip
+from dumpa.core.archive import safe_extract_zip
 from dumpa.core.config import load_config
 from dumpa.core.errors import DumpaError
 from dumpa.core.fs import working_tmp_dir
@@ -30,7 +30,7 @@ def dump_il2cpp(apk_file: Path, *, engine: str | None = None,
     logger.info("dump-il2cpp: engine=%s apk=%s", engine_name, apk_abs.name)
     with working_tmp_dir(apk_abs.parent) as tmp:
         extracted = tmp / 'extracted'
-        _safe_extract_zip(apk_abs, extracted)
+        safe_extract_zip(apk_abs, extracted)
         candidates = find_il2cpp_inputs(extracted, arch)
         if not candidates:
             detail = f" for arch {arch!r}" if arch else ""

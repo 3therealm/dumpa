@@ -200,7 +200,7 @@ def _resolve_command(command: str) -> tuple[str, ...] | None:
 
 
 def _missing_message(specs: list[ToolSpec]) -> str:
-    parts = []
+    parts: list[str] = []
     for s in specs:
         candidates = ' / '.join(s.executables)
         hint = f' — {s.install_hint}' if s.install_hint else ''

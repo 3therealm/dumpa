@@ -12,7 +12,7 @@ import os
 import re
 from pathlib import Path
 
-from dumpa.core.errors import DumpaError, ToolExecutionError, ToolTimeoutError
+from dumpa.core.errors import ConfigError, DumpaError, ToolExecutionError, ToolTimeoutError
 from dumpa.core.process import run
 from dumpa.core.tools import ResolvedTool
 
@@ -25,7 +25,7 @@ def _jvm_env() -> dict[str, str]:
     """Build extra-env dict that lifts apktool's JVM heap above the wrapper's 1G default."""
     heap = os.environ.get(const_env_jvm_heap, '2048m').strip() or '2048m'
     if not re.fullmatch(r'[1-9][0-9]*[kKmMgG]?', heap):
-        raise SystemExit(f'{const_env_jvm_heap} must look like 2048m, 2g, or 1024')
+        raise ConfigError(f'{const_env_jvm_heap} must look like 2048m, 2g, or 1024')
     # `_JAVA_OPTIONS` is appended after command-line args, so it overrides the
     # `-Xmx1024M` set by the apktool bash wrapper.
     return {'_JAVA_OPTIONS': f'-Xmx{heap}'}

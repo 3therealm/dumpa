@@ -76,9 +76,18 @@ src/dumpa/
   commands/
     __init__.py            # COMMANDS registry
     base.py                # Command protocol
-    convert.py             # xapk → apk pipeline (current phase_* funcs)
+    convert.py             # thin entry: argv glue, cProfile wrapper, run_convert
     dump_il2cpp.py
     doctor.py
+  convert/                 # xapk → apk pipeline (split out of commands/convert.py)
+    models.py              # constants + ApkPart / StepFailure / ApktoolConfig
+    apktool_config.py      # apktool.yml doNotCompress parse/merge
+    classify.py            # split-type classification
+    merge.py               # arch/dpi/locale/assetpack merge + dpi prioritization
+    manifest.py            # signature/dummy strip + manifest rewrite
+    build.py               # unpack / pack / zipalign / sign
+    validate.py            # post-build integrity report
+    pipeline.py            # phase_* funcs + convert_xapk (owns the registry)
   signing.py               # SignConfig + preflight (consumes config, used by convert)
 docs/architecture.md
 pyproject.toml             # requires-python>=3.14; [project.scripts] dumpa=dumpa.cli:app
@@ -286,16 +295,16 @@ extract_xapk → classify_splits → unpack_splits → merge_splits
             → finalize_main_apk → build_and_sign → report
 ```
 
-| Old function | New home |
+| Function | Home |
 |---|---|
-| `phase_extract_xapk` | `commands/convert.py` (uses `core.archive`) |
-| `phase_classify_splits`, `determine_split_type_*` | `commands/convert.py` |
-| `phase_unpack_splits`, `unpack_apk` | command + `tools/apktool.decode` |
-| `phase_merge_splits`, `merge_apk_*` | `commands/convert.py` |
-| `phase_finalize_main_apk`, `update_main_manifest_file`, `strip_apktool_dummies` | command |
-| `build_single_apk`, `pack_apk`, `zipalign_apk` | `tools/apktool.build` + `tools/zipalign.align` |
-| `sign_apk`, `load_sign_env`, `preflight_keystore` | `signing.py` + `tools/apksigner` |
-| `report_output_apk`, `verify_*`, `_parse_aapt_badging` | command + `tools/aapt` |
+| `phase_extract_xapk` | `convert/pipeline.py` (uses `core.archive`) |
+| `phase_classify_splits`, `determine_split_type_*` | `convert/pipeline.py` + `convert/classify.py` |
+| `phase_unpack_splits`, `unpack_apk` | `convert/pipeline.py` + `convert/build.py` → `tools/apktool.decode` |
+| `phase_merge_splits`, `merge_apk_*` | `convert/pipeline.py` + `convert/merge.py` |
+| `phase_finalize_main_apk`, `update_main_manifest_file`, `strip_apktool_dummies` | `convert/pipeline.py` + `convert/manifest.py` |
+| `build_single_apk`, `pack_apk`, `zipalign_apk`, `sign_apk` | `convert/build.py` → `tools/apktool.build` + `tools/zipalign.align` + `tools/apksigner` |
+| `preflight_keystore` | `signing.py` + `tools/apksigner` |
+| `report_output_apk`, `verify_*`, `_parse_aapt_badging` | `convert/validate.py` → `tools/aapt` |
 
 `required_tools = ("apktool", "zipalign", "apksigner", "aapt")`.
 Output: a `WorkUnit` with `apk_path` set.
@@ -398,7 +407,8 @@ sequenceDiagram
 | `DumpaError` (other) | 1 | generic toolkit failure |
 | unexpected `Exception` | 2 | bug; full traceback at `--debug` |
 
-`cli.py` owns the single try/except that maps these; commands raise, never `sys.exit`.
+`commands/base.py:run_command` owns the single try/except that maps these; the
+non-CLI layers raise `DumpaError` subclasses, never `sys.exit`.
 
 ## 10. Migration order (low-risk, incremental)
 
