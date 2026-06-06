@@ -5,6 +5,9 @@ description = "Unity/Android reverse-engineering toolkit (xapk->apk conversion, 
 readme = "README.md"
 requires-python = ">=3.14"
 license = { file = "LICENSE.md" }
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+]
 dependencies = [
     "typer>=0.12",
 ]

@@ -16,7 +16,6 @@ __pycache__/
 /xapktoapk.sign.properties
 
 # Local-only docs (kept on disk, not tracked)
-/LICENSE.md
 /PHASE-1-DESIGN.md
 /PHASE-1-REQUIREMENTS.md
 /ROADMAP.md
