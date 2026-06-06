@@ -2,26 +2,42 @@
 
 from __future__ import annotations
 
-import datetime
-import errno
-import functools
 import json
+import logging
 import os
-import platform
 import re
 import shutil
-import subprocess
 import sys
-from contextlib import contextmanager
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Generator, Iterable, Iterator
-from zipfile import ZipFile
+from typing import Any
+from zipfile import BadZipFile, ZipFile
+
+from dumpa.commands.base import run_command
+from dumpa.core.archive import _safe_extract_zip
+from dumpa.core.config import (
+    SigningConfig,
+    const_default_validation_timeout,
+    const_env_validation_timeout,
+    load_config,
+)
+from dumpa.core.env import _env_positive_int
+from dumpa.core.errors import (
+    ManifestError,
+    ToolExecutionError,
+    ToolNotFoundError,
+    XapkToApkError,
+)
+from dumpa.core.fs import _link_or_copy, delete_file_if_exists, working_tmp_dir
+from dumpa.core.logging import configure_logging
+from dumpa.core.tools import ResolvedTool, build_default_registry
+from dumpa.signing import preflight_keystore
+from dumpa.tools import aapt, apksigner, apktool, zipalign
 
 # === SECTION: Constants ===
 
-const_dir_tmp = ".xapktoapk"
 const_file_target_file = "target"
 const_ext_apk = ".apk"
 const_ext_xapk = ".xapk"
@@ -45,27 +61,17 @@ const_suffix_apk_split_type_assetpack = "assetpack.apk"
 const_apk_file_apktool_config = 'apktool.yml'
 const_apk_dir_lib = 'lib'
 
-const_env_keystore_file = 'XAPKTOAPK_KEYSTORE_FILE'
-const_env_keystore_password = 'XAPKTOAPK_KEYSTORE_PASSWORD'
-const_env_key_alias = 'XAPKTOAPK_KEY_ALIAS'
-const_env_key_password = 'XAPKTOAPK_KEY_PASSWORD'
-const_env_min_sdk_version = 'XAPKTOAPK_MIN_SDK_VERSION'
-const_env_profile = 'XAPKTOAPK_PROFILE'
-const_env_unpack_workers = 'XAPKTOAPK_UNPACK_WORKERS'
-const_env_jvm_heap = 'XAPKTOAPK_JVM_HEAP'  # `-Xmx` value for apktool JVMs; default 2048m
+const_env_profile = 'DUMPA_PROFILE'
+const_env_unpack_workers = 'DUMPA_UNPACK_WORKERS'
+
+logger = logging.getLogger("dumpa")
+
+# Single registry instance for the run: resolves once, reused across phases so the
+# parallel unpack does not re-probe apktool for every split.
+_REGISTRY = build_default_registry()
 
 
 # === SECTION: Data classes ===
-
-@dataclass(frozen=True)
-class SignConfig:
-    """Signing parameters resolved from environment."""
-    keystore_file: Path
-    key_alias: str
-    min_sdk_version: int | None = None
-    keystore_password_env: str = const_env_keystore_password
-    key_password_env: str = const_env_key_password
-
 
 @dataclass
 class ApkPart:
@@ -98,11 +104,12 @@ class ApktoolConfig:
 
 def print_help() -> None:
     """Print CLI usage."""
-    print("")
-    print("XapkToApk is a tool that converts .xapk file into .apk file")
-    print("Can be useful if you want to build a classic fat apk from splitted app bundle")
-    print("Usage: python xapktoapk.py PATH_TO_FILE.xapk")
-    print("")
+    sys.stdout.write(
+        "\n"
+        "Convert a split .xapk bundle into a single installable .apk.\n"
+        "Usage: dumpa convert PATH_TO_FILE.xapk\n"
+        "\n"
+    )
 
 
 def get_param_xapk_file_name() -> str:
@@ -122,128 +129,13 @@ def check_sys_args() -> bool:
     name = get_param_xapk_file_name()
     if not name.endswith(const_ext_xapk):
         return False
-    return Path(name).resolve().exists()
+    return Path(name).resolve().is_file()
 
 
 def file_split_name_and_extension(file_path: str) -> tuple[str, str]:
     """Split a filename into (stem, suffix); suffix includes the leading dot."""
     p = Path(file_path)
     return p.stem, p.suffix
-
-
-# === SECTION: Subprocess primitives ===
-
-def run(cmd: list[str],
-        cwd: Path | None = None,
-        fail_msg: str | None = None,
-        extra_env: dict[str, str] | None = None,
-        ) -> subprocess.CompletedProcess[str]:
-    """Run a subprocess; on nonzero rc, print captured output and raise."""
-    env: dict[str, str] | None = None
-    if extra_env:
-        env = os.environ.copy()
-        env.update(extra_env)
-    proc = subprocess.run(cmd, cwd=str(cwd) if cwd else None,
-                          env=env, capture_output=True, text=True)
-    if proc.returncode != 0:
-        stderr_tail = '\n'.join((proc.stderr or '').splitlines()[-50:])
-        stdout_tail = '\n'.join((proc.stdout or '').splitlines()[-20:])
-        sys.stderr.write(f'[!] command failed (rc={proc.returncode}): {" ".join(cmd)}\n')
-        if stderr_tail:
-            sys.stderr.write(f'[!] stderr:\n{stderr_tail}\n')
-        if stdout_tail:
-            sys.stderr.write(f'[!] stdout:\n{stdout_tail}\n')
-        raise Exception(fail_msg or f'command failed: {cmd[0]}')
-    return proc
-
-
-@functools.lru_cache(maxsize=None)
-def resolve_executable(name: str) -> tuple[str, ...] | None:
-    """Resolve an executable name to argv prefix; check $PATH then .bat fallback.
-
-    Cached: the lookup hits the filesystem (which/stat) and is invoked many times
-    across splits — apktool especially. Cache lifetime = single process run.
-    """
-    direct = shutil.which(name)
-    if direct is not None:
-        return (direct,)
-    batch = get_path_to_batch(name)
-    if batch is not None:
-        return (batch,)
-    return None
-
-
-def is_windows() -> bool:
-    """Return True if running on Windows."""
-    return platform.system() == "Windows"
-
-
-def windows_hide_file(file_path: Path) -> None:
-    """Set hidden attribute on a Windows path; return code ignored."""
-    subprocess.run(["attrib", "+h", str(file_path)], capture_output=True)
-
-
-def check_if_executable_exists_in_path(executable: str) -> bool:
-    """Return True if executable resolves via shutil.which."""
-    return shutil.which(executable) is not None
-
-
-def get_executable_in_path(executable: str) -> str | None:
-    """Return the resolved path for an executable on PATH, or None."""
-    return shutil.which(executable)
-
-
-def get_path_to_batch(batch: str) -> str | None:
-    """Find a `<name>.bat` on PATH (Windows fallback for shutil.which gaps)."""
-    path_env = os.environ.get('PATH', '')
-    if not path_env:
-        return None
-    name = f'{batch}.bat'
-    for path in path_env.split(os.pathsep):
-        if not path:
-            continue
-        candidate = Path(path) / name
-        if candidate.is_file():
-            return str(candidate)
-    return None
-
-
-# === SECTION: Path helpers ===
-
-def create_or_recreate_dir(dir_path: Path) -> None:
-    """Wipe and recreate a directory (or replace a file at the same path)."""
-    if dir_path.exists():
-        if dir_path.is_dir():
-            shutil.rmtree(dir_path)
-        else:
-            dir_path.unlink()
-    dir_path.mkdir()
-    if is_windows():
-        windows_hide_file(dir_path)
-
-
-@contextmanager
-def working_tmp_dir(parent: Path) -> Generator[Path, None, None]:
-    """Create the .xapktoapk tmp dir and clean it up on exit even when interrupted.
-
-    Set XAPKTOAPK_KEEP_TMP=1 to retain the tmp dir after the run (debug aid).
-    """
-    tmp = (parent / const_dir_tmp).absolute()
-    create_or_recreate_dir(tmp)
-    keep = os.environ.get('XAPKTOAPK_KEEP_TMP', '') == '1'
-    try:
-        yield tmp
-    finally:
-        if not keep and tmp.exists():
-            shutil.rmtree(tmp, ignore_errors=True)
-        elif keep:
-            print(f'[D] tmp retained: {tmp}')
-
-
-def delete_file_if_exists(path_to_file: Path) -> None:
-    """Remove a file if present; silent no-op otherwise."""
-    if path_to_file.exists():
-        path_to_file.unlink()
 
 
 # === SECTION: Apktool config parsing ===
@@ -337,7 +229,7 @@ def get_main_apk(parts: Iterable[ApkPart]) -> ApkPart:
     """Return the unique main APK; raises if not present."""
     mains = get_apks_of_type(parts, const_split_apk_type_main)
     if not mains:
-        raise Exception("no main APK found in xapk bundle")
+        raise XapkToApkError("no main APK found in xapk bundle")
     return mains[0]
 
 
@@ -358,24 +250,6 @@ def iter_resource_files(res_dir: Path, skip_parts: tuple[str, ...] | None) -> It
             if skip_parts and rel.parts[-len(skip_parts):] == skip_parts:
                 continue
             yield src, rel
-
-
-def _link_or_copy(src: Any, dst: Any, *, follow_symlinks: bool = True) -> None:
-    """Hardlink src→dst when same FS; fall back to data copy on EXDEV/EPERM.
-
-    Hardlinks are zero-copy: a 2nd dirent pointing at the same inode. Since the
-    merge tmp dir lives on the same FS as the unpacked split dirs, near every
-    merged file is link-able — slashing wall time on resource/asset-heavy splits.
-    Safe here: split dirs are read-only after unpack and are wiped at run end.
-    """
-    src_str = str(src)
-    dst_str = str(dst)
-    try:
-        os.link(src_str, dst_str)
-    except OSError as e:
-        if e.errno not in (errno.EXDEV, errno.EPERM):
-            raise
-        shutil.copy(src_str, dst_str, follow_symlinks=follow_symlinks)
 
 
 def copy_resource_file(src: Path, dst: Path) -> None:
@@ -492,200 +366,75 @@ _UNPACK_FLAGS_BY_TYPE: dict[str, tuple[str, ...]] = {
 }
 
 
-def _apktool_jvm_env() -> dict[str, str]:
-    """Build extra-env dict that lifts apktool's JVM heap above the wrapper's 1G default."""
-    heap = os.environ.get(const_env_jvm_heap, '2048m').strip() or '2048m'
-    # `_JAVA_OPTIONS` is appended after command-line args, so it overrides the
-    # `-Xmx1024M` set by the apktool bash wrapper.
-    return {'_JAVA_OPTIONS': f'-Xmx{heap}'}
-
-
-def unpack_apk(path_dir_tmp: Path, apk_file: str, split_type: str) -> None:
-    """Unpack a single APK into the tmp dir via `apktool d` with type-specific flags.
-
-    On first failure, retries once with `-f --keep-broken-res` — some splits carry
-    minor resource quirks (orphan attr refs, mangled types) that the strict path
-    rejects but that aapt2 will still link at rebuild after we strip the dummies.
-    """
-    apktool = resolve_executable('apktool')
-    if apktool is None:
-        raise Exception("apktool not found in PATH")
+def unpack_apk(tool: ResolvedTool, path_dir_tmp: Path, apk_file: str, split_type: str) -> None:
+    """Unpack a single APK into the tmp dir via apktool, then delete the source split."""
     flags = _UNPACK_FLAGS_BY_TYPE.get(split_type, ('-s',))
-    # `--` sentinel prevents a malicious split filename like `-Dfoo.apk` from being parsed as a flag.
-    cmd = [*apktool, 'd', *flags, '--', apk_file]
-    try:
-        run(cmd, cwd=path_dir_tmp,
-            fail_msg=f'failed to unpack {apk_file}',
-            extra_env=_apktool_jvm_env())
-    except Exception:  # noqa: BLE001 - retry on any apktool failure; second pass uses --keep-broken-res to tolerate non-fatal res quirks
-        sys.stderr.write(f'[!] retry unpack with --keep-broken-res: {apk_file}\n')
-        run([*apktool, 'd', *flags, '-f', '--keep-broken-res', '--', apk_file],
-            cwd=path_dir_tmp,
-            fail_msg=f'failed to unpack {apk_file} (even with --keep-broken-res)',
-            extra_env=_apktool_jvm_env())
+    apktool.decode(tool, apk_file, path_dir_tmp, flags)
     (path_dir_tmp / apk_file).unlink()
 
 
-def pack_apk(path_dir_tmp: Path, main_apk_dir: Path) -> None:
-    """Repack the merged main APK dir via `apktool b` into tmp/target.apk."""
-    print('[*] repack apk')
-    apktool = resolve_executable('apktool')
-    if apktool is None:
-        raise Exception("apktool not found in PATH")
-    run([*apktool, 'b', '--', str(main_apk_dir)], cwd=path_dir_tmp,
-        fail_msg=f'failed to pack {main_apk_dir.name}',
-        extra_env=_apktool_jvm_env())
-    built = main_apk_dir / 'dist' / f'{main_apk_dir.name}{const_ext_apk}'
-    if not built.exists():
-        raise Exception("result apk not found")
+def pack_apk(tool: ResolvedTool, path_dir_tmp: Path, main_apk_dir: Path) -> None:
+    """Repack the merged main APK dir via apktool into tmp/target.apk."""
+    logger.info("repack apk")
+    built = apktool.build(tool, main_apk_dir)
     target = path_dir_tmp / f'{const_file_target_file}{const_ext_apk}'
     # Same-FS rename: instant. No copy of the (possibly hundreds of MB) built apk.
     built.replace(target)
 
 
-def zipalign_apk(path_dir_tmp: Path) -> None:
+def zipalign_apk(tool: ResolvedTool, path_dir_tmp: Path) -> None:
     """Run `zipalign -p -f 4` on tmp/target.apk in-place."""
-    print('[*] zipalign apk')
+    logger.info("zipalign apk")
     target = path_dir_tmp / f'{const_file_target_file}{const_ext_apk}'
     if not target.exists():
-        raise Exception("result apk not found")
+        raise XapkToApkError("result apk not found")
 
     aligned = path_dir_tmp / f'aligned_{const_file_target_file}{const_ext_apk}'
     if aligned.exists():
         aligned.unlink()
 
-    zipalign = resolve_executable('zipalign')
-    if zipalign is None:
-        raise Exception("zipalign not found in PATH")
-    run([*zipalign, '-p', '-f', '4', str(target), str(aligned)],
-        cwd=path_dir_tmp, fail_msg='failed to zipalign apk')
+    zipalign.align(tool, target, aligned)
     if not aligned.exists():
-        raise Exception("failed to zipalign apk (output missing)")
+        raise XapkToApkError("failed to zipalign apk (output missing)")
     aligned.replace(target)
 
 
-def build_single_apk(path_dir_tmp: Path, main_apk_dir: Path, sign: SignConfig | None) -> None:
+def build_single_apk(path_dir_tmp: Path, main_apk_dir: Path, sign: SigningConfig | None) -> None:
     """Repack, zipalign, and optionally sign the merged APK."""
-    pack_apk(path_dir_tmp, main_apk_dir)
-    zipalign_apk(path_dir_tmp)
+    pack_apk(_REGISTRY.resolve('apktool'), path_dir_tmp, main_apk_dir)
+    zipalign_apk(_REGISTRY.resolve('zipalign'), path_dir_tmp)
     if sign is not None:
-        sign_apk(path_dir_tmp, sign)
+        sign_apk(_REGISTRY.resolve('apksigner'), path_dir_tmp, sign)
     else:
-        print('[*] skip signing apk')
+        logger.info("skip signing apk")
 
 
 # === SECTION: Sign + verify ===
 
-def load_sign_env() -> SignConfig | None:
-    """Read XAPKTOAPK_* env vars; return SignConfig if all four creds present, else None."""
-    required = (const_env_keystore_file, const_env_keystore_password,
-                const_env_key_alias, const_env_key_password)
-    vals = {k: os.environ.get(k, '') for k in required}
-    set_count = sum(1 for v in vals.values() if v)
-    if set_count == 0:
-        return None
-    if set_count != len(required):
-        missing = [k for k, v in vals.items() if not v]
-        raise SystemExit(f"signing partially configured; missing: {', '.join(missing)}")
-
-    keystore_file = Path(vals[const_env_keystore_file]).expanduser()
-    if not keystore_file.is_file():
-        raise SystemExit(f"{const_env_keystore_file} not found or not a file: {keystore_file}")
-
-    min_sdk_raw = os.environ.get(const_env_min_sdk_version, '').strip()
-    min_sdk: int | None = None
-    if min_sdk_raw:
-        if not min_sdk_raw.isdigit():
-            raise SystemExit(f"{const_env_min_sdk_version} must be a positive integer")
-        min_sdk = int(min_sdk_raw)
-
-    return SignConfig(
-        keystore_file=keystore_file,
-        key_alias=vals[const_env_key_alias],
-        min_sdk_version=min_sdk,
-    )
-
-
-def preflight_keystore(sign: SignConfig) -> None:
-    """If keytool is available, validate keystore alias and warn on near-expiry certs."""
-    keytool = resolve_executable('keytool')
-    if keytool is None:
-        return
-    try:
-        proc = subprocess.run(
-            [
-                *keytool,
-                '-list', '-v',
-                '-keystore', str(sign.keystore_file),
-                '-alias', sign.key_alias,
-                '-storepass:env', sign.keystore_password_env,
-            ],
-            capture_output=True, text=True, check=False,
-        )
-    except (OSError, FileNotFoundError) as e:
-        sys.stderr.write(f'[!] keystore preflight skipped: {e}\n')
-        return
-    if proc.returncode != 0:
-        sys.stderr.write(proc.stdout or '')
-        sys.stderr.write(proc.stderr or '')
-        raise SystemExit('keystore preflight failed; check keystore path, alias, and password')
-
-    m = re.search(r'Valid from:.*?until:\s*(.+)$', proc.stdout or '', re.MULTILINE)
-    if not m:
-        return
-    expiry_str = m.group(1).strip()
-    expiry: datetime.datetime | None = None
-    # keytool emits locale-dependent dates; %Z may not yield a tz-aware datetime, so we tolerate naive comparison below.
-    for fmt in ('%a %b %d %H:%M:%S %Z %Y', '%a %b %d %H:%M:%S %z %Y'):
-        try:
-            expiry = datetime.datetime.strptime(expiry_str, fmt)  # noqa: DTZ007
-            break
-        except ValueError:
-            continue
-    if expiry is None:
-        return
-    now = datetime.datetime.now(expiry.tzinfo) if expiry.tzinfo else datetime.datetime.now()  # noqa: DTZ005
-    days_left = (expiry - now).days
-    if days_left < 0:
-        raise SystemExit(f'keystore certificate expired on {expiry_str}')
-    if days_left < 90:
-        print(f'[!] warning: keystore cert expires in {days_left} days ({expiry_str})')
-
-
-def sign_apk(path_dir_tmp: Path, sign: SignConfig) -> None:
+def sign_apk(tool: ResolvedTool, path_dir_tmp: Path, sign: SigningConfig) -> None:
     """Sign tmp/target.apk via apksigner; verify v2+v3 schemes; print SHA-256."""
     target = path_dir_tmp / f'{const_file_target_file}{const_ext_apk}'
     if not target.exists():
-        raise Exception("result apk not found")
+        raise XapkToApkError("result apk not found")
 
-    print('[*] resign apk')
-    apksigner = resolve_executable('apksigner')
-    if apksigner is None:
-        raise Exception("apksigner not found in PATH")
+    logger.info("resign apk")
+    apksigner.sign(
+        tool, target,
+        keystore=sign.keystore_file,
+        key_alias=sign.key_alias,
+        keystore_password_env=sign.keystore_password_env,
+        key_password_env=sign.key_password_env,
+        min_sdk_version=sign.min_sdk_version,
+    )
 
-    sign_cmd = [
-        *apksigner,
-        'sign',
-        '--ks', str(sign.keystore_file),
-        '--ks-pass', f'env:{sign.keystore_password_env}',
-        '--ks-key-alias', sign.key_alias,
-        '--key-pass', f'env:{sign.key_password_env}',
-        '--v2-signing-enabled', 'true',
-        '--v3-signing-enabled', 'true',
-    ]
-    if sign.min_sdk_version is not None:
-        sign_cmd += ['--min-sdk-version', str(sign.min_sdk_version)]
-    sign_cmd.append(str(target))
-
-    run(sign_cmd, cwd=path_dir_tmp, fail_msg='failed to sign apk file')
-
-    verify_proc = run([*apksigner, 'verify', '--verbose', '--print-certs', str(target)],
-                      cwd=path_dir_tmp, fail_msg='apksigner verify failed')
-    out = verify_proc.stdout or ''
+    out = apksigner.verify(
+        tool, target,
+        _env_positive_int(const_env_validation_timeout, const_default_validation_timeout),
+    )
     if 'Verified using v2 scheme (APK Signature Scheme v2): true' not in out \
             or 'Verified using v3 scheme (APK Signature Scheme v3): true' not in out:
-        sys.stderr.write(out)
-        raise Exception('apksigner verify did not confirm v2+v3 schemes')
+        logger.error("%s", out)
+        raise XapkToApkError('apksigner verify did not confirm v2+v3 schemes')
 
     sha256: str | None = None
     for line in out.splitlines():
@@ -694,9 +443,9 @@ def sign_apk(path_dir_tmp: Path, sign: SignConfig) -> None:
             sha256 = stripped.split(':', 1)[1].strip()
             break
     if sha256:
-        print(f'[*] signed with SHA-256: {sha256}')
+        logger.info("signed with SHA-256: %s", sha256)
     else:
-        print('[*] signature verified (v2+v3)')
+        logger.info("signature verified (v2+v3)")
 
 
 # === SECTION: Manifest finalization ===
@@ -782,45 +531,31 @@ def update_main_manifest_file(path_main_apk: Path) -> None:
 
 # === SECTION: Validation ===
 
-_aapt_badging_pattern = re.compile(
-    r"package: name='([^']+)' versionCode='([^']*)' versionName='([^']*)'"
-)
-
-
 def _parse_aapt_badging(apk_path: Path) -> tuple[str | None, str | None, str | None]:
-    """Run aapt2/aapt dump badging on apk_path; return (package, versionCode, versionName).
-
-    Returns (None, None, None) if no aapt available or invocation fails — this
-    inspection is opportunistic, never blocking.
-    """
-    aapt = resolve_executable('aapt2') or resolve_executable('aapt')
-    if aapt is None:
-        return (None, None, None)
+    """Read package badging from apk_path via aapt; (None, None, None) if unavailable."""
     try:
-        proc = subprocess.run([*aapt, 'dump', 'badging', str(apk_path)],
-                              capture_output=True, text=True, check=False)
-    except (OSError, FileNotFoundError):
+        tool = _REGISTRY.resolve('aapt')
+    except ToolNotFoundError:
         return (None, None, None)
-    if proc.returncode != 0:
-        return (None, None, None)
-    m = _aapt_badging_pattern.search(proc.stdout or '')
-    if not m:
-        return (None, None, None)
-    return (m.group(1), m.group(2), m.group(3))
+    return aapt.badging(
+        tool, apk_path,
+        _env_positive_int(const_env_validation_timeout, const_default_validation_timeout),
+    )
 
 
 def verify_zipalign(apk_path: Path) -> str | None:
-    """Run `zipalign -c -v 4` to verify alignment; returns error message or None."""
-    zipalign = resolve_executable('zipalign')
-    if zipalign is None:
+    """Verify 4-byte alignment via zipalign; returns error message or None."""
+    try:
+        tool = _REGISTRY.resolve('zipalign')
+    except ToolNotFoundError:
         return None
     try:
-        proc = subprocess.run([*zipalign, '-c', '-v', '4', str(apk_path)],
-                              capture_output=True, text=True, check=False)
-    except (OSError, FileNotFoundError) as e:
-        return f'zipalign verify skipped: {e}'
-    if proc.returncode != 0:
-        return 'zipalign verify failed (alignment broken)'
+        zipalign.check(
+            tool, apk_path,
+            _env_positive_int(const_env_validation_timeout, const_default_validation_timeout),
+        )
+    except ToolExecutionError as e:
+        return str(e)
     return None
 
 
@@ -829,7 +564,7 @@ def verify_zip_crc(apk_path: Path) -> str | None:
     try:
         with ZipFile(apk_path, 'r') as zf:
             bad = zf.testzip()
-    except Exception as e:  # noqa: BLE001 - inspection should never block; report and move on
+    except (BadZipFile, OSError, RuntimeError) as e:
         return f'zip CRC scan failed: {e}'
     if bad:
         return f'zip entry CRC bad: {bad}'
@@ -840,7 +575,7 @@ def report_output_apk(apk_path: Path, expected_pkg: str, signed_expected: bool,
                       input_size_bytes: int) -> None:
     """Inspect the final APK; print a one-line sanity report plus any integrity issues."""
     if not apk_path.is_file():
-        print(f'[!] output apk missing: {apk_path}')
+        logger.warning("output apk missing: %s", apk_path)
         return
 
     size_mb = apk_path.stat().st_size / (1024.0 * 1024.0)
@@ -862,7 +597,7 @@ def report_output_apk(apk_path: Path, expected_pkg: str, signed_expected: bool,
                     has_dex = True
                 elif name.startswith('META-INF/') and (name.endswith('.RSA') or name.endswith('.EC') or name.endswith('.DSA')):
                     has_signature = True
-    except Exception as e:  # noqa: BLE001 - cosmetic inspection
+    except (BadZipFile, OSError, RuntimeError) as e:
         issues.append(f'apk inspect failed: {e}')
 
     if not has_manifest:
@@ -890,44 +625,43 @@ def report_output_apk(apk_path: Path, expected_pkg: str, signed_expected: bool,
     if aapt_ver:
         summary += f', version={aapt_ver}'
     summary += f', signed={has_signature}'
-    print(summary)
+    logger.info("%s", summary)
     if issues:
         for issue in issues:
-            print(f'[!] {issue}')
+            logger.warning("%s", issue)
 
 
 # === SECTION: Phases ===
 
-_ZIP_SYMLINK_MODE = 0o120000
+_package_name_pattern = re.compile(
+    r'^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$'
+)
 
 
-def _safe_extract_zip(zip_path: Path, dest: Path) -> None:
-    """Extract a zip into dest, rejecting absolute paths, `..` segments, and symlink members.
+def load_xapk_manifest(manifest_path: Path) -> dict[str, Any]:
+    """Load and validate the top-level XAPK manifest."""
+    if not manifest_path.is_file():
+        raise ManifestError(f"missing {const_file_xapk_manifest}")
+    try:
+        with manifest_path.open(encoding='UTF-8') as f:
+            manifest = json.load(f)
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise ManifestError(f"invalid {const_file_xapk_manifest}: {e}") from e
 
-    Python's ZipFile.extractall sanitizes `..` and absolute paths since 3.6.2 but
-    will still create symlink entries on POSIX, which can escape the destination.
-    """
-    with ZipFile(zip_path, 'r') as zf:
-        for zinfo in zf.infolist():
-            name = zinfo.filename
-            parts = Path(name).parts
-            if Path(name).is_absolute() or '..' in parts:
-                raise Exception(f"refusing to extract unsafe zip entry: {name}")
-            unix_mode = (zinfo.external_attr >> 16) & 0o170000
-            if unix_mode == _ZIP_SYMLINK_MODE:
-                raise Exception(f"refusing to extract symlink zip entry: {name}")
-            zf.extract(zinfo, dest)
+    if not isinstance(manifest, dict):
+        raise ManifestError(f"{const_file_xapk_manifest} must be a JSON object")
+    package_name = manifest.get(const_file_xapk_manifest_key_package_name)
+    if not isinstance(package_name, str) or not _package_name_pattern.fullmatch(package_name):
+        raise ManifestError(f"{const_file_xapk_manifest} has invalid package_name")
+    return manifest
 
 
 def phase_extract_xapk(xapk_abs_path: Path, tmp: Path) -> dict[str, Any]:
     """Unzip the xapk in place into tmp, parse manifest.json, return the parsed dict."""
-    print('[*] unpacking xapk')
+    logger.info("unpacking xapk")
     _safe_extract_zip(xapk_abs_path, tmp)
 
-    manifest_path = tmp / const_file_xapk_manifest
-    with manifest_path.open(encoding='UTF-8') as f:
-        manifest: dict[str, Any] = json.load(f)
-    return manifest
+    return load_xapk_manifest(tmp / const_file_xapk_manifest)
 
 
 def phase_classify_splits(tmp: Path, package_name: str) -> list[ApkPart]:
@@ -938,7 +672,7 @@ def phase_classify_splits(tmp: Path, package_name: str) -> list[ApkPart]:
             continue
         split_type = determine_split_type_by_apk_file_name(entry.name, package_name)
         if split_type is None:
-            raise Exception(f'failed to determine split type of {entry.name}')
+            raise XapkToApkError(f'failed to determine split type of {entry.name}')
         parts.append(ApkPart(
             file_name=entry.name,
             file_path=entry.resolve(),
@@ -946,7 +680,7 @@ def phase_classify_splits(tmp: Path, package_name: str) -> list[ApkPart]:
             dir_path=(tmp / entry.stem).resolve(),
             split_type=split_type,
         ))
-    print(f'[*] xapk file unpacked. {len(parts)} parts discovered')
+    logger.info("xapk file unpacked; %s parts discovered", len(parts))
     return parts
 
 
@@ -967,25 +701,26 @@ def phase_unpack_splits(tmp: Path, parts: list[ApkPart]) -> None:
     total = len(parts)
     if total == 0:
         return
+    tool = _REGISTRY.resolve('apktool')
     workers = _resolve_unpack_workers(total)
     if workers == 1:
         for index, part in enumerate(parts):
-            print(f'[*] unpacking {index + 1} of {total}')
-            unpack_apk(tmp, part.file_name, part.split_type)
+            logger.info("unpacking %s of %s", index + 1, total)
+            unpack_apk(tool, tmp, part.file_name, part.split_type)
         return
 
     import threading
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    print(f'[*] unpacking {total} splits with {workers} workers')
+    logger.info("unpacking %s splits with %s workers", total, workers)
     counter = [0]
     lock = threading.Lock()
 
     def _task(part: ApkPart) -> None:
-        unpack_apk(tmp, part.file_name, part.split_type)
+        unpack_apk(tool, tmp, part.file_name, part.split_type)
         with lock:
             counter[0] += 1
-            print(f'[*] unpacked {counter[0]} of {total} ({part.file_name})')
+            logger.info("unpacked %s of %s (%s)", counter[0], total, part.file_name)
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futures = [ex.submit(_task, p) for p in parts]
@@ -995,10 +730,10 @@ def phase_unpack_splits(tmp: Path, parts: list[ApkPart]) -> None:
 
 def _safe_merge(part: ApkPart, phase: str, fn: Callable[[], None],
                 failures: list[StepFailure]) -> None:
-    """Run fn(); append a StepFailure to failures on any Exception."""
+    """Run fn(); append a StepFailure to failures on expected merge errors."""
     try:
         fn()
-    except Exception as e:  # noqa: BLE001 - merge step has many failure modes (apktool yml shape, missing dirs, copy errors); collect-and-continue is the contract
+    except (XapkToApkError, OSError, shutil.Error, ValueError, KeyError) as e:
         failures.append(StepFailure(apk_file=part.file_name, phase=phase, error=str(e)))
 
 
@@ -1048,11 +783,11 @@ def phase_finalize_main_apk(main: ApkPart) -> None:
     delete_signature_related_files(main.dir_path)
     stripped = strip_apktool_dummies(main.dir_path)
     if stripped:
-        print(f'[*] stripped APKTOOL_DUMMY refs from {stripped} merged xml file(s)')
+        logger.info("stripped APKTOOL_DUMMY refs from %s merged xml file(s)", stripped)
     update_main_manifest_file(main.dir_path)
 
 
-def phase_build_and_sign(tmp: Path, main: ApkPart, sign: SignConfig | None) -> None:
+def phase_build_and_sign(tmp: Path, main: ApkPart, sign: SigningConfig | None) -> None:
     """Repack, zipalign, and (optionally) sign the merged APK in tmp."""
     build_single_apk(tmp, main.dir_path, sign)
 
@@ -1063,10 +798,10 @@ def copy_single_apk_to_working_dir(tmp: Path, working_dir: Path, target_name: st
     """Copy tmp/target.apk to <working_dir>/<target_name>.apk; return the destination path."""
     src = tmp / f'{const_file_target_file}{const_ext_apk}'
     if not src.is_file():
-        raise Exception("result apk file not found")
+        raise XapkToApkError("result apk file not found")
     dst = working_dir / f'{target_name}{const_ext_apk}'
     if dst.is_dir():
-        raise Exception(f"refusing to overwrite directory at {dst}")
+        raise XapkToApkError(f"refusing to overwrite directory at {dst}")
     # Same-FS rename (tmp lives inside working_dir): instant. Tmp is wiped after.
     src.replace(dst)
     return dst
@@ -1074,37 +809,37 @@ def copy_single_apk_to_working_dir(tmp: Path, working_dir: Path, target_name: st
 
 def _verify_required_tools(should_sign: bool) -> None:
     """Ensure apktool, zipalign, and (optionally) apksigner are available; exit if not."""
-    for tool in ('apktool', 'zipalign'):
-        if not check_if_executable_exists_in_path(tool) and get_path_to_batch(tool) is None:
-            print(f"executable {tool} not found in $PATH, please install it before running xapktoapk")
-            sys.exit(-2)
-    if should_sign and not check_if_executable_exists_in_path('apksigner') and get_path_to_batch('apksigner') is None:
-        print("executable apksigner not found in $PATH, please install it before running xapktoapk")
-        sys.exit(-2)
+    names = ['apktool', 'zipalign']
+    if should_sign:
+        names.append('apksigner')
+    _REGISTRY.require(*names)
 
 
 def _print_merge_failures(failures: list[StepFailure]) -> None:
-    """Print a one-line summary plus per-failure detail to stderr."""
-    sys.stderr.write(f'[!] {len(failures)} merge step(s) failed:\n')
+    """Log a one-line summary plus per-failure detail."""
+    logger.error("%s merge step(s) failed:", len(failures))
     for f in failures:
-        sys.stderr.write(f'    - {f.apk_file} ({f.phase}): {f.error}\n')
+        logger.error("    - %s (%s): %s", f.apk_file, f.phase, f.error)
 
 
-def main() -> None:
-    """CLI entry: validate args, run all phases, write the final apk next to the source xapk."""
-    if not check_sys_args():
-        print_help()
-        sys.exit(-1)
+def convert_xapk(xapk_path: Path) -> None:
+    """Run all phases for one .xapk, writing the final .apk next to the source.
 
-    sign_config = load_sign_env()
+    Pure pipeline entry: takes an explicit path so it is callable from the Typer
+    CLI (`dumpa convert`), the legacy argv entrypoint, and as a library function.
+    """
+    global _REGISTRY
+    config = load_config()
+    _REGISTRY = build_default_registry(config.tool_paths)
+    sign_config = config.signing
     _verify_required_tools(should_sign=sign_config is not None)
     if sign_config is not None:
-        preflight_keystore(sign_config)
+        preflight_keystore(sign_config, _REGISTRY)
 
-    xapk_abs = get_param_xapk_abs_path()
-    original_stem, _ = file_split_name_and_extension(get_param_xapk_file_name())
+    xapk_abs = xapk_path.resolve()
+    original_stem, _ = file_split_name_and_extension(xapk_abs.name)
 
-    print('[*] start')
+    logger.info("start")
     cwd = Path.cwd().resolve()
 
     with working_tmp_dir(cwd) as tmp:
@@ -1117,7 +852,7 @@ def main() -> None:
         main_part, failures = phase_merge_splits(parts)
         if failures:
             _print_merge_failures(failures)
-            sys.exit(3)
+            raise XapkToApkError(f"{len(failures)} merge step(s) failed")
 
         phase_finalize_main_apk(main_part)
         phase_build_and_sign(tmp, main_part, sign_config)
@@ -1126,11 +861,11 @@ def main() -> None:
         report_output_apk(final_apk, package_name, sign_config is not None,
                           xapk_abs.stat().st_size)
 
-    print('[*] complete')
+    logger.info("complete")
 
 
-def _run_with_profile(profile_target: str) -> None:
-    """Run main() under cProfile; dump stats to file, print top 20 by cumtime."""
+def _run_with_profile(profile_target: str, xapk_path: Path) -> None:
+    """Run convert_xapk under cProfile; dump stats to file, print top 20 by cumtime."""
     import cProfile
     import pstats
     from pstats import SortKey
@@ -1138,20 +873,37 @@ def _run_with_profile(profile_target: str) -> None:
     profiler = cProfile.Profile()
     profiler.enable()
     try:
-        main()
+        convert_xapk(xapk_path)
     finally:
         profiler.disable()
-        out_path = Path(profile_target if profile_target != '1' else '.xapktoapk-profile.prof').resolve()
+        out_path = Path(profile_target if profile_target != '1' else '.dumpa-profile.prof').resolve()
         stats = pstats.Stats(profiler).sort_stats(SortKey.CUMULATIVE)
         stats.dump_stats(str(out_path))
-        print(f'\n[P] profile written to {out_path}')
-        print('[P] top 20 by cumulative time:')
+        logger.info("profile written to %s", out_path)
+        logger.info("top 20 by cumulative time:")
         stats.print_stats(20)
 
 
-if __name__ == '__main__':
+def run_convert(xapk_path: Path) -> None:
+    """Run conversion, honoring the profile env var.
+
+    Mapping exceptions to exit codes is the caller's responsibility (run_command).
+    """
     profile_target = os.environ.get(const_env_profile, '').strip()
     if profile_target:
-        _run_with_profile(profile_target)
+        _run_with_profile(profile_target, xapk_path)
     else:
-        main()
+        convert_xapk(xapk_path)
+
+
+def main() -> None:
+    """Legacy argv entrypoint: `python -m dumpa.commands.convert app.xapk`."""
+    if not check_sys_args():
+        print_help()
+        sys.exit(-1)
+    configure_logging()
+    run_command(lambda: run_convert(get_param_xapk_abs_path()))
+
+
+if __name__ == '__main__':
+    main()

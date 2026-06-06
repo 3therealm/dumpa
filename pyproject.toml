@@ -1,10 +1,28 @@
-# Tool configuration for xapktoapk.py.
-# This project has no Python dependencies and ships as a single script;
-# this file only configures linters/type-checkers and adds no install requirements.
+[project]
+name = "dumpa"
+version = "0.1.0"
+description = "Unity/Android reverse-engineering toolkit (xapk->apk conversion, il2cpp dumping, and more)."
+readme = "README.md"
+requires-python = ">=3.14"
+license = { file = "LICENSE.md" }
+dependencies = [
+    "typer>=0.12",
+]
+
+[project.scripts]
+dumpa = "dumpa.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dumpa"]
 
 [tool.ruff]
-target-version = "py37"
+target-version = "py314"
 line-length = 120
+src = ["src"]
 
 [tool.ruff.lint]
 select = [
@@ -24,16 +42,15 @@ select = [
 ]
 ignore = [
     "E501",  # line length handled by formatter, not linter
-    "B008",  # function call in default argument
+    "B008",  # function call in default argument (Typer uses this pattern)
 ]
 
 [tool.mypy]
 strict = true
-# Mypy ≥1.11 dropped `python_version = "3.7"` support; runtime still 3.7+ via `from __future__ import annotations`.
-python_version = "3.9"
-files = ["xapktoapk.py"]
+python_version = "3.14"
+files = ["src"]
 
 [tool.pyright]
-include = ["xapktoapk.py"]
-pythonVersion = "3.7"
+include = ["src"]
+pythonVersion = "3.14"
 typeCheckingMode = "strict"
