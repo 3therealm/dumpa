@@ -1,0 +1,109 @@
+# Protection / packer / hardening detection rules.
+#
+# Two matcher kinds are used: `globs` for telltale native library *filenames* (a very
+# strong signal) and `strings` for loader package paths / runtime markers inside the
+# dex or native code. `category` groups the kind of protection. Detection is
+# inventory only — dumpa reports protections, it does not remove or bypass them.
+
+[bundle]
+name = "protections"
+version = "2026.06.1"
+source = "dumpa built-in (curated)"
+updated = "2026-06-06"
+
+# --- commercial packers ------------------------------------------------------
+
+[[rule]]
+kind = "protection"
+subject = "Qihoo 360 Jiagu packer"
+category = "packer"
+confidence = "high"
+globs = ["lib/*/libjiagu*.so", "lib/*/libprotectClass.so"]
+
+[[rule]]
+kind = "protection"
+subject = "Bangcle / SecNeo packer"
+category = "packer"
+confidence = "high"
+globs = ["lib/*/libsecmain*.so", "lib/*/libDexHelper*.so", "lib/*/libSecShell*.so"]
+
+[[rule]]
+kind = "protection"
+subject = "Bangcle / SecNeo loader"
+category = "packer"
+confidence = "medium"
+strings = ["com/secneo/apkwrapper", "com/secshell/"]
+
+[[rule]]
+kind = "protection"
+subject = "Tencent Legu packer"
+category = "packer"
+confidence = "high"
+globs = ["lib/*/libshella*.so", "lib/*/libshellx*.so", "lib/*/libtxnativehelper.so"]
+
+[[rule]]
+kind = "protection"
+subject = "Ijiami packer"
+category = "packer"
+confidence = "high"
+globs = ["lib/*/libexec.so", "lib/*/libexecmain.so", "lib/*/libfdjsx.so"]
+
+[[rule]]
+kind = "protection"
+subject = "AppSealing"
+category = "packer"
+confidence = "high"
+globs = ["lib/*/libcovault*.so"]
+
+[[rule]]
+kind = "protection"
+subject = "LIAPP"
+category = "packer"
+confidence = "high"
+globs = ["lib/*/libLIAPPEgg.so", "lib/*/libLIAPPClient.so"]
+
+[[rule]]
+kind = "protection"
+subject = "Promon SHIELD"
+category = "anti-tamper"
+confidence = "high"
+globs = ["lib/*/libshield.so"]
+
+# --- integrity / instrumentation --------------------------------------------
+
+[[rule]]
+kind = "protection"
+subject = "Google Play app integrity (pairip)"
+category = "integrity"
+confidence = "high"
+globs = ["lib/*/libpairipcore.so"]
+
+[[rule]]
+kind = "protection"
+subject = "Frida gadget"
+category = "instrumentation"
+confidence = "high"
+globs = ["lib/*/libfrida-gadget.so", "lib/*/libgadget.so"]
+
+# --- runtime self-defense (string markers) ----------------------------------
+
+[[rule]]
+kind = "protection"
+subject = "Root detection (RootBeer)"
+category = "anti-tamper"
+confidence = "medium"
+strings = ["com/scottyab/rootbeer", "rootbeer"]
+
+[[rule]]
+kind = "protection"
+subject = "Debugger detection (TracerPid)"
+category = "anti-debug"
+confidence = "medium"
+strings = ["TracerPid"]
+
+[[rule]]
+kind = "protection"
+subject = "Emulator detection"
+category = "anti-analysis"
+confidence = "medium"
+strings = ["ro.kernel.qemu", "goldfish", "genymotion"]

@@ -314,10 +314,11 @@ def render_markdown(report: Report) -> str:
     lines.append("")
 
     trackers = [x for x in report.findings if x.kind == "tracker"]
+    protections = [x for x in report.findings if x.kind == "protection"]
     data_access = [x for x in report.findings if x.kind in ("capability", "data-access")]
     endpoints = [x for x in report.findings if x.kind == "endpoint"]
     others = [x for x in report.findings
-              if x.kind not in ("tracker", "capability", "data-access", "endpoint")]
+              if x.kind not in ("tracker", "protection", "capability", "data-access", "endpoint")]
 
     lines.append("## Trackers")
     if not trackers:
@@ -338,6 +339,16 @@ def render_markdown(report: Report) -> str:
                 suffix = f" — {owner}" if owner else ""
                 lines.append(f"- {t.subject}{suffix} (confidence: {t.confidence.value})")
             lines.append("")
+
+    lines.append("## Protections")
+    if not protections:
+        lines.append("_none_")
+    else:
+        for p in sorted(protections, key=lambda i: i.subject):
+            category = p.attributes.get("category", "")
+            tag = f" [{category}]" if category else ""
+            lines.append(f"- {p.subject}{tag} (confidence: {p.confidence.value})")
+    lines.append("")
 
     lines.append("## Data access")
     if not data_access:
