@@ -1,0 +1,256 @@
+# Tracker / SDK detection rules (content matchers).
+#
+# Each rule searches for class-path fragments (as they appear in classes*.dex type
+# descriptors, e.g. "com/google/firebase/analytics") and/or SDK domains inside the
+# dex, native libs, manifest, and resource table. `category` is the tracker
+# taxonomy; `owner` is the SDK vendor (the SDK-owner mapping). A package-path hit is
+# a strong signal, so most rules are high confidence.
+#
+# This is a curated starter set. Importing external databases (Exodus Privacy,
+# TrackerControl, AppBrain) and `dumpa update-signatures` remain future work.
+
+[bundle]
+name = "trackers"
+version = "2026.06.1"
+source = "dumpa built-in (curated)"
+updated = "2026-06-06"
+
+# --- Google ------------------------------------------------------------------
+
+[[rule]]
+kind = "tracker"
+subject = "Firebase Analytics"
+category = "analytics"
+owner = "Google"
+confidence = "high"
+strings = ["com/google/firebase/analytics"]
+
+[[rule]]
+kind = "tracker"
+subject = "Google Analytics"
+category = "analytics"
+owner = "Google"
+confidence = "high"
+strings = ["com/google/android/gms/analytics"]
+
+[[rule]]
+kind = "tracker"
+subject = "Firebase Crashlytics"
+category = "crash reporting"
+owner = "Google"
+confidence = "high"
+strings = ["com/google/firebase/crashlytics", "com/crashlytics/"]
+
+[[rule]]
+kind = "tracker"
+subject = "Firebase Cloud Messaging"
+category = "push messaging"
+owner = "Google"
+confidence = "high"
+strings = ["com/google/firebase/messaging"]
+
+[[rule]]
+kind = "tracker"
+subject = "Firebase Remote Config"
+category = "remote config"
+owner = "Google"
+confidence = "high"
+strings = ["com/google/firebase/remoteconfig"]
+
+[[rule]]
+kind = "tracker"
+subject = "Google AdMob / Mobile Ads"
+category = "ads"
+owner = "Google"
+confidence = "high"
+strings = ["com/google/android/gms/ads"]
+
+# --- Unity / ironSource ------------------------------------------------------
+
+[[rule]]
+kind = "tracker"
+subject = "Unity Ads"
+category = "ads"
+owner = "Unity"
+confidence = "high"
+strings = ["com/unity3d/ads", "com/unity3d/services/ads"]
+
+[[rule]]
+kind = "tracker"
+subject = "Unity LevelPlay / ironSource"
+category = "ad mediation"
+owner = "Unity (ironSource)"
+confidence = "high"
+strings = ["com/ironsource/", "com/unity3d/mediation"]
+
+# --- Other ad networks / mediation ------------------------------------------
+
+[[rule]]
+kind = "tracker"
+subject = "AppLovin MAX"
+category = "ad mediation"
+owner = "AppLovin"
+confidence = "high"
+strings = ["com/applovin/"]
+
+[[rule]]
+kind = "tracker"
+subject = "Vungle / Liftoff"
+category = "ads"
+owner = "Liftoff"
+confidence = "high"
+strings = ["com/vungle/"]
+
+[[rule]]
+kind = "tracker"
+subject = "Chartboost"
+category = "ads"
+owner = "Chartboost"
+confidence = "high"
+strings = ["com/chartboost/"]
+
+[[rule]]
+kind = "tracker"
+subject = "Mintegral"
+category = "ads"
+owner = "Mintegral"
+confidence = "high"
+strings = ["com/mbridge/", "com/mintegral/"]
+
+[[rule]]
+kind = "tracker"
+subject = "Pangle"
+category = "ads"
+owner = "ByteDance"
+confidence = "high"
+strings = ["com/bytedance/sdk/openadsdk", "com/pangle/"]
+
+[[rule]]
+kind = "tracker"
+subject = "Tapjoy"
+category = "ads"
+owner = "Tapjoy"
+confidence = "high"
+strings = ["com/tapjoy/"]
+
+[[rule]]
+kind = "tracker"
+subject = "Meta Audience Network"
+category = "ad mediation"
+owner = "Meta"
+confidence = "high"
+strings = ["com/facebook/ads"]
+
+[[rule]]
+kind = "tracker"
+subject = "InMobi"
+category = "ads"
+owner = "InMobi"
+confidence = "high"
+strings = ["com/inmobi/"]
+
+[[rule]]
+kind = "tracker"
+subject = "HyprMX"
+category = "ads"
+owner = "HyprMX"
+confidence = "high"
+strings = ["com/hyprmx/"]
+
+# --- Social / identity -------------------------------------------------------
+
+[[rule]]
+kind = "tracker"
+subject = "Facebook SDK"
+category = "social login or sharing"
+owner = "Meta"
+confidence = "high"
+strings = ["com/facebook/login", "com/facebook/internal"]
+
+# --- Attribution -------------------------------------------------------------
+
+[[rule]]
+kind = "tracker"
+subject = "AppsFlyer"
+category = "attribution"
+owner = "AppsFlyer"
+confidence = "high"
+strings = ["com/appsflyer/"]
+
+[[rule]]
+kind = "tracker"
+subject = "Adjust"
+category = "attribution"
+owner = "Adjust"
+confidence = "high"
+strings = ["com/adjust/sdk"]
+
+[[rule]]
+kind = "tracker"
+subject = "Branch"
+category = "attribution"
+owner = "Branch"
+confidence = "high"
+strings = ["io/branch/referral"]
+
+# --- Analytics ---------------------------------------------------------------
+
+[[rule]]
+kind = "tracker"
+subject = "Amplitude"
+category = "analytics"
+owner = "Amplitude"
+confidence = "high"
+strings = ["com/amplitude/"]
+
+[[rule]]
+kind = "tracker"
+subject = "Mixpanel"
+category = "analytics"
+owner = "Mixpanel"
+confidence = "high"
+strings = ["com/mixpanel/"]
+
+[[rule]]
+kind = "tracker"
+subject = "Flurry"
+category = "analytics"
+owner = "Yahoo"
+confidence = "high"
+strings = ["com/flurry/"]
+
+[[rule]]
+kind = "tracker"
+subject = "Singular"
+category = "attribution"
+owner = "Singular"
+confidence = "high"
+strings = ["com/singular/sdk"]
+
+# --- Crash reporting ---------------------------------------------------------
+
+[[rule]]
+kind = "tracker"
+subject = "Bugsnag"
+category = "crash reporting"
+owner = "Bugsnag (SmartBear)"
+confidence = "high"
+strings = ["com/bugsnag/"]
+
+[[rule]]
+kind = "tracker"
+subject = "Sentry"
+category = "crash reporting"
+owner = "Sentry"
+confidence = "high"
+strings = ["io/sentry/"]
+
+# --- Push messaging ----------------------------------------------------------
+
+[[rule]]
+kind = "tracker"
+subject = "OneSignal"
+category = "push messaging"
+owner = "OneSignal"
+confidence = "high"
+strings = ["com/onesignal/"]

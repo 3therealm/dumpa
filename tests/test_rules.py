@@ -16,10 +16,10 @@ from dumpa.core.rules import (
 )
 
 
-def _touch(root: Path, rel: str) -> None:
+def _touch(root: Path, rel: str, data: bytes = b"\x00") -> None:
     p = root / rel
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_bytes(b"\x00")
+    p.write_bytes(data)
 
 
 # --- built-in engines bundle -------------------------------------------------
@@ -120,6 +120,86 @@ def test_parent_directory_glob_raises(tmp_path: Path) -> None:
             '[[rule]]\nkind="engine"\nsubject="X"\nconfidence="high"\nglobs=["../outside.txt"]\n')
     with pytest.raises(ConfigError, match="unsafe glob"):
         load_bundle(_write(tmp_path, text))
+
+
+# --- content (string) matchers ----------------------------------------------
+
+_CONTENT_BUNDLE = """\
+[bundle]
+name = "t"
+version = "1"
+updated = "2026-01-01"
+
+[[rule]]
+kind = "tracker"
+subject = "Firebase"
+confidence = "high"
+category = "analytics"
+owner = "Google"
+strings = ["com/google/firebase/analytics"]
+"""
+
+
+def test_content_rule_detects_string(tmp_path: Path) -> None:
+    bundle = load_bundle(_write(tmp_path, _CONTENT_BUNDLE))
+    ex = tmp_path / "ex"
+    _touch(ex, "classes.dex", b"xx Lcom/google/firebase/analytics; yy")
+    findings = apply_bundle(bundle, ex)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.kind == "tracker"
+    assert f.subject == "Firebase"
+    assert f.attributes == {"category": "analytics", "owner": "Google"}
+    assert f.locations[0].file_path == "classes.dex"
+    assert f.locations[0].file_offset is not None
+
+
+def test_content_rule_no_match(tmp_path: Path) -> None:
+    bundle = load_bundle(_write(tmp_path, _CONTENT_BUNDLE))
+    ex = tmp_path / "ex"
+    _touch(ex, "classes.dex", b"nothing interesting here")
+    assert apply_bundle(bundle, ex) == []
+
+
+def test_content_match_spans_chunk_boundary(tmp_path: Path) -> None:
+    text = ('[bundle]\nname="t"\nversion="1"\nupdated="d"\n\n'
+            '[[rule]]\nkind="tracker"\nsubject="X"\nconfidence="high"\nstrings=["com/example/sdk"]\n')
+    bundle = load_bundle(_write(tmp_path, text))
+    ex = tmp_path / "ex"
+    pad = b"\x00" * ((1 << 20) - 5)          # needle straddles the 1 MiB chunk edge
+    _touch(ex, "classes.dex", pad + b"com/example/sdk" + b"\x00" * 10)
+    findings = apply_bundle(bundle, ex)
+    assert len(findings) == 1
+    assert findings[0].locations[0].file_offset == len(pad)
+
+
+def test_content_match_all(tmp_path: Path) -> None:
+    text = ('[bundle]\nname="t"\nversion="1"\nupdated="d"\n\n'
+            '[[rule]]\nkind="tracker"\nsubject="X"\nconfidence="high"\nmatch="all"\n'
+            'strings=["aaa", "bbb"]\n')
+    bundle = load_bundle(_write(tmp_path, text))
+    ex = tmp_path / "ex"
+    _touch(ex, "classes.dex", b"only aaa here")
+    assert apply_bundle(bundle, ex) == []
+    _touch(ex, "classes.dex", b"aaa and bbb here")
+    assert len(apply_bundle(bundle, ex)) == 1
+
+
+def test_rule_requires_exactly_one_matcher(tmp_path: Path) -> None:
+    both = ('[bundle]\nname="t"\nversion="1"\nupdated="d"\n\n'
+            '[[rule]]\nkind="tracker"\nsubject="X"\nconfidence="high"\nglobs=["a"]\nstrings=["b"]\n')
+    with pytest.raises(ConfigError, match="exactly one"):
+        load_bundle(_write(tmp_path, both))
+    neither = '[bundle]\nname="t"\nversion="1"\nupdated="d"\n\n[[rule]]\nkind="t"\nsubject="X"\nconfidence="high"\n'
+    with pytest.raises(ConfigError, match="exactly one"):
+        load_bundle(_write(tmp_path, neither))
+
+
+def test_trackers_builtin_loads() -> None:
+    bundle = load_builtin("trackers")
+    assert bundle.name == "trackers"
+    assert len(bundle.rules) >= 20
+    assert all(r.is_content for r in bundle.rules)
 
 
 def test_missing_bundle_table_raises(tmp_path: Path) -> None:

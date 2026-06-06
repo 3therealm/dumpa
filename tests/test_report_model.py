@@ -64,6 +64,33 @@ def test_finding_state_round_trip() -> None:
     assert Finding.from_dict(f.to_dict()) == f
 
 
+def test_finding_attributes_round_trip() -> None:
+    f = Finding(kind="tracker", subject="AdMob", confidence=Confidence.HIGH,
+                attributes={"category": "ads", "owner": "Google"})
+    assert Finding.from_dict(f.to_dict()) == f
+    assert f.to_dict()["attributes"] == {"category": "ads", "owner": "Google"}
+
+
+def test_density_score() -> None:
+    from dumpa.core.report import density_score
+    facts = AppFacts(input_sha256="a" * 64, input_size=2 * 1024 * 1024)
+    report = Report(
+        dumpa_version="0.1.0", created="t", input_path="/x.apk", facts=facts,
+        findings=[
+            Finding(kind="tracker", subject="AdMob", confidence=Confidence.HIGH,
+                    attributes={"category": "ads", "owner": "Google"}),
+            Finding(kind="tracker", subject="Amplitude", confidence=Confidence.HIGH,
+                    attributes={"category": "analytics", "owner": "Amplitude"}),
+            Finding(kind="engine", subject="Unity", confidence=Confidence.HIGH),
+        ],
+    )
+    d = density_score(report)
+    assert d["trackers"] == 2
+    assert d["companies"] == 2
+    assert d["ad_sdks"] == 1
+    assert d["per_mb"] == 1.0
+
+
 def test_location_omits_none() -> None:
     loc = Location(domain="x.com")
     assert loc.to_dict() == {"domain": "x.com"}

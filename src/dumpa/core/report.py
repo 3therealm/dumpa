@@ -130,6 +130,8 @@ class Finding:
     subject: str
     confidence: Confidence
     state: FindingState = FindingState.PRESENT
+    # kind-specific metadata, e.g. tracker category / SDK owner / purpose.
+    attributes: dict[str, str] = field(default_factory=_str_map)
     evidence: list[Evidence] = field(default_factory=_evidence_list)
     locations: list[Location] = field(default_factory=_location_list)
 
@@ -139,6 +141,7 @@ class Finding:
             "subject": self.subject,
             "confidence": self.confidence.value,
             "state": self.state.value,
+            "attributes": dict(self.attributes),
             "evidence": [e.to_dict() for e in self.evidence],
             "locations": [loc.to_dict() for loc in self.locations],
         }
@@ -149,6 +152,7 @@ class Finding:
             kind=str(data["kind"]), subject=str(data["subject"]),
             confidence=Confidence(str(data["confidence"])),
             state=FindingState(str(data.get("state", FindingState.PRESENT.value))),
+            attributes={str(k): str(v) for k, v in dict(data.get("attributes", {})).items()},
             evidence=[Evidence.from_dict(e) for e in data.get("evidence", [])],
             locations=[Location.from_dict(loc) for loc in data.get("locations", [])],
         )
@@ -260,6 +264,24 @@ def read_json(path: Path) -> Report | None:
         return None
 
 
+_AD_CATEGORIES = frozenset({"ads", "ad mediation"})
+
+
+def density_score(report: Report) -> dict[str, float]:
+    """Ad/tracker density metrics derived from the tracker findings."""
+    trackers = [f for f in report.findings if f.kind == "tracker"]
+    owners = {f.attributes["owner"] for f in trackers if f.attributes.get("owner")}
+    ad_sdks = [f for f in trackers if f.attributes.get("category") in _AD_CATEGORIES]
+    size_mb = report.facts.input_size / (1024 * 1024)
+    out: dict[str, float] = {
+        "trackers": len(trackers),
+        "companies": len(owners),
+        "ad_sdks": len(ad_sdks),
+        "per_mb": round(len(trackers) / size_mb, 3) if size_mb > 0 else 0.0,
+    }
+    return out
+
+
 def render_markdown(report: Report) -> str:
     """Render a human-readable Markdown view of a report."""
     f = report.facts
@@ -291,11 +313,34 @@ def render_markdown(report: Report) -> str:
         lines.append(f"- {key}: {value}")
     lines.append("")
 
+    trackers = [x for x in report.findings if x.kind == "tracker"]
+    others = [x for x in report.findings if x.kind != "tracker"]
+
+    lines.append("## Trackers")
+    if not trackers:
+        lines.append("_none_")
+        lines.append("")
+    else:
+        d = density_score(report)
+        lines.append(f"{int(d['trackers'])} tracker(s) from {int(d['companies'])} "
+                     f"company(ies); {int(d['ad_sdks'])} ad SDK(s); {d['per_mb']} trackers/MB")
+        lines.append("")
+        by_category: dict[str, list[Finding]] = {}
+        for t in trackers:
+            by_category.setdefault(t.attributes.get("category", "uncategorized"), []).append(t)
+        for category in sorted(by_category):
+            lines.append(f"### {category}")
+            for t in sorted(by_category[category], key=lambda x: x.subject):
+                owner = t.attributes.get("owner")
+                suffix = f" — {owner}" if owner else ""
+                lines.append(f"- {t.subject}{suffix} (confidence: {t.confidence.value})")
+            lines.append("")
+
     lines.append("## Findings")
-    if not report.findings:
+    if not others:
         lines.append("_none_")
     else:
-        for finding in report.findings:
+        for finding in others:
             lines.append(f"- **{finding.kind}**: {finding.subject} "
                          f"(confidence: {finding.confidence.value})")
             for ev in finding.evidence:

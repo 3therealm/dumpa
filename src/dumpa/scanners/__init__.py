@@ -12,16 +12,13 @@ from collections.abc import Callable
 
 from dumpa.core.report import Confidence, Finding
 from dumpa.core.workspace import Workspace
-from dumpa.scanners import engine, unity
+from dumpa.scanners import engine, tracker, unity
 
 Scanner = Callable[[Workspace], list[Finding]]
 
 # Registration order is the run order; engine detection first so its findings exist
 # for primary_engine() and so detail scanners (unity) follow their parent engine.
-SCANNERS: tuple[Scanner, ...] = (
-    engine.scan,
-    unity.scan,
-)
+SCANNERS: tuple[Scanner, ...] = (engine.scan, tracker.scan)
 
 _CONFIDENCE_RANK = {Confidence.HIGH: 3, Confidence.MEDIUM: 2, Confidence.LOW: 1}
 
@@ -31,6 +28,8 @@ def run_all(ws: Workspace) -> list[Finding]:
     findings: list[Finding] = []
     for scan in SCANNERS:
         findings.extend(scan(ws))
+    if any(f.kind == "engine" and f.subject == "Unity" for f in findings):
+        findings.extend(unity.scan(ws))
     return findings
 
 
