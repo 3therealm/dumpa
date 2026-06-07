@@ -35,5 +35,9 @@ class ManifestError(DumpaError):
     """Raised when a manifest is missing or malformed."""
 
 
+class AxmlError(DumpaError):
+    """Raised when binary AndroidManifest.xml (AXML) is malformed or truncated."""
+
+
 class ConfigError(DumpaError):
     """Raised when configuration (TOML or environment) is malformed or incomplete."""

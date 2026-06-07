@@ -12,14 +12,24 @@ from collections.abc import Callable
 
 from dumpa.core.report import Confidence, Finding
 from dumpa.core.workspace import Workspace
-from dumpa.scanners import endpoint, engine, native, privacy, protection, secret, tracker, unity
+from dumpa.scanners import (
+    endpoint,
+    engine,
+    manifest_privacy,
+    native,
+    privacy,
+    protection,
+    secret,
+    tracker,
+    unity,
+)
 
 Scanner = Callable[[Workspace], list[Finding]]
 
 # Registration order is the run order; engine detection first so its findings exist
 # for primary_engine() and so detail scanners (unity) follow their parent engine.
 SCANNERS: tuple[Scanner, ...] = (
-    engine.scan, tracker.scan, privacy.scan, protection.scan,
+    engine.scan, manifest_privacy.scan, tracker.scan, privacy.scan, protection.scan,
     secret.scan, native.scan, endpoint.scan,
 )
 

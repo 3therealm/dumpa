@@ -15,6 +15,7 @@ from dumpa import __version__
 from dumpa.core.config import const_default_validation_timeout, const_env_validation_timeout
 from dumpa.core.env import env_positive_int
 from dumpa.core.errors import ToolExecutionError, ToolNotFoundError
+from dumpa.core.manifest import load_manifest
 from dumpa.core.privacy import permission_findings
 from dumpa.core.report import AppFacts, Report
 from dumpa.core.tools import ToolRegistry
@@ -27,6 +28,11 @@ logger = logging.getLogger("dumpa")
 
 def _validation_timeout() -> int:
     return env_positive_int(const_env_validation_timeout, const_default_validation_timeout)
+
+
+def _prefer(primary: str | None, fallback: str | None) -> str | None:
+    """The manifest value when present, else the aapt-badging fallback."""
+    return primary if primary else fallback
 
 
 def _read_badging(registry: ToolRegistry, ws: Workspace) -> aapt.BadgingInfo:
@@ -58,26 +64,36 @@ def build_report(registry: ToolRegistry, ws: Workspace) -> Report:
     badging = _read_badging(registry, ws)
     signer = _read_signer(registry, ws)
     schemes = list(signer.schemes) if signer else []
+    manifest = load_manifest(ws)
+
+    # Manifest is the source of truth; aapt badging is the fallback when AXML parsing
+    # failed (and the only source for ABIs, which live in the native-code listing).
+    permissions = list(manifest.permissions) if manifest else list(badging.permissions)
 
     findings = run_all(ws)
-    findings.extend(permission_findings(list(badging.permissions)))
+    findings.extend(permission_findings(permissions))
 
     facts = AppFacts(
         input_sha256=meta.input_sha256,
         input_size=meta.input_size,
-        package=badging.package,
-        version_name=badging.version_name,
-        version_code=badging.version_code,
-        min_sdk=badging.min_sdk,
-        target_sdk=badging.target_sdk,
+        package=_prefer(manifest.package if manifest else None, badging.package),
+        version_name=_prefer(manifest.version_name if manifest else None, badging.version_name),
+        version_code=_prefer(manifest.version_code if manifest else None, badging.version_code),
+        min_sdk=_prefer(manifest.min_sdk if manifest else None, badging.min_sdk),
+        target_sdk=_prefer(manifest.target_sdk if manifest else None, badging.target_sdk),
         engine=primary_engine(findings),
         abis=list(badging.abis),
-        permissions=list(badging.permissions),
+        permissions=permissions,
         signer_cert_sha256=signer.cert_sha256 if signer else None,
         signing_schemes=schemes,
+        debuggable=manifest.debuggable if manifest else None,
+        allow_backup=manifest.allow_backup if manifest else None,
+        exported_component_count=len(manifest.exported_components) if manifest else None,
     )
 
     warnings: list[str] = []
+    if manifest is None:
+        warnings.append("manifest parse failed; facts fell back to aapt badging")
     if not schemes:
         warnings.append("apk is unsigned")
 

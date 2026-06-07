@@ -7,6 +7,7 @@ workspace's extracted tree. Keeping it a scanner means engine detection plugs in
 
 from __future__ import annotations
 
+from dumpa.core.manifest import load_manifest
 from dumpa.core.report import Finding
 from dumpa.core.rules import apply_bundle, load_builtin
 from dumpa.core.workspace import Workspace
@@ -18,4 +19,4 @@ def scan(ws: Workspace) -> list[Finding]:
     """Detect game engines by applying the built-in engines bundle to extracted/."""
     if not ws.extracted_dir.is_dir():
         return []
-    return apply_bundle(load_builtin(const_engine_bundle), ws.extracted_dir)
+    return apply_bundle(load_builtin(const_engine_bundle), ws.extracted_dir, load_manifest(ws))

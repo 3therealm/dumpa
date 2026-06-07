@@ -173,6 +173,9 @@ class AppFacts:
     permissions: list[str] = field(default_factory=_str_list)
     signer_cert_sha256: str | None = None
     signing_schemes: list[str] = field(default_factory=_str_list)
+    debuggable: bool | None = None                  # from the parsed manifest
+    allow_backup: bool | None = None
+    exported_component_count: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -183,6 +186,8 @@ class AppFacts:
             "abis": list(self.abis), "permissions": list(self.permissions),
             "signer_cert_sha256": self.signer_cert_sha256,
             "signing_schemes": list(self.signing_schemes),
+            "debuggable": self.debuggable, "allow_backup": self.allow_backup,
+            "exported_component_count": self.exported_component_count,
         }
 
     @classmethod
@@ -196,6 +201,8 @@ class AppFacts:
             permissions=[str(p) for p in data.get("permissions", [])],
             signer_cert_sha256=data.get("signer_cert_sha256"),
             signing_schemes=[str(s) for s in data.get("signing_schemes", [])],
+            debuggable=data.get("debuggable"), allow_backup=data.get("allow_backup"),
+            exported_component_count=data.get("exported_component_count"),
         )
 
 
@@ -301,6 +308,13 @@ def render_blocklist(report: Report, fmt: str) -> str:
     return "\n".join(lines) + "\n" if lines else ""
 
 
+def _flag_label(value: bool | None) -> str:
+    """Render an optional manifest boolean flag for the report."""
+    if value is None:
+        return "?"
+    return "yes" if value else "no"
+
+
 def render_markdown(report: Report) -> str:
     """Render a human-readable Markdown view of a report."""
     f = report.facts
@@ -325,6 +339,10 @@ def render_markdown(report: Report) -> str:
         ("engine", f.engine or "n/a"),
         ("ABIs", ", ".join(f.abis) if f.abis else "none"),
         ("permissions", str(len(f.permissions))),
+        ("exported components", str(f.exported_component_count)
+         if f.exported_component_count is not None else "?"),
+        ("debuggable", _flag_label(f.debuggable)),
+        ("allowBackup", _flag_label(f.allow_backup)),
         ("signer cert", f.signer_cert_sha256 or "unsigned/unknown"),
         ("schemes", "+".join(f.signing_schemes) if f.signing_schemes else "none"),
     ]

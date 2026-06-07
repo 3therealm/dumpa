@@ -101,3 +101,37 @@ confidence = "medium"
 match = "any"
 # python-for-android bundles a private Python runtime into assets.
 globs = ["**/_python_bundle/**", "**/kivy_install/**"]
+
+# --- manifest-component detection -------------------------------------------
+# Engine runtimes register signature activities/services in the manifest. These
+# rules match component class names in the parsed AndroidManifest.xml, giving an
+# engine signal even when native libs are split out of the base apk (DENarrow /
+# Play Asset Delivery). They supplement the native-library globs above.
+
+[[rule]]
+kind = "engine"
+subject = "Unity"
+confidence = "high"
+manifest = ['^com\.unity3d\.player\.']
+manifest_field = "component"
+
+[[rule]]
+kind = "engine"
+subject = "Cocos2d-x"
+confidence = "high"
+manifest = ['^org\.cocos2dx\.']
+manifest_field = "component"
+
+[[rule]]
+kind = "engine"
+subject = "Godot"
+confidence = "high"
+manifest = ['^org\.godotengine\.']
+manifest_field = "component"
+
+[[rule]]
+kind = "engine"
+subject = "Unreal"
+confidence = "high"
+manifest = ['^com\.epicgames\.']
+manifest_field = "component"
