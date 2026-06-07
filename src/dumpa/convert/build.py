@@ -8,11 +8,6 @@ from pathlib import Path
 from dumpa.convert.models import (
     const_ext_apk,
     const_file_target_file,
-    const_split_apk_type_arch,
-    const_split_apk_type_assetpack,
-    const_split_apk_type_dpi,
-    const_split_apk_type_locale,
-    const_split_apk_type_main,
 )
 from dumpa.core.config import (
     SigningConfig,
@@ -26,23 +21,16 @@ from dumpa.tools import apksigner, apktool, zipalign
 
 logger = logging.getLogger("dumpa")
 
-# Per-split-type apktool decode flags. `-s` skips smali disassembly (classes.dex
-# stays in original/ so the rebuilt apk is identical). `-r` skips resource decode.
-# Splits that contribute only lib/ or assets/ skip both — saves a pass over the
-# resource table and significant wall time on big asset packs.
-_UNPACK_FLAGS_BY_TYPE: dict[str, tuple[str, ...]] = {
-    const_split_apk_type_main: ('-s',),
-    const_split_apk_type_arch: ('-r', '-s'),
-    const_split_apk_type_dpi: ('-s',),
-    const_split_apk_type_locale: ('-s',),
-    const_split_apk_type_assetpack: ('-r', '-s'),
-}
-
-
 def unpack_apk(tool: ResolvedTool, path_dir_tmp: Path, apk_file: str, split_type: str) -> None:
-    """Unpack a single APK into the tmp dir via apktool, then delete the source split."""
-    flags = _UNPACK_FLAGS_BY_TYPE.get(split_type, ('-s',))
-    apktool.decode(tool, apk_file, path_dir_tmp, flags)
+    """Unpack a single APK into the tmp dir via a plain `apktool d`, then delete the source.
+
+    A full decode (no `-s`/`-r`) disassembles every split to smali and decodes its
+    resources, so the merged tree carries smali — required for the `dumpa rewrite`
+    workflow. The trade-off: `apktool b` reassembles the dex, so the rebuilt apk's dex
+    is recompiled rather than byte-identical, and the decode is slower. `split_type` is
+    retained for callers/logging; flags are no longer specialized per type.
+    """
+    apktool.decode(tool, apk_file, path_dir_tmp, ())
     (path_dir_tmp / apk_file).unlink()
 
 
