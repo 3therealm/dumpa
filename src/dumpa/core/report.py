@@ -357,8 +357,9 @@ def render_markdown(report: Report) -> str:
     endpoints = [x for x in report.findings if x.kind == "endpoint"]
     native_libs = [x for x in report.findings if x.kind == "native"]
     native_symbols = [x for x in report.findings if x.kind == "native-symbol"]
+    dexes = [x for x in report.findings if x.kind == "dex"]
     _sectioned = ("tracker", "protection", "secret", "capability", "data-access",
-                  "endpoint", "native", "native-symbol")
+                  "endpoint", "native", "native-symbol", "dex")
     others = [x for x in report.findings if x.kind not in _sectioned]
 
     lines.append("## Trackers")
@@ -436,6 +437,17 @@ def render_markdown(report: Report) -> str:
                          f"{extra.get('import_count', '0')} imports, "
                          f"{extra.get('section_count', '0')} sections")
             lines.append(f"- {lib.subject}: {arch}")
+    lines.append("")
+
+    lines.append("## DEX")
+    if not dexes:
+        lines.append("_none_")
+    else:
+        for dx in sorted(dexes, key=lambda i: i.subject):
+            a = dx.attributes
+            lines.append(f"- {dx.subject}: {a.get('class_count', '0')} classes, "
+                         f"{a.get('method_count', '0')} methods, "
+                         f"{a.get('field_count', '0')} fields")
     lines.append("")
 
     lines.append("## Findings")

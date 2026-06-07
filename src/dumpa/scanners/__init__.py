@@ -13,11 +13,13 @@ from collections.abc import Callable
 from pathlib import PurePosixPath
 
 from dumpa.core import cache
+from dumpa.core.dex import DexFile, parse_dex
 from dumpa.core.elf import ElfFile, parse_elf
 from dumpa.core.report import Confidence, Finding
 from dumpa.core.rules import load_builtin
 from dumpa.core.workspace import Workspace, WorkspaceMeta
 from dumpa.scanners import (
+    dex,
     endpoint,
     engine,
     manifest_privacy,
@@ -50,6 +52,7 @@ SCANNERS: tuple[ScannerSpec, ...] = (
     ScannerSpec("protection", protection.scan, ("protections",)),
     ScannerSpec("secret", secret.scan, ("secrets",)),
     ScannerSpec("native", native.scan),
+    ScannerSpec("dex", dex.scan),
     ScannerSpec("endpoint", endpoint.scan),
 )
 # Unity deep helper runs only when the engine scanner flagged Unity.
@@ -99,6 +102,45 @@ def enrich_native_rvas(findings: list[Finding], ws: Workspace) -> list[Finding]:
     return out
 
 
+def enrich_dex_locations(findings: list[Finding], ws: Workspace) -> list[Finding]:
+    """Backfill Location.dex_class/.dex_method on any finding located by offset in a .dex.
+
+    Twin of enrich_native_rvas: a content scanner records (file_path=<dex>, file_offset);
+    map each offset through the parsed dex to its owning class (and method, when the offset
+    lands in bytecode). Each dex is parsed once. Findings already carrying a dex_class, or
+    whose offset resolves to nothing structurally (e.g. a plain string constant), pass
+    through unchanged.
+    """
+    cache: dict[str, DexFile | None] = {}
+
+    def mapper(rel: str) -> DexFile | None:
+        if rel not in cache:
+            path = ws.extracted_dir / rel
+            cache[rel] = parse_dex(path) if path.is_file() else None
+        return cache[rel]
+
+    out: list[Finding] = []
+    for finding in findings:
+        new_locs: list | None = None
+        for i, loc in enumerate(finding.locations):
+            if (loc.dex_class is not None or loc.file_offset is None
+                    or not loc.file_path or not loc.file_path.endswith(".dex")):
+                continue
+            dex_file = mapper(loc.file_path)
+            if dex_file is None:
+                continue
+            hit = dex_file.locate(loc.file_offset)
+            if hit is None:
+                continue
+            dex_class, dex_method = hit
+            if new_locs is None:
+                new_locs = list(finding.locations)
+            new_locs[i] = dataclasses.replace(loc, dex_class=dex_class, dex_method=dex_method)
+        out.append(dataclasses.replace(finding, locations=new_locs)
+                   if new_locs is not None else finding)
+    return out
+
+
 def _run_spec(ws: Workspace, spec: ScannerSpec, meta: WorkspaceMeta | None) -> list[Finding]:
     """Run one scanner, serving from / writing to the content-hash cache when possible.
 
@@ -122,8 +164,9 @@ def run_all(ws: Workspace, *, use_cache: bool = True) -> list[Finding]:
     """Run every registered scanner over the workspace and concatenate their findings.
 
     Per-scanner findings are memoized under a content-hash key (input + dumpa + rule-bundle
-    versions); pass use_cache=False to force a fresh scan. `enrich_native_rvas` runs on the
-    assembled list every time — it is a cheap deterministic post-pass, so it stays uncached.
+    versions); pass use_cache=False to force a fresh scan. `enrich_native_rvas` and
+    `enrich_dex_locations` run on the assembled list every time — cheap deterministic
+    post-passes, so they stay uncached.
     """
     meta = ws.read_meta() if use_cache else None
     findings: list[Finding] = []
@@ -131,7 +174,8 @@ def run_all(ws: Workspace, *, use_cache: bool = True) -> list[Finding]:
         findings.extend(_run_spec(ws, spec, meta))
     if any(f.kind == "engine" and f.subject == "Unity" for f in findings):
         findings.extend(_run_spec(ws, UNITY_SPEC, meta))
-    return enrich_native_rvas(findings, ws)
+    findings = enrich_native_rvas(findings, ws)
+    return enrich_dex_locations(findings, ws)
 
 
 def primary_engine(findings: list[Finding]) -> str | None:

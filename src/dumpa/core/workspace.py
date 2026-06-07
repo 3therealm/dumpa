@@ -40,6 +40,7 @@ const_dir_dumps = "dumps"
 const_dir_reports = "reports"
 const_dir_cache = "cache"
 const_dir_native = "native"
+const_dir_dex = "dex"
 const_file_app_apk = "app.apk"
 
 
@@ -110,6 +111,11 @@ class Workspace:
     def native_dir(self) -> Path:
         """Per-library native symbol/section sidecars (dumps/native/)."""
         return self.dumps_dir / const_dir_native
+
+    @property
+    def dex_dir(self) -> Path:
+        """Per-dex class/method/field inventory sidecars (dumps/dex/)."""
+        return self.dumps_dir / const_dir_dex
 
     @property
     def meta_path(self) -> Path:
