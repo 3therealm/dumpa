@@ -254,3 +254,136 @@ category = "push messaging"
 owner = "OneSignal"
 confidence = "high"
 strings = ["com/onesignal/"]
+
+# --- manifest-component matchers ---------------------------------------------
+# SDKs register fully-qualified activities/services/receivers in the manifest.
+# These rules match component class names in the parsed AndroidManifest.xml and so
+# add structured manifest-entry evidence (and catch an SDK whose classes live in a
+# split/feature module not present in the base dex). Subjects mirror the class-path
+# rules above so tracker.scan merges both signals into one finding.
+
+[[rule]]
+kind = "tracker"
+subject = "Google AdMob / Mobile Ads"
+category = "ads"
+owner = "Google"
+confidence = "high"
+manifest_field = "component"
+manifest = ['^com\.google\.android\.gms\.ads\.']
+
+[[rule]]
+kind = "tracker"
+subject = "Meta Audience Network"
+category = "ad mediation"
+owner = "Meta"
+confidence = "high"
+manifest_field = "component"
+manifest = ['^com\.facebook\.ads\.']
+
+[[rule]]
+kind = "tracker"
+subject = "Facebook SDK"
+category = "social login or sharing"
+owner = "Meta"
+confidence = "high"
+manifest_field = "component"
+manifest = ['^com\.facebook\.(FacebookActivity|CustomTabActivity|CustomTabMainActivity)']
+
+[[rule]]
+kind = "tracker"
+subject = "AppLovin MAX"
+category = "ad mediation"
+owner = "AppLovin"
+confidence = "high"
+manifest_field = "component"
+manifest = ['^com\.applovin\.']
+
+[[rule]]
+kind = "tracker"
+subject = "Unity Ads"
+category = "ads"
+owner = "Unity"
+confidence = "high"
+manifest_field = "component"
+manifest = ['^com\.unity3d\.ads\.', '^com\.unity3d\.services\.ads\.']
+
+[[rule]]
+kind = "tracker"
+subject = "Unity LevelPlay / ironSource"
+category = "ad mediation"
+owner = "Unity (ironSource)"
+confidence = "high"
+manifest_field = "component"
+manifest = ['^com\.ironsource\.']
+
+[[rule]]
+kind = "tracker"
+subject = "Vungle / Liftoff"
+category = "ads"
+owner = "Liftoff"
+confidence = "high"
+manifest_field = "component"
+manifest = ['^com\.vungle\.']
+
+[[rule]]
+kind = "tracker"
+subject = "Chartboost"
+category = "ads"
+owner = "Chartboost"
+confidence = "high"
+manifest_field = "component"
+manifest = ['^com\.chartboost\.']
+
+[[rule]]
+kind = "tracker"
+subject = "Mintegral"
+category = "ads"
+owner = "Mintegral"
+confidence = "high"
+manifest_field = "component"
+manifest = ['^com\.(mbridge|mintegral)\.']
+
+[[rule]]
+kind = "tracker"
+subject = "Pangle"
+category = "ads"
+owner = "ByteDance"
+confidence = "high"
+manifest_field = "component"
+manifest = ['^com\.bytedance\.sdk\.openadsdk\.']
+
+[[rule]]
+kind = "tracker"
+subject = "Tapjoy"
+category = "ads"
+owner = "Tapjoy"
+confidence = "high"
+manifest_field = "component"
+manifest = ['^com\.tapjoy\.']
+
+[[rule]]
+kind = "tracker"
+subject = "InMobi"
+category = "ads"
+owner = "InMobi"
+confidence = "high"
+manifest_field = "component"
+manifest = ['^com\.inmobi\.']
+
+[[rule]]
+kind = "tracker"
+subject = "AppsFlyer"
+category = "attribution"
+owner = "AppsFlyer"
+confidence = "high"
+manifest_field = "component"
+manifest = ['^com\.appsflyer\.']
+
+[[rule]]
+kind = "tracker"
+subject = "OneSignal"
+category = "push messaging"
+owner = "OneSignal"
+confidence = "high"
+manifest_field = "component"
+manifest = ['^com\.onesignal\.']

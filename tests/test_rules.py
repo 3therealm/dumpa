@@ -208,7 +208,7 @@ def test_trackers_builtin_loads() -> None:
     bundle = load_builtin("trackers")
     assert bundle.name == "trackers"
     assert len(bundle.rules) >= 20
-    assert all(r.is_content for r in bundle.rules)
+    assert all(r.is_content or r.is_manifest for r in bundle.rules)
 
 
 def test_missing_bundle_table_raises(tmp_path: Path) -> None:
