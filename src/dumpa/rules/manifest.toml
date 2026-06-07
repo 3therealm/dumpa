@@ -1,0 +1,60 @@
+# Manifest-driven privacy/risk detections.
+#
+# These rules match the parsed AndroidManifest.xml (not raw bytes), so a rule can
+# require a *combination* of declared permissions: `match = "all"` over the
+# `permission` field fires only when every pattern matches some declared permission.
+# That expresses "suspicious permission combos" as data rather than scanner code.
+#
+# Structural manifest findings (exported components, debuggable, deep links, boot
+# receivers) are emitted by scanners/manifest_privacy.py, which needs the component
+# tree; this bundle is for permission-combination policy.
+
+[bundle]
+name = "manifest"
+version = "2026.06.1"
+source = "dumpa built-in"
+updated = "2026-06-07"
+
+[[rule]]
+kind = "manifest-risk"
+subject = "Precise location + network egress"
+confidence = "medium"
+category = "permission-combo"
+match = "all"
+manifest_field = "permission"
+manifest = ['ACCESS_FINE_LOCATION$', 'INTERNET$']
+
+[[rule]]
+kind = "manifest-risk"
+subject = "Device/phone identifiers + network egress"
+confidence = "medium"
+category = "permission-combo"
+match = "all"
+manifest_field = "permission"
+manifest = ['READ_PHONE_STATE$', 'INTERNET$']
+
+[[rule]]
+kind = "manifest-risk"
+subject = "Microphone + network egress"
+confidence = "medium"
+category = "permission-combo"
+match = "all"
+manifest_field = "permission"
+manifest = ['RECORD_AUDIO$', 'INTERNET$']
+
+[[rule]]
+kind = "manifest-risk"
+subject = "Contacts/accounts + network egress"
+confidence = "medium"
+category = "permission-combo"
+match = "all"
+manifest_field = "permission"
+manifest = ['(READ_CONTACTS|GET_ACCOUNTS)$', 'INTERNET$']
+
+[[rule]]
+kind = "manifest-risk"
+subject = "Queries all installed packages"
+confidence = "low"
+category = "permission-combo"
+manifest_field = "permission"
+manifest = ['QUERY_ALL_PACKAGES$']

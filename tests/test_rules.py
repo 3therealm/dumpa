@@ -5,8 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from _axml_build import build_axml
 
 from dumpa.core.errors import ConfigError
+from dumpa.core.manifest import Component, ManifestInfo
 from dumpa.core.report import Confidence, FindingState
 from dumpa.core.rules import (
     apply_bundle,
@@ -206,9 +208,82 @@ def test_trackers_builtin_loads() -> None:
     bundle = load_builtin("trackers")
     assert bundle.name == "trackers"
     assert len(bundle.rules) >= 20
-    assert all(r.is_content for r in bundle.rules)
+    assert all(r.is_content or r.is_manifest for r in bundle.rules)
 
 
 def test_missing_bundle_table_raises(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match=r"\[bundle\]"):
         load_bundle(_write(tmp_path, '[[rule]]\nkind="e"\nsubject="X"\nconfidence="high"\nglobs=["a"]\n'))
+
+
+# --- manifest matchers -------------------------------------------------------
+
+_MANIFEST_BUNDLE = """\
+[bundle]
+name = "t"
+version = "1"
+updated = "2026-01-01"
+
+[[rule]]
+kind = "engine"
+subject = "Unity"
+confidence = "high"
+manifest = ['^com\\.unity3d\\.player\\.']
+manifest_field = "component"
+
+[[rule]]
+kind = "manifest-risk"
+subject = "Location + Internet"
+confidence = "medium"
+match = "all"
+manifest_field = "permission"
+manifest = ['ACCESS_FINE_LOCATION$', 'INTERNET$']
+"""
+
+
+def _manifest(*, components: tuple[str, ...] = (), permissions: tuple[str, ...] = ()) -> ManifestInfo:
+    comps = tuple(Component(type="activity", name=n) for n in components)
+    return ManifestInfo(package="com.dev.app", permissions=permissions, components=comps)
+
+
+def test_manifest_component_rule_fires(tmp_path: Path) -> None:
+    bundle = load_bundle(_write(tmp_path, _MANIFEST_BUNDLE))
+    m = _manifest(components=("com.unity3d.player.UnityPlayerActivity",))
+    findings = apply_bundle(bundle, tmp_path / "ex", m)
+    unity = [f for f in findings if f.subject == "Unity"]
+    assert len(unity) == 1
+    assert unity[0].locations[0].manifest_entry == "com.unity3d.player.UnityPlayerActivity"
+
+
+def test_manifest_combo_requires_all_permissions(tmp_path: Path) -> None:
+    bundle = load_bundle(_write(tmp_path, _MANIFEST_BUNDLE))
+    only_one = _manifest(permissions=("android.permission.ACCESS_FINE_LOCATION",))
+    assert [f for f in apply_bundle(bundle, tmp_path / "ex", only_one)
+            if f.subject == "Location + Internet"] == []
+    both = _manifest(permissions=(
+        "android.permission.ACCESS_FINE_LOCATION", "android.permission.INTERNET"))
+    fired = [f for f in apply_bundle(bundle, tmp_path / "ex", both)
+             if f.subject == "Location + Internet"]
+    assert len(fired) == 1
+
+
+def test_manifest_rule_lazy_parses_from_extracted(tmp_path: Path) -> None:
+    bundle = load_bundle(_write(tmp_path, _MANIFEST_BUNDLE))
+    ex = tmp_path / "ex"
+    ex.mkdir()
+    tree = ("manifest", {"package": "com.dev.app"}, [
+        ("application", {}, [
+            ("activity", {"name": "com.unity3d.player.UnityPlayerActivity"}, []),
+        ]),
+    ])
+    (ex / "AndroidManifest.xml").write_bytes(build_axml(tree))
+    findings = apply_bundle(bundle, ex)        # no manifest arg -> lazy parse
+    assert any(f.subject == "Unity" for f in findings)
+
+
+def test_manifest_field_validation(tmp_path: Path) -> None:
+    text = ('[bundle]\nname="t"\nversion="1"\nupdated="d"\n\n'
+            '[[rule]]\nkind="x"\nsubject="X"\nconfidence="high"\n'
+            'manifest=["a"]\nmanifest_field="bogus"\n')
+    with pytest.raises(ConfigError, match="manifest_field"):
+        load_bundle(_write(tmp_path, text))

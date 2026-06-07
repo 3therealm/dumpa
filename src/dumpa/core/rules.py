@@ -35,10 +35,13 @@ import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from dumpa.core.errors import ConfigError
 from dumpa.core.report import Confidence, Evidence, Finding, FindingState, Location
+
+if TYPE_CHECKING:
+    from dumpa.core.manifest import ManifestInfo
 
 logger = logging.getLogger("dumpa")
 
@@ -46,6 +49,9 @@ const_rules_package = "dumpa.rules"
 const_match_any = "any"
 const_match_all = "all"
 _MATCH_MODES = (const_match_any, const_match_all)
+# Manifest matcher: which structured field a rule's patterns are tested against.
+const_manifest_field_any = "any"
+_MANIFEST_FIELDS = ("package", "permission", "component", "action", "category", const_manifest_field_any)
 # Cap locations per rule so a glob over a huge asset tree can't bloat the report.
 const_max_locations_per_rule = 10
 # Files a content rule scans when it does not name its own targets: dex (class
@@ -65,9 +71,10 @@ def _empty_attrs() -> dict[str, str]:
 class Rule:
     """One detection rule -> a Finding.
 
-    A rule is either a *path* rule (``globs`` over the extracted tree) or a *content*
-    rule (``strings`` searched inside ``targets`` files), never both. Content rules may
-    carry tracker metadata (``attributes``: category / owner / purpose).
+    A rule is a *path* rule (``globs`` over the extracted tree), a *content* rule
+    (``strings``/``regex`` searched inside ``targets`` files), or a *manifest* rule
+    (``manifest`` regexes tested against the parsed ``ManifestInfo``) — exactly one.
+    Rules may carry tracker metadata (``attributes``: category / owner / purpose).
     """
     kind: str
     subject: str
@@ -75,6 +82,8 @@ class Rule:
     globs: tuple[str, ...] = ()
     strings: tuple[str, ...] = ()
     regex: tuple[str, ...] = ()
+    manifest: tuple[str, ...] = ()
+    manifest_field: str = const_manifest_field_any
     targets: tuple[str, ...] = ()
     match: str = const_match_any
     state: FindingState = FindingState.PRESENT
@@ -83,6 +92,10 @@ class Rule:
     @property
     def is_content(self) -> bool:
         return bool(self.strings or self.regex)
+
+    @property
+    def is_manifest(self) -> bool:
+        return bool(self.manifest)
 
     @property
     def keys(self) -> tuple[str, ...]:
@@ -176,16 +189,28 @@ def _parse_rule(raw: object, index: int) -> Rule:
     except ValueError as e:
         raise ConfigError(f"{ctx}: invalid confidence {conf_raw!r}") from e
 
-    present = [k for k in ("globs", "strings", "regex") if k in table]
+    present = [k for k in ("globs", "strings", "regex", "manifest") if k in table]
     if len(present) != 1:
-        raise ConfigError(f"{ctx}: a rule needs exactly one of 'globs', 'strings', or 'regex'")
+        raise ConfigError(f"{ctx}: a rule needs exactly one of 'globs', 'strings', 'regex', or 'manifest'")
 
     globs: tuple[str, ...] = ()
     strings: tuple[str, ...] = ()
     regex: tuple[str, ...] = ()
+    manifest: tuple[str, ...] = ()
+    manifest_field = const_manifest_field_any
     targets: tuple[str, ...] = ()
     if "globs" in table:
         globs = _parse_globs(table.get("globs"), ctx)
+    elif "manifest" in table:
+        manifest = _parse_str_list(table.get("manifest"), "manifest", ctx)
+        for pattern in manifest:
+            try:
+                re.compile(pattern)
+            except re.error as e:
+                raise ConfigError(f"{ctx}: invalid manifest regex {pattern!r}: {e}") from e
+        manifest_field = table.get("manifest_field", const_manifest_field_any)
+        if manifest_field not in _MANIFEST_FIELDS:
+            raise ConfigError(f"{ctx}: 'manifest_field' must be one of {_MANIFEST_FIELDS}")
     else:
         if "strings" in table:
             strings = _parse_str_list(table.get("strings"), "strings", ctx)
@@ -211,7 +236,8 @@ def _parse_rule(raw: object, index: int) -> Rule:
 
     return Rule(
         kind=kind, subject=subject, confidence=confidence,
-        globs=globs, strings=strings, regex=regex, targets=targets, match=match,
+        globs=globs, strings=strings, regex=regex, manifest=manifest,
+        manifest_field=manifest_field, targets=targets, match=match,
         state=state, attributes=_parse_attributes(table, ctx),
     )
 
@@ -430,11 +456,72 @@ def _apply_content_rules(rules: list[Rule], bundle: RuleBundle,
     return findings
 
 
-def apply_bundle(bundle: RuleBundle, extracted_dir: Path) -> list[Finding]:
-    """Run every rule in a bundle against an extracted apk tree; return the Findings."""
+def _manifest_candidates(manifest: ManifestInfo, field_name: str) -> list[str]:
+    """Strings a manifest rule's patterns are tested against, for the selected field."""
+    package = [manifest.package] if manifest.package else []
+    permissions = list(manifest.permissions)
+    components = [c.name for c in manifest.components if c.name]
+    actions = [a for c in manifest.components for f in c.intent_filters for a in f.actions]
+    categories = [cat for c in manifest.components for f in c.intent_filters for cat in f.categories]
+    by_field = {
+        "package": package,
+        "permission": permissions,
+        "component": components,
+        "action": actions,
+        "category": categories,
+    }
+    if field_name == const_manifest_field_any:
+        return package + permissions + components + actions + categories
+    return by_field[field_name]
+
+
+def _apply_manifest_rules(rules: list[Rule], bundle: RuleBundle,
+                          manifest: ManifestInfo) -> list[Finding]:
+    """Test each manifest rule's regexes against the parsed manifest; assemble findings."""
+    findings: list[Finding] = []
+    for rule in rules:
+        candidates = _manifest_candidates(manifest, rule.manifest_field)
+        hits: list[tuple[str, str]] = []        # (pattern, matched value)
+        for pattern in rule.manifest:
+            compiled = re.compile(pattern)
+            value = next((c for c in candidates if compiled.search(c)), None)
+            if value is not None:
+                hits.append((pattern, value))
+        fired = (len(hits) == len(rule.manifest)) if rule.match == const_match_all else bool(hits)
+        if not fired:
+            continue
+        evidence: list[Evidence] = []
+        locations: list[Location] = []
+        for pattern, value in hits:
+            evidence.append(Evidence(
+                description=f"manifest {rule.manifest_field} /{pattern}/ matched {value!r}",
+                snippet=value, tool="rules", rule_version=bundle.version,
+            ))
+            if len(locations) < const_max_locations_per_rule:
+                locations.append(Location(manifest_entry=value))
+        findings.append(Finding(
+            kind=rule.kind, subject=rule.subject, confidence=rule.confidence,
+            state=rule.state, attributes=dict(rule.attributes),
+            evidence=evidence, locations=locations,
+        ))
+    return findings
+
+
+def apply_bundle(bundle: RuleBundle, extracted_dir: Path,
+                 manifest: ManifestInfo | None = None) -> list[Finding]:
+    """Run every rule in a bundle against an extracted apk tree; return the Findings.
+
+    ``manifest`` supplies the parsed AndroidManifest.xml for manifest-matcher rules. When
+    a bundle has manifest rules and the caller passes None, it is parsed lazily from the
+    extracted tree; bundles without manifest rules never touch it.
+    """
     findings: list[Finding] = []
     content_rules: list[Rule] = []
+    manifest_rules: list[Rule] = []
     for rule in bundle.rules:
+        if rule.is_manifest:
+            manifest_rules.append(rule)
+            continue
         if rule.is_content:
             content_rules.append(rule)
             continue
@@ -442,4 +529,21 @@ def apply_bundle(bundle: RuleBundle, extracted_dir: Path) -> list[Finding]:
         if matched:
             findings.append(_path_finding(rule, bundle, matched, extracted_dir))
     findings.extend(_apply_content_rules(content_rules, bundle, extracted_dir))
+    if manifest_rules:
+        if manifest is None:
+            manifest = _lazy_manifest(extracted_dir)
+        if manifest is not None:
+            findings.extend(_apply_manifest_rules(manifest_rules, bundle, manifest))
     return findings
+
+
+def _lazy_manifest(extracted_dir: Path) -> ManifestInfo | None:
+    """Parse extracted/AndroidManifest.xml on demand for manifest-rule matching."""
+    from dumpa.core.errors import AxmlError
+    from dumpa.core.manifest import const_manifest_name, parse_manifest_bytes
+    path = extracted_dir / const_manifest_name
+    try:
+        return parse_manifest_bytes(path.read_bytes())
+    except (OSError, AxmlError):
+        logger.debug("manifest rule: cannot parse %s", extracted_dir, exc_info=True)
+        return None
