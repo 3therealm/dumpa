@@ -32,21 +32,25 @@ def _render(report: Report, name: str) -> str:
     return render_markdown(report)
 
 
-def _load_report(workspace: Path) -> Report:
-    """Load the workspace report, rebuilding from the workspace if the JSON is absent."""
+def _load_report(workspace: Path, *, use_cache: bool = True) -> Report:
+    """Load the workspace report, rebuilding from the workspace if the JSON is absent.
+
+    use_cache=False forces a fresh rebuild, bypassing both report.json and the scanner cache.
+    """
     ws = Workspace(root=workspace.resolve())
     if not ws.root.is_dir():
         raise DumpaError(f"workspace not found: {ws.root}")
-    report = read_json(ws.reports_dir / const_file_report_json)
-    if report is not None:
-        return report
+    if use_cache:
+        report = read_json(ws.reports_dir / const_file_report_json)
+        if report is not None:
+            return report
     if ws.read_meta() is None:
         raise DumpaError(f"{ws.root} is not a dumpa workspace; run `dumpa analyze` first")
     registry = build_default_registry(load_config().tool_paths)
-    return build_report(registry, ws)
+    return build_report(registry, ws, use_cache=use_cache)
 
 
-def export(workspace: Path, *, fmt: str, out: Path | None = None) -> None:
+def export(workspace: Path, *, fmt: str, out: Path | None = None, use_cache: bool = True) -> None:
     """Render the report for a workspace as JSON or Markdown."""
     name = fmt.lower()
     if name in _NOT_YET:
@@ -54,7 +58,7 @@ def export(workspace: Path, *, fmt: str, out: Path | None = None) -> None:
     if name not in const_export_formats:
         raise DumpaError(f"unknown export format {fmt!r} (expected json, md, hosts, or adguard)")
 
-    report = _load_report(workspace)
+    report = _load_report(workspace, use_cache=use_cache)
     text = _render(report, name)
 
     if out is not None:

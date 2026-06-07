@@ -64,11 +64,14 @@ def analyze(
         None, "--workspace", help="Workspace directory (default: ./<stem>-workspace)."),
     force: bool = typer.Option(
         False, "--force", help="Rebuild even if a matching workspace already exists."),
+    no_cache: bool = typer.Option(
+        False, "--no-cache", help="Re-run all scanners instead of reusing cached findings."),
     signing: str | None = typer.Option(None, "--signing", help=_SIGNING_HELP),
 ) -> None:
     """Extract an APK/XAPK once into a reproducible workspace."""
     run_command(lambda: analyze_cmd.analyze(
-        input_file, workspace=workspace, force=force, signing=signing))
+        input_file, workspace=workspace, force=force, signing=signing,
+        use_cache=not no_cache))
 
 
 @app.command()
@@ -91,9 +94,11 @@ def export(
     fmt: str = typer.Option("json", "--format", help="Report format: json | md | hosts | adguard."),
     out: Path | None = typer.Option(
         None, "--out", help="Write to this file instead of stdout."),
+    no_cache: bool = typer.Option(
+        False, "--no-cache", help="Rebuild from a fresh scan instead of cached findings/report.json."),
 ) -> None:
     """Render a workspace's report as JSON, Markdown, or a domain blocklist."""
-    run_command(lambda: export_cmd.export(workspace, fmt=fmt, out=out))
+    run_command(lambda: export_cmd.export(workspace, fmt=fmt, out=out, use_cache=not no_cache))
 
 
 @app.command()

@@ -119,12 +119,12 @@ def build_workspace(registry: ToolRegistry, ws: Workspace, input_abs: Path,
 
 
 def _report_workspace(registry: ToolRegistry, ws: Workspace, *,
-                      signed_expected: bool, input_size: int) -> None:
+                      signed_expected: bool, input_size: int, use_cache: bool = True) -> None:
     """Log a one-line apk sanity report, write the JSON report, and point at the layout."""
     package = _package_of(registry, ws.app_apk) or '?'
     report_output_apk(registry, ws.app_apk, package, signed_expected, input_size)
     report_path = ws.reports_dir / const_file_report_json
-    write_json(build_report(registry, ws), report_path)
+    write_json(build_report(registry, ws, use_cache=use_cache), report_path)
     logger.info("workspace: %s", ws.root)
     logger.info("  extracted: %s", ws.extracted_dir)
     logger.info("  dumps:     %s", ws.dumps_dir)
@@ -156,7 +156,7 @@ def report_for_input(input_path: Path) -> Report:
 
 
 def analyze(input_file: Path, *, workspace: Path | None = None,
-            force: bool = False, signing: str | None = None) -> None:
+            force: bool = False, signing: str | None = None, use_cache: bool = True) -> None:
     """Extract input_file into a reproducible workspace, reusing it when unchanged."""
     config = load_config()
     registry = build_default_registry(config.tool_paths)
@@ -177,10 +177,11 @@ def analyze(input_file: Path, *, workspace: Path | None = None,
             logger.info("reusing workspace %s (input unchanged)", ws.root)
             meta = ws.read_meta()
             size = meta.input_size if meta else input_abs.stat().st_size
-            _report_workspace(registry, ws, signed_expected=signed_expected, input_size=size)
+            _report_workspace(registry, ws, signed_expected=signed_expected, input_size=size,
+                              use_cache=use_cache)
             return
 
         build_workspace(registry, ws, input_abs, in_type, input_sha, sign_config, build_options)
         logger.info("workspace ready")
         _report_workspace(registry, ws, signed_expected=signed_expected,
-                          input_size=input_abs.stat().st_size)
+                          input_size=input_abs.stat().st_size, use_cache=use_cache)

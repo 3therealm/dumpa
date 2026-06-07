@@ -55,8 +55,12 @@ def _read_signer(registry: ToolRegistry, ws: Workspace) -> apksigner.SignerInfo 
     return apksigner.parse_verify_output(out)
 
 
-def build_report(registry: ToolRegistry, ws: Workspace) -> Report:
-    """Assemble a facts-only Report for a populated workspace (findings empty for now)."""
+def build_report(registry: ToolRegistry, ws: Workspace, *, use_cache: bool = True) -> Report:
+    """Assemble the unified Report for a populated workspace.
+
+    Scanner findings are served from the per-scanner content-hash cache when available;
+    pass use_cache=False to force a fresh scan (the `--no-cache` path).
+    """
     meta = ws.read_meta()
     if meta is None:
         raise ValueError(f"workspace {ws.root} has no marker; run `dumpa analyze` first")
@@ -70,7 +74,7 @@ def build_report(registry: ToolRegistry, ws: Workspace) -> Report:
     # failed (and the only source for ABIs, which live in the native-code listing).
     permissions = list(manifest.permissions) if manifest else list(badging.permissions)
 
-    findings = run_all(ws)
+    findings = run_all(ws, use_cache=use_cache)
     findings.extend(permission_findings(permissions))
 
     facts = AppFacts(

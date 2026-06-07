@@ -12,9 +12,11 @@ import dataclasses
 from collections.abc import Callable
 from pathlib import PurePosixPath
 
+from dumpa.core import cache
 from dumpa.core.elf import ElfFile, parse_elf
 from dumpa.core.report import Confidence, Finding
-from dumpa.core.workspace import Workspace
+from dumpa.core.rules import load_builtin
+from dumpa.core.workspace import Workspace, WorkspaceMeta
 from dumpa.scanners import (
     endpoint,
     engine,
@@ -29,12 +31,29 @@ from dumpa.scanners import (
 
 Scanner = Callable[[Workspace], list[Finding]]
 
+
+@dataclasses.dataclass(frozen=True)
+class ScannerSpec:
+    """A scanner plus the rule bundles whose versions gate its cached output."""
+    name: str                       # cache id, e.g. "tracker"
+    fn: Scanner
+    bundles: tuple[str, ...] = ()    # builtin bundle names the scanner consumes
+
+
 # Registration order is the run order; engine detection first so its findings exist
 # for primary_engine() and so detail scanners (unity) follow their parent engine.
-SCANNERS: tuple[Scanner, ...] = (
-    engine.scan, manifest_privacy.scan, tracker.scan, privacy.scan, protection.scan,
-    secret.scan, native.scan, endpoint.scan,
+SCANNERS: tuple[ScannerSpec, ...] = (
+    ScannerSpec("engine", engine.scan, ("engines",)),
+    ScannerSpec("manifest_privacy", manifest_privacy.scan, ("manifest",)),
+    ScannerSpec("tracker", tracker.scan, ("trackers",)),
+    ScannerSpec("privacy", privacy.scan, ("privacy",)),
+    ScannerSpec("protection", protection.scan, ("protections",)),
+    ScannerSpec("secret", secret.scan, ("secrets",)),
+    ScannerSpec("native", native.scan),
+    ScannerSpec("endpoint", endpoint.scan),
 )
+# Unity deep helper runs only when the engine scanner flagged Unity.
+UNITY_SPEC = ScannerSpec("unity", unity.scan)
 
 _CONFIDENCE_RANK = {Confidence.HIGH: 3, Confidence.MEDIUM: 2, Confidence.LOW: 1}
 
@@ -80,13 +99,38 @@ def enrich_native_rvas(findings: list[Finding], ws: Workspace) -> list[Finding]:
     return out
 
 
-def run_all(ws: Workspace) -> list[Finding]:
-    """Run every registered scanner over the workspace and concatenate their findings."""
+def _run_spec(ws: Workspace, spec: ScannerSpec, meta: WorkspaceMeta | None) -> list[Finding]:
+    """Run one scanner, serving from / writing to the content-hash cache when possible.
+
+    Caching is active only for a marked workspace (meta present); without it there is no
+    input hash to key on, so the scanner just runs (the case for in-memory unit tests).
+    """
+    if meta is None:
+        return list(spec.fn(ws))
+    key = cache.compute_scanner_key(
+        meta.input_sha256, {b: load_builtin(b).version for b in spec.bundles}
+    )
+    cached = cache.read_scanner_cache(ws, spec.name, key)
+    if cached is not None:
+        return cached
+    produced = list(spec.fn(ws))
+    cache.write_scanner_cache(ws, spec.name, key, produced)
+    return produced
+
+
+def run_all(ws: Workspace, *, use_cache: bool = True) -> list[Finding]:
+    """Run every registered scanner over the workspace and concatenate their findings.
+
+    Per-scanner findings are memoized under a content-hash key (input + dumpa + rule-bundle
+    versions); pass use_cache=False to force a fresh scan. `enrich_native_rvas` runs on the
+    assembled list every time — it is a cheap deterministic post-pass, so it stays uncached.
+    """
+    meta = ws.read_meta() if use_cache else None
     findings: list[Finding] = []
-    for scan in SCANNERS:
-        findings.extend(scan(ws))
+    for spec in SCANNERS:
+        findings.extend(_run_spec(ws, spec, meta))
     if any(f.kind == "engine" and f.subject == "Unity" for f in findings):
-        findings.extend(unity.scan(ws))
+        findings.extend(_run_spec(ws, UNITY_SPEC, meta))
     return enrich_native_rvas(findings, ws)
 
 
