@@ -48,10 +48,16 @@ def convert(
         ..., exists=True, dir_okay=False, readable=True,
         help="Path to the .xapk file to convert.",
     ),
+    workspace: Path | None = typer.Option(
+        None, "--workspace",
+        help="Reusable workspace dir; a later analyze/dump-il2cpp reuses its extraction."),
+    force: bool = typer.Option(
+        False, "--force", help="Rebuild even if a matching workspace already exists."),
     signing: str | None = typer.Option(None, "--signing", help=_SIGNING_HELP),
 ) -> None:
     """Convert a split .xapk bundle into a single installable .apk."""
-    run_command(lambda: convert_cmd.run_convert(xapk_file, signing=signing))
+    run_command(lambda: convert_cmd.run_convert(
+        xapk_file, signing=signing, workspace=workspace, force=force))
 
 
 @app.command()

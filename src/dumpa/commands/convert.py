@@ -55,7 +55,8 @@ def check_sys_args() -> bool:
     return Path(name).resolve().is_file()
 
 
-def _run_with_profile(profile_target: str, xapk_path: Path, signing: str | None) -> None:
+def _run_with_profile(profile_target: str, xapk_path: Path, signing: str | None,
+                      workspace: Path | None, force: bool) -> None:
     """Run convert_xapk under cProfile; dump stats to file, print top 20 by cumtime."""
     import cProfile
     import pstats
@@ -64,7 +65,7 @@ def _run_with_profile(profile_target: str, xapk_path: Path, signing: str | None)
     profiler = cProfile.Profile()
     profiler.enable()
     try:
-        convert_xapk(xapk_path, signing=signing)
+        convert_xapk(xapk_path, signing=signing, workspace=workspace, force=force)
     finally:
         profiler.disable()
         out_path = Path(profile_target if profile_target != '1' else '.dumpa-profile.prof').resolve()
@@ -75,16 +76,17 @@ def _run_with_profile(profile_target: str, xapk_path: Path, signing: str | None)
         stats.print_stats(20)
 
 
-def run_convert(xapk_path: Path, *, signing: str | None = None) -> None:
+def run_convert(xapk_path: Path, *, signing: str | None = None,
+                workspace: Path | None = None, force: bool = False) -> None:
     """Run conversion, honoring the profile env var.
 
     Mapping exceptions to exit codes is the caller's responsibility (run_command).
     """
     profile_target = os.environ.get(const_env_profile, '').strip()
     if profile_target:
-        _run_with_profile(profile_target, xapk_path, signing)
+        _run_with_profile(profile_target, xapk_path, signing, workspace, force)
     else:
-        convert_xapk(xapk_path, signing=signing)
+        convert_xapk(xapk_path, signing=signing, workspace=workspace, force=force)
 
 
 def main() -> None:

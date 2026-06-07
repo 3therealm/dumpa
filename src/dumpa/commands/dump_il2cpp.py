@@ -10,7 +10,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from dumpa.commands.analyze import build_workspace, input_type
+from dumpa.commands.analyze import input_type
+from dumpa.convert.pipeline import build_workspace
 from dumpa.core.archive import safe_extract_zip
 from dumpa.core.config import load_config
 from dumpa.core.errors import DumpaError
