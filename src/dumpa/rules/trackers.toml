@@ -387,3 +387,38 @@ owner = "OneSignal"
 confidence = "high"
 manifest_field = "component"
 manifest = ['^com\.onesignal\.']
+
+# --- domain matchers ---------------------------------------------------------
+# Separate same-subject rules carrying SDK domains. `_merge_by_subject` folds these
+# into the matching tracker finding. `domain_search = true` turns the host into a
+# binary-content detector; per the design that signal is LOW confidence, so these
+# rules set confidence = "low". Enable domain_search ONLY on dedicated hosts owned by
+# exactly one SDK (never shared infra) to keep false positives near zero. The broader
+# ownership map (attribution-only) lives in dumpa/data/domains.toml, not here.
+
+[[rule]]
+kind = "tracker"
+subject = "Firebase Analytics"
+owner = "Google"
+category = "analytics"
+confidence = "low"
+domain_search = true
+domains = ["app-measurement.com"]
+
+[[rule]]
+kind = "tracker"
+subject = "AppsFlyer"
+owner = "AppsFlyer"
+category = "attribution"
+confidence = "low"
+domain_search = true
+domains = ["appsflyer.com"]
+
+[[rule]]
+kind = "tracker"
+subject = "Chartboost"
+owner = "Chartboost"
+category = "ads"
+confidence = "low"
+domain_search = true
+domains = ["chartboost.com"]

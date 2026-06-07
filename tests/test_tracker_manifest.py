@@ -6,6 +6,7 @@ from pathlib import Path
 
 from _axml_build import build_axml
 
+from dumpa.core.report import Confidence
 from dumpa.core.workspace import Workspace
 from dumpa.scanners import tracker
 
@@ -49,6 +50,18 @@ def test_dex_and_manifest_merge_into_one(tmp_path: Path) -> None:
     assert any(loc.file_offset is not None for loc in f.locations)
     assert any(loc.manifest_entry is not None for loc in f.locations)
     assert len(f.evidence) >= 2
+
+
+def test_domain_detector_merges_into_class_finding(tmp_path: Path) -> None:
+    # dex carries both the AppsFlyer class path (high) and the appsflyer.com domain
+    # literal (low detector) -> one finding, strongest confidence, domain location kept.
+    ws = _ws(tmp_path, dex=b"xx Lcom/appsflyer/AppsFlyerLib; yy appsflyer.com zz")
+    findings = tracker.scan(ws)
+    af = [f for f in findings if f.subject == "AppsFlyer"]
+    assert len(af) == 1
+    f = af[0]
+    assert f.confidence is Confidence.HIGH                 # class-path wins over low detector
+    assert any(loc.domain == "appsflyer.com" for loc in f.locations)
 
 
 def test_engine_activity_is_not_a_tracker(tmp_path: Path) -> None:

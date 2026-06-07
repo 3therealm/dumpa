@@ -87,11 +87,22 @@ def rules_explain(subject: str, *, bundle_path: Path | None = None, builtin: str
     for rule in matches:
         print(f"{rule.kind}: {rule.subject}")
         print(f"  confidence: {rule.confidence.value}")
-        print(f"  match:      {rule.match} (fires when {rule.match} of the globs match)")
+        print(f"  match:      {rule.match} (fires when {rule.match} of the patterns match)")
         print(f"  bundle:     {bundle.name} v{bundle.version} ({bundle.source}, updated {bundle.updated})")
-        print("  globs:")
-        for glob in rule.globs:
-            print(f"    - {glob}")
+        if rule.domains:
+            flag = " (domain_search)" if rule.domain_search else ""
+            label, patterns = f"domains{flag}", rule.domains
+        elif rule.manifest:
+            label, patterns = "manifest", rule.manifest
+        elif rule.strings:
+            label, patterns = "strings", rule.strings
+        elif rule.regex:
+            label, patterns = "regex", rule.regex
+        else:
+            label, patterns = "globs", rule.globs
+        print(f"  {label}:")
+        for pattern in patterns:
+            print(f"    - {pattern}")
 
 
 def rules_list() -> None:

@@ -83,6 +83,8 @@ class Rule:
     strings: tuple[str, ...] = ()
     regex: tuple[str, ...] = ()
     manifest: tuple[str, ...] = ()
+    domains: tuple[str, ...] = ()
+    domain_search: bool = False
     manifest_field: str = const_manifest_field_any
     targets: tuple[str, ...] = ()
     match: str = const_match_any
@@ -91,7 +93,7 @@ class Rule:
 
     @property
     def is_content(self) -> bool:
-        return bool(self.strings or self.regex)
+        return bool(self.strings or self.regex or (self.domains and self.domain_search))
 
     @property
     def is_manifest(self) -> bool:
@@ -99,7 +101,9 @@ class Rule:
 
     @property
     def keys(self) -> tuple[str, ...]:
-        """The pattern keys (literal strings or regex sources) this content rule matches on."""
+        """The pattern keys (literal strings, regex sources, or domain literals) matched on."""
+        if self.domain_search:
+            return self.domains
         return self.strings or self.regex
 
 
@@ -112,6 +116,10 @@ class RuleBundle:
     updated: str
     rules: tuple[Rule, ...]
     default_targets: tuple[str, ...] = ()   # content-scan targets for rules that omit their own
+
+    def domain_rules(self) -> tuple[Rule, ...]:
+        """Rules carrying `domains` (search or not), for the attribution table."""
+        return tuple(r for r in self.rules if r.domains)
 
 
 def _require_str(table: dict[str, Any], key: str, ctx: str) -> str:
@@ -163,6 +171,17 @@ def _parse_str_list(raw: object, key: str, ctx: str) -> tuple[str, ...]:
     return tuple(values)
 
 
+def _parse_domains(raw: object, ctx: str) -> tuple[str, ...]:
+    """Parse + normalize a rule's `domains` list via the shared host validator.
+
+    Each entry runs through core.domains.validate_host (raises ConfigError on
+    scheme/path/'*'/edge-dots/empty-label/single-label/over-long-label).
+    """
+    from dumpa.core.domains import validate_host
+    values = _parse_str_list(raw, "domains", ctx)
+    return tuple(validate_host(v) for v in values)
+
+
 def _parse_attributes(table: dict[str, Any], ctx: str) -> dict[str, str]:
     """Collect optional tracker metadata (category/owner/purpose) into a string map."""
     attrs: dict[str, str] = {}
@@ -189,18 +208,33 @@ def _parse_rule(raw: object, index: int) -> Rule:
     except ValueError as e:
         raise ConfigError(f"{ctx}: invalid confidence {conf_raw!r}") from e
 
-    present = [k for k in ("globs", "strings", "regex", "manifest") if k in table]
+    present = [k for k in ("globs", "strings", "regex", "manifest", "domains") if k in table]
     if len(present) != 1:
-        raise ConfigError(f"{ctx}: a rule needs exactly one of 'globs', 'strings', 'regex', or 'manifest'")
+        raise ConfigError(
+            f"{ctx}: a rule needs exactly one of 'globs', 'strings', 'regex', 'manifest', or 'domains'")
+    if "domain_search" in table and "domains" not in table:
+        raise ConfigError(f"{ctx}: 'domain_search' is only valid on a 'domains' rule")
 
     globs: tuple[str, ...] = ()
     strings: tuple[str, ...] = ()
     regex: tuple[str, ...] = ()
     manifest: tuple[str, ...] = ()
+    domains: tuple[str, ...] = ()
+    domain_search = False
     manifest_field = const_manifest_field_any
     targets: tuple[str, ...] = ()
     if "globs" in table:
         globs = _parse_globs(table.get("globs"), ctx)
+    elif "domains" in table:
+        domains = _parse_domains(table.get("domains"), ctx)
+        ds = table.get("domain_search", False)
+        if not isinstance(ds, bool):
+            raise ConfigError(f"{ctx}: 'domain_search' must be a boolean")
+        domain_search = ds
+        if "targets" in table:
+            targets = tuple(
+                _validate_glob(g, ctx)
+                for g in _parse_str_list(table.get("targets"), "targets", ctx))
     elif "manifest" in table:
         manifest = _parse_str_list(table.get("manifest"), "manifest", ctx)
         for pattern in manifest:
@@ -237,6 +271,7 @@ def _parse_rule(raw: object, index: int) -> Rule:
     return Rule(
         kind=kind, subject=subject, confidence=confidence,
         globs=globs, strings=strings, regex=regex, manifest=manifest,
+        domains=domains, domain_search=domain_search,
         manifest_field=manifest_field, targets=targets, match=match,
         state=state, attributes=_parse_attributes(table, ctx),
     )
@@ -427,7 +462,12 @@ def _content_finding(rule: Rule, bundle: RuleBundle, hits: dict[str, _Hit]) -> F
             description=description, snippet=text, tool="rules", rule_version=bundle.version,
         ))
         if len(locations) < const_max_locations_per_rule:
-            locations.append(Location(file_path=rel, file_offset=offset))
+            # For a domain-search rule the matched key IS the host; stamp it so the
+            # attribution pass and tracker-only blocklists can see it.
+            locations.append(Location(
+                file_path=rel, file_offset=offset,
+                domain=key if rule.domain_search else None,
+            ))
     return Finding(
         kind=rule.kind, subject=rule.subject, confidence=rule.confidence,
         state=rule.state, attributes=dict(rule.attributes),
@@ -445,7 +485,8 @@ def _apply_content_rules(rules: list[Rule], bundle: RuleBundle,
 
     findings: list[Finding] = []
     for targets, group in by_targets.items():
-        literals = {s: s.encode() for rule in group for s in rule.strings}
+        # Literal keys come from `strings` and, for domain-search rules, their `domains`.
+        literals = {k: k.encode() for rule in group for k in rule.keys if not rule.regex}
         regexes = {p: re.compile(p.encode()) for rule in group for p in rule.regex}
         hits = _scan_content(_content_targets(extracted_dir, targets), literals, regexes, extracted_dir)
         for rule in group:
