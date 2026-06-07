@@ -37,9 +37,13 @@ _URL_RE = re.compile(rb"(?:https?|wss?)://[A-Za-z0-9._~:/?#@!$&'()*+,;=%\[\]-]+"
 _TRIM = ".,;:'\")]}>"
 
 
+def _str_list() -> list[str]:
+    return []
+
+
 @dataclass
 class _HostHits:
-    samples: list[str] = field(default_factory=list)
+    samples: list[str] = field(default_factory=_str_list)
     file: str = ""
     offset: int = 0
 

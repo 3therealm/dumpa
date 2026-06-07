@@ -39,6 +39,20 @@ regex = ['AIza[0-9A-Za-z_\\-]{35}']
 """
 
 
+_SLACK_BUNDLE = """\
+[bundle]
+name = "t"
+version = "1"
+updated = "2026-01-01"
+
+[[rule]]
+kind = "secret"
+subject = "Slack token"
+confidence = "high"
+regex = ['xox[baprs]-[0-9A-Za-z-]{10,}']
+"""
+
+
 def test_regex_rule_captures_match(tmp_path: Path) -> None:
     bundle = load_bundle(_write(tmp_path, _REGEX_BUNDLE))
     key = "AIza" + "B" * 35
@@ -52,6 +66,22 @@ def test_regex_rule_captures_match(tmp_path: Path) -> None:
     assert f.attributes["category"] == "api-key"
     assert f.evidence[0].snippet == key          # captured value surfaced
     assert f.locations[0].file_offset is not None
+
+
+def test_regex_rule_captures_match_across_chunk_boundary(tmp_path: Path) -> None:
+    bundle = load_bundle(_write(tmp_path, _SLACK_BUNDLE))
+    token = "xoxb-" + "A" * 80
+    ex = tmp_path / "ex"
+    ex.mkdir()
+    prefix = b"\x00" * ((1 << 20) - 15)
+    (ex / "classes.dex").write_bytes(prefix + token.encode() + b" ")
+
+    findings = apply_bundle(bundle, ex)
+
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.evidence[0].snippet == token
+    assert f.locations[0].file_offset == len(prefix)
 
 
 def test_regex_no_false_positive(tmp_path: Path) -> None:

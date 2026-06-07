@@ -328,6 +328,13 @@ def _content_targets(extracted_dir: Path, targets: tuple[str, ...]) -> list[Path
 _Hit = tuple[str, int, str]
 
 
+def _record_regex_hit(found: dict[str, _Hit], pending_regex: set[str], key: str,
+                      match: re.Match[bytes], rel: str, window_start: int) -> None:
+    text = match.group()[:const_max_match_text].decode("latin-1")
+    found[key] = (rel, window_start + match.start(), text)
+    pending_regex.discard(key)
+
+
 def _scan_content(files: list[Path], literals: dict[str, bytes],
                   regexes: dict[str, re.Pattern[bytes]], extracted_dir: Path) -> dict[str, _Hit]:
     """First-hit (relpath, offset, text) for each literal/regex key; streams with overlap."""
@@ -361,13 +368,19 @@ def _scan_content(files: list[Path], literals: dict[str, bytes],
                     for key in list(pending_regex):
                         m = regexes[key].search(window)
                         if m is not None:
-                            text = m.group()[:const_max_match_text].decode("latin-1")
-                            found[key] = (rel, window_start + m.start(), text)
-                            pending_regex.discard(key)
+                            if m.end() == len(window):
+                                continue
+                            _record_regex_hit(found, pending_regex, key, m, rel, window_start)
                     if not pending_literals and not pending_regex:
                         break
                     base += len(chunk)
                     tail = window[-overlap:] if overlap > 0 else b""
+                if tail and pending_regex:
+                    window_start = base - len(tail)
+                    for key in list(pending_regex):
+                        m = regexes[key].search(tail)
+                        if m is not None:
+                            _record_regex_hit(found, pending_regex, key, m, rel, window_start)
         except OSError:
             logger.debug("content scan: cannot read %s", path, exc_info=True)
             continue
