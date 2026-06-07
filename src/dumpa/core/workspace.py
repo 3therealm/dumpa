@@ -38,6 +38,7 @@ const_file_workspace_meta = "workspace.json"
 const_dir_extracted = "extracted"
 const_dir_dumps = "dumps"
 const_dir_reports = "reports"
+const_dir_native = "native"
 const_file_app_apk = "app.apk"
 
 
@@ -98,6 +99,11 @@ class Workspace:
     @property
     def reports_dir(self) -> Path:
         return self.root / const_dir_reports
+
+    @property
+    def native_dir(self) -> Path:
+        """Per-library native symbol/section sidecars (dumps/native/)."""
+        return self.dumps_dir / const_dir_native
 
     @property
     def meta_path(self) -> Path:

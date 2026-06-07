@@ -355,7 +355,10 @@ def render_markdown(report: Report) -> str:
     secrets = [x for x in report.findings if x.kind == "secret"]
     data_access = [x for x in report.findings if x.kind in ("capability", "data-access")]
     endpoints = [x for x in report.findings if x.kind == "endpoint"]
-    _sectioned = ("tracker", "protection", "secret", "capability", "data-access", "endpoint")
+    native_libs = [x for x in report.findings if x.kind == "native"]
+    native_symbols = [x for x in report.findings if x.kind == "native-symbol"]
+    _sectioned = ("tracker", "protection", "secret", "capability", "data-access",
+                  "endpoint", "native", "native-symbol")
     others = [x for x in report.findings if x.kind not in _sectioned]
 
     lines.append("## Trackers")
@@ -418,6 +421,21 @@ def render_markdown(report: Report) -> str:
     else:
         for x in sorted(endpoints, key=lambda i: i.subject):
             lines.append(f"- {x.subject}")
+    lines.append("")
+
+    lines.append("## Native")
+    if not native_libs and not native_symbols:
+        lines.append("_none_")
+    else:
+        counts = {s.subject: s.attributes for s in native_symbols}
+        for lib in sorted(native_libs, key=lambda i: i.subject):
+            arch = f"{lib.attributes.get('machine', '')} {lib.attributes.get('bitness', '')}".strip()
+            extra = counts.get(lib.subject)
+            if extra:
+                arch += (f" — {extra.get('export_count', '0')} exports, "
+                         f"{extra.get('import_count', '0')} imports, "
+                         f"{extra.get('section_count', '0')} sections")
+            lines.append(f"- {lib.subject}: {arch}")
     lines.append("")
 
     lines.append("## Findings")
