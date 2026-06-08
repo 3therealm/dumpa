@@ -26,6 +26,7 @@ from dumpa.scanners import (
     endpoint,
     engine,
     gametype,
+    godot,
     manifest_privacy,
     native,
     privacy,
@@ -80,6 +81,11 @@ UNITY_SPECS: tuple[ScannerSpec, ...] = (
 # (locates/decrypts script bundles), so it is keyed on the dumpa version alone.
 COCOS_SPECS: tuple[ScannerSpec, ...] = (
     ScannerSpec("cocos", cocos.scan),
+)
+# Godot deep helper runs only when the engine scanner flagged Godot. Code-only (parses
+# and extracts the PCK archive), so it is keyed on the dumpa version alone.
+GODOT_SPECS: tuple[ScannerSpec, ...] = (
+    ScannerSpec("godot", godot.scan),
 )
 
 _CONFIDENCE_RANK = {Confidence.HIGH: 3, Confidence.MEDIUM: 2, Confidence.LOW: 1}
@@ -330,6 +336,9 @@ def run_all(ws: Workspace, *, use_cache: bool = True) -> list[Finding]:
             findings.extend(_run_spec(ws, spec, meta))
     if any(f.kind == "engine" and f.subject == "Cocos2d-x" for f in findings):
         for spec in COCOS_SPECS:
+            findings.extend(_run_spec(ws, spec, meta))
+    if any(f.kind == "engine" and f.subject == "Godot" for f in findings):
+        for spec in GODOT_SPECS:
             findings.extend(_run_spec(ws, spec, meta))
     findings = enrich_native_rvas(findings, ws)
     findings = enrich_dex_locations(findings, ws)
