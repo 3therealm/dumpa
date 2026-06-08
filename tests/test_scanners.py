@@ -5,10 +5,13 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
-from dumpa.core.report import Confidence, Finding
+import pytest
+
+from dumpa.core.domains import DomainOwner, DomainTable
+from dumpa.core.report import Confidence, Evidence, Finding, Location
 from dumpa.core.workspace import Workspace
 from dumpa.scanners import engine as engine_scanner
-from dumpa.scanners import primary_engine, run_all
+from dumpa.scanners import enrich_domain_attribution, primary_engine, run_all
 from dumpa.scanners import tracker as tracker_scanner
 from dumpa.scanners import unity as unity_scanner
 
@@ -125,3 +128,161 @@ def test_primary_engine_prefers_high_confidence() -> None:
 
 def test_primary_engine_none_when_no_engine() -> None:
     assert primary_engine([Finding(kind="tracker", subject="x", confidence=Confidence.LOW)]) is None
+
+
+# --- enrich_domain_attribution (C3) -----------------------------------------
+
+def _owner(owner: str, subject: str | None, *, category: str = "ads") -> DomainOwner:
+    return DomainOwner(owner=owner, category=category, subject=subject,
+                       source="test", version="1")
+
+
+def _patch_table(monkeypatch: pytest.MonkeyPatch, table: DomainTable) -> None:
+    monkeypatch.setattr("dumpa.scanners.build_domain_table", lambda: table)
+
+
+# real seed: app-measurement.com -> Google / Firebase Analytics / analytics
+
+def test_endpoint_gains_owner_and_category(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    endpoint = Finding(kind="endpoint", subject="app-measurement.com", confidence=Confidence.LOW)
+    out = enrich_domain_attribution([endpoint], ws)
+    ep = next(f for f in out if f.kind == "endpoint")
+    assert ep.attributes["owner"] == "Google"
+    assert ep.attributes["category"] == "analytics"
+    assert any(ev.tool == "domain-attribution" for ev in ep.evidence)
+
+
+def test_tracker_gains_domain_location_by_subject(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    tracker = Finding(kind="tracker", subject="Firebase Analytics", confidence=Confidence.HIGH,
+                      attributes={"owner": "Google", "category": "analytics"})
+    endpoint = Finding(kind="endpoint", subject="app-measurement.com", confidence=Confidence.LOW)
+    out = enrich_domain_attribution([tracker, endpoint], ws)
+    tr = next(f for f in out if f.kind == "tracker")
+    assert any(loc.domain == "app-measurement.com" for loc in tr.locations)
+    assert any(ev.tool == "domain-attribution" for ev in tr.evidence)
+
+
+def test_owner_only_fallback_applies_for_single_tracker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_table(monkeypatch, DomainTable({"acme.com": _owner("Acme", "No Such Subject")}))
+    ws = _ws(tmp_path)
+    tracker = Finding(kind="tracker", subject="Acme SDK", confidence=Confidence.HIGH,
+                      attributes={"owner": "Acme"})
+    endpoint = Finding(kind="endpoint", subject="acme.com", confidence=Confidence.LOW)
+    out = enrich_domain_attribution([tracker, endpoint], ws)
+    tr = next(f for f in out if f.kind == "tracker")
+    assert any(loc.domain == "acme.com" for loc in tr.locations)
+
+
+def test_owner_only_fallback_skipped_for_multiple_trackers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_table(monkeypatch, DomainTable({"acme.com": _owner("Acme", "No Such Subject")}))
+    ws = _ws(tmp_path)
+    t1 = Finding(kind="tracker", subject="Acme SDK A", confidence=Confidence.HIGH,
+                 attributes={"owner": "Acme"})
+    t2 = Finding(kind="tracker", subject="Acme SDK B", confidence=Confidence.HIGH,
+                 attributes={"owner": "Acme"})
+    endpoint = Finding(kind="endpoint", subject="acme.com", confidence=Confidence.LOW)
+    out = enrich_domain_attribution([t1, t2, endpoint], ws)
+    for tr in (f for f in out if f.kind == "tracker"):
+        assert not any(loc.domain == "acme.com" for loc in tr.locations)
+
+
+def test_subject_match_preferred_over_owner_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Owner has TWO trackers; the table's DomainOwner.subject matches exactly one.
+    _patch_table(monkeypatch, DomainTable({"acme.com": _owner("Acme", "Acme SDK B")}))
+    ws = _ws(tmp_path)
+    t1 = Finding(kind="tracker", subject="Acme SDK A", confidence=Confidence.HIGH,
+                 attributes={"owner": "Acme"})
+    t2 = Finding(kind="tracker", subject="Acme SDK B", confidence=Confidence.HIGH,
+                 attributes={"owner": "Acme"})
+    endpoint = Finding(kind="endpoint", subject="acme.com", confidence=Confidence.LOW)
+    out = enrich_domain_attribution([t1, t2, endpoint], ws)
+    sdk_a = next(f for f in out if f.subject == "Acme SDK A")
+    sdk_b = next(f for f in out if f.subject == "Acme SDK B")
+    assert any(loc.domain == "acme.com" for loc in sdk_b.locations)
+    assert not any(loc.domain == "acme.com" for loc in sdk_a.locations)
+
+
+def test_existing_owner_attribute_preserved(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    endpoint = Finding(kind="endpoint", subject="app-measurement.com", confidence=Confidence.LOW,
+                       attributes={"owner": "Custom"})
+    out = enrich_domain_attribution([endpoint], ws)
+    ep = next(f for f in out if f.kind == "endpoint")
+    assert ep.attributes["owner"] == "Custom"  # present key not overwritten
+    assert ep.attributes["category"] == "analytics"  # absent key still added
+
+
+def test_shared_infra_host_not_attributed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Only declaration is a shared-infra host; a subdomain must resolve to None.
+    _patch_table(monkeypatch, DomainTable({"firebaseio.com": _owner("X", None, category="infra")}))
+    ws = _ws(tmp_path)
+    endpoint = Finding(kind="endpoint", subject="tenant.firebaseio.com", confidence=Confidence.LOW)
+    out = enrich_domain_attribution([endpoint], ws)
+    ep = next(f for f in out if f.kind == "endpoint")
+    assert "owner" not in ep.attributes
+    assert ep.locations == []
+
+
+def test_confidence_never_changes(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    findings = [
+        Finding(kind="tracker", subject="Firebase Analytics", confidence=Confidence.HIGH,
+                attributes={"owner": "Google", "category": "analytics"}),
+        Finding(kind="endpoint", subject="app-measurement.com", confidence=Confidence.LOW),
+    ]
+    before = [f.confidence for f in findings]
+    out = enrich_domain_attribution(findings, ws)
+    assert [f.confidence for f in out] == before
+
+
+def test_empty_table_passthrough(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_table(monkeypatch, DomainTable({}))
+    ws = _ws(tmp_path)
+    findings = [Finding(kind="endpoint", subject="app-measurement.com", confidence=Confidence.LOW)]
+    out = enrich_domain_attribution(findings, ws)
+    assert out == findings
+
+
+def test_idempotent(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    findings = [
+        Finding(kind="tracker", subject="Firebase Analytics", confidence=Confidence.HIGH,
+                attributes={"owner": "Google", "category": "analytics"}),
+        Finding(kind="endpoint", subject="app-measurement.com", confidence=Confidence.LOW),
+    ]
+    once = enrich_domain_attribution(findings, ws)
+    twice = enrich_domain_attribution(once, ws)
+    tr_once = next(f for f in once if f.kind == "tracker")
+    tr_twice = next(f for f in twice if f.kind == "tracker")
+    assert [loc.domain for loc in tr_once.locations] == [loc.domain for loc in tr_twice.locations]
+    assert len(tr_twice.evidence) == len(tr_once.evidence)
+    ep_twice = next(f for f in twice if f.kind == "endpoint")
+    ep_once = next(f for f in once if f.kind == "endpoint")
+    assert ep_twice.attributes == ep_once.attributes
+    assert len(ep_twice.evidence) == len(ep_once.evidence)
+
+
+def test_host_in_subject_and_location_deduped(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    tracker = Finding(kind="tracker", subject="Firebase Analytics", confidence=Confidence.HIGH,
+                      attributes={"owner": "Google", "category": "analytics"})
+    # Endpoint carries the host in BOTH subject and a Location.domain.
+    endpoint = Finding(
+        kind="endpoint", subject="app-measurement.com", confidence=Confidence.LOW,
+        evidence=[Evidence(description="host", tool="endpoint")],
+        locations=[Location(file_path="x.dex", file_offset=0, domain="app-measurement.com")],
+    )
+    out = enrich_domain_attribution([tracker, endpoint], ws)
+    tr = next(f for f in out if f.kind == "tracker")
+    domain_locs = [loc for loc in tr.locations if loc.domain == "app-measurement.com"]
+    assert len(domain_locs) == 1

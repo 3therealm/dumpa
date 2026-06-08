@@ -14,8 +14,9 @@ from pathlib import PurePosixPath
 
 from dumpa.core import cache
 from dumpa.core.dex import DexFile, parse_dex
+from dumpa.core.domains import DomainOwner, build_domain_table
 from dumpa.core.elf import ElfFile, parse_elf
-from dumpa.core.report import Confidence, Finding
+from dumpa.core.report import Confidence, Evidence, Finding, Location
 from dumpa.core.rules import load_builtin
 from dumpa.core.workspace import Workspace, WorkspaceMeta
 from dumpa.scanners import (
@@ -141,6 +142,134 @@ def enrich_dex_locations(findings: list[Finding], ws: Workspace) -> list[Finding
     return out
 
 
+const_attribution_tool = "domain-attribution"
+
+
+def _attribution_evidence(owner: DomainOwner) -> Evidence:
+    """A stable Evidence (same description across runs) so re-attribution de-dupes."""
+    return Evidence(
+        description=(f"host owned by {owner.owner} "
+                     f"(via {owner.source} v{owner.version})"),
+        tool=const_attribution_tool,
+    )
+
+
+def _has_equivalent_evidence(evidence: list[Evidence], candidate: Evidence) -> bool:
+    return any(e.description == candidate.description and e.tool == candidate.tool
+              for e in evidence)
+
+
+def enrich_domain_attribution(findings: list[Finding], ws: Workspace) -> list[Finding]:
+    """Attribute observed hosts to owning SDK/company using the DomainTable. Idempotent.
+
+    Stamps ownership onto existing findings without synthesizing new ones or touching
+    confidence:
+    - endpoint findings gain `owner`/`category` attributes + a linking Evidence,
+    - tracker findings gain a `Location(domain=host)` + a linking Evidence, attached to the
+      tracker chosen by DomainOwner.subject match, else by owner-only fallback ONLY when
+      exactly one tracker exists for that owner (never cross-attributes within Google/Meta/...).
+
+    Every addition is guarded (attribute key absent / no existing Location with that domain /
+    no equivalent Evidence), so re-running on an already-enriched report is a no-op — relied on
+    by the domain-aware export path. `ws` is unused (the table is built from in-repo bundles),
+    kept for signature parity with the sibling enrich passes.
+    """
+    table = build_domain_table()
+    if len(table) == 0:
+        return findings
+
+    # One de-duped observed-host set: endpoint subjects UNION every Location.domain.
+    observed: set[str] = set()
+    for finding in findings:
+        if finding.kind == "endpoint":
+            observed.add(finding.subject.lower())
+        for loc in finding.locations:
+            if loc.domain:
+                observed.add(loc.domain.lower())
+
+    resolved: dict[str, DomainOwner] = {
+        host: owner for host in observed if (owner := table.resolve(host)) is not None
+    }
+    if not resolved:
+        return findings
+
+    # Index trackers for the linking step (subject -> indices, owner -> indices).
+    by_subject: dict[str, list[int]] = {}
+    by_owner: dict[str, list[int]] = {}
+    for i, f in enumerate(findings):
+        if f.kind != "tracker":
+            continue
+        by_subject.setdefault(f.subject, []).append(i)
+        owner_attr = f.attributes.get("owner")
+        if owner_attr:
+            by_owner.setdefault(owner_attr, []).append(i)
+
+    # Accumulate per-index edits, then materialize with dataclasses.replace once each.
+    new_attrs: dict[int, dict[str, str]] = {}
+    new_locs: dict[int, list[Location]] = {}
+    new_evidence: dict[int, list[Evidence]] = {}
+
+    def _attrs(i: int) -> dict[str, str]:
+        return new_attrs.setdefault(i, dict(findings[i].attributes))
+
+    def _locs(i: int) -> list[Location]:
+        return new_locs.setdefault(i, list(findings[i].locations))
+
+    def _evidence(i: int) -> list[Evidence]:
+        return new_evidence.setdefault(i, list(findings[i].evidence))
+
+    # Step 3: endpoint findings gain owner/category + linking Evidence.
+    for i, f in enumerate(findings):
+        if f.kind != "endpoint":
+            continue
+        owner = resolved.get(f.subject.lower())
+        if owner is None:
+            continue
+        attrs = _attrs(i)
+        if "owner" not in attrs:
+            attrs["owner"] = owner.owner
+        if "category" not in attrs:
+            attrs["category"] = owner.category
+        ev = _attribution_evidence(owner)
+        if not _has_equivalent_evidence(_evidence(i), ev):
+            _evidence(i).append(ev)
+
+    # Step 4: attach Location(domain=host) to the chosen tracker per resolved host.
+    # Sorted for deterministic Location order when one tracker owns several hosts.
+    for host, owner in sorted(resolved.items()):
+        target: int | None = None
+        if owner.subject is not None and by_subject.get(owner.subject):
+            target = by_subject[owner.subject][0]
+        else:
+            owners_idx = by_owner.get(owner.owner, [])
+            if len(owners_idx) == 1:
+                target = owners_idx[0]
+        if target is None:
+            continue
+        if any(loc.domain == host for loc in _locs(target)):
+            continue
+        _locs(target).append(Location(domain=host))
+        ev = _attribution_evidence(owner)
+        if not _has_equivalent_evidence(_evidence(target), ev):
+            _evidence(target).append(ev)
+
+    touched = set(new_attrs) | set(new_locs) | set(new_evidence)
+    if not touched:
+        return findings
+    out: list[Finding] = []
+    for i, f in enumerate(findings):
+        if i not in touched:
+            out.append(f)
+            continue
+        out.append(dataclasses.replace(
+            f,
+            attributes=new_attrs.get(i, f.attributes),
+            locations=new_locs.get(i, f.locations),
+            evidence=new_evidence.get(i, f.evidence),
+        ))
+    return out
+
+
 def _run_spec(ws: Workspace, spec: ScannerSpec, meta: WorkspaceMeta | None) -> list[Finding]:
     """Run one scanner, serving from / writing to the content-hash cache when possible.
 
@@ -164,9 +293,10 @@ def run_all(ws: Workspace, *, use_cache: bool = True) -> list[Finding]:
     """Run every registered scanner over the workspace and concatenate their findings.
 
     Per-scanner findings are memoized under a content-hash key (input + dumpa + rule-bundle
-    versions); pass use_cache=False to force a fresh scan. `enrich_native_rvas` and
-    `enrich_dex_locations` run on the assembled list every time — cheap deterministic
-    post-passes, so they stay uncached.
+    versions); pass use_cache=False to force a fresh scan. `enrich_native_rvas`,
+    `enrich_dex_locations`, and `enrich_domain_attribution` run on the assembled list every
+    time — cheap deterministic post-passes, so they stay uncached. Attribution runs last so it
+    sees every endpoint/tracker finding.
     """
     meta = ws.read_meta() if use_cache else None
     findings: list[Finding] = []
@@ -175,7 +305,8 @@ def run_all(ws: Workspace, *, use_cache: bool = True) -> list[Finding]:
     if any(f.kind == "engine" and f.subject == "Unity" for f in findings):
         findings.extend(_run_spec(ws, UNITY_SPEC, meta))
     findings = enrich_native_rvas(findings, ws)
-    return enrich_dex_locations(findings, ws)
+    findings = enrich_dex_locations(findings, ws)
+    return enrich_domain_attribution(findings, ws)
 
 
 def primary_engine(findings: list[Finding]) -> str | None:
