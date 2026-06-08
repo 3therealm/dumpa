@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dumpa.core.report import Confidence, Evidence, Finding, FindingState, Location
@@ -41,6 +42,17 @@ _URL_RE = re.compile(rb"(?:https?|wss?)://[A-Za-z0-9._~:/?#@!$&'()*+,;=%\[\]-]+"
 _TRIM = ".,;:'\")]}>"
 
 
+def _str_list() -> list[str]:
+    return []
+
+
+@dataclass
+class _HostHits:
+    samples: list[str] = field(default_factory=_str_list)
+    file: str = ""
+    offset: int = 0
+
+
 def _host_of(url: str) -> str | None:
     rest = url.split("://", 1)[1] if "://" in url else ""
     host = re.split(r"[/?#]", rest, maxsplit=1)[0]
@@ -60,7 +72,7 @@ def _catalogs(extracted_dir: Path) -> list[Path]:
     return files
 
 
-def _record(hosts: dict[str, dict[str, object]], raw: bytes, offset: int, rel: str) -> None:
+def _record(hosts: dict[str, _HostHits], raw: bytes, offset: int, rel: str) -> None:
     url = raw.decode("latin-1").rstrip(_TRIM)
     host = _host_of(url)
     if host is None:
@@ -69,15 +81,13 @@ def _record(hosts: dict[str, dict[str, object]], raw: bytes, offset: int, rel: s
     if hit is None:
         if len(hosts) >= const_max_hosts:
             return
-        hit = {"file": rel, "offset": offset, "samples": []}
+        hit = _HostHits(file=rel, offset=offset)
         hosts[host] = hit
-    samples = hit["samples"]
-    assert isinstance(samples, list)
-    if url not in samples and len(samples) < const_max_samples_per_host:
-        samples.append(url)
+    if url not in hit.samples and len(hit.samples) < const_max_samples_per_host:
+        hit.samples.append(url)
 
 
-def _scan_file(path: Path, rel: str, hosts: dict[str, dict[str, object]]) -> None:
+def _scan_file(path: Path, rel: str, hosts: dict[str, _HostHits]) -> None:
     with path.open("rb") as f:
         tail = b""
         base = 0
@@ -107,7 +117,7 @@ def scan(ws: Workspace) -> list[Finding]:
     if not catalogs:
         return []  # not using Addressables remote content
 
-    hosts: dict[str, dict[str, object]] = {}
+    hosts: dict[str, _HostHits] = {}
     for path in catalogs:
         if len(hosts) >= const_max_hosts:
             break
@@ -120,14 +130,12 @@ def scan(ws: Workspace) -> list[Finding]:
 
     findings: list[Finding] = []
     for host, hit in sorted(hosts.items()):
-        samples = hit["samples"]
-        assert isinstance(samples, list)
         evidence = [Evidence(description=f"Addressables remote URL {url}", snippet=url, tool="unity")
-                    for url in samples]
+                    for url in hit.samples]
         findings.append(Finding(
             kind="engine-detail", subject=f"Addressables remote content: {host}",
             confidence=Confidence.MEDIUM, state=FindingState.REFERENCED, attributes={},
             evidence=evidence,
-            locations=[Location(file_path=str(hit["file"]), file_offset=int(hit["offset"]), domain=host)],
+            locations=[Location(file_path=hit.file, file_offset=hit.offset, domain=host)],
         ))
     return findings

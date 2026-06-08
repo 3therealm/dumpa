@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import stat
 from pathlib import Path
 
@@ -83,6 +82,24 @@ def test_rerun_skips_when_sidecar_matches(tmp_path: Path, monkeypatch: pytest.Mo
     first = log.read_text()
     decompile(_apk(tmp_path), target_class="com.foo.Bar", out_dir=out)
     assert log.read_text() == first  # second run did not invoke jadx again
+
+
+def test_rerun_with_different_selector_recreates_dumpa_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_stub_jadx(tmp_path, monkeypatch)
+    apk = _apk(tmp_path)
+    out = tmp_path / "out"
+    decompile(apk, target_class="com.foo.One", out_dir=out)
+    stale = out / "stale.java"
+    stale.write_text("from previous selector", encoding="UTF-8")
+
+    decompile(apk, target_class="com.foo.Two", out_dir=out)
+
+    assert not stale.exists()
+    sidecar = json.loads((out / ".dumpa-decompile.json").read_text())
+    assert sidecar["selector"] == "com.foo.Two"
 
 
 def test_missing_jadx_is_graceful(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -24,6 +24,7 @@ from dumpa.commands.analyze import input_type
 from dumpa.convert.pipeline import build_workspace
 from dumpa.core.config import load_config
 from dumpa.core.errors import DumpaError, ToolNotFoundError
+from dumpa.core.fs import create_or_recreate_dir
 from dumpa.core.hashing import sha256_file
 from dumpa.core.process import run
 from dumpa.core.tools import ResolvedTool, ToolRegistry, build_default_registry
@@ -82,7 +83,10 @@ def decompile(apk_file: Path | None, *, target_class: str | None = None, all_cla
         if _sidecar_matches(out, want):
             logger.info("decompile up to date: %s", out)
             return
-        out.mkdir(parents=True, exist_ok=True)
+        if (out / const_sidecar).is_file():
+            create_or_recreate_dir(out)
+        else:
+            out.mkdir(parents=True, exist_ok=True)
         logger.info("decompiling (%s) -> %s", selector, out)
         _run_jadx(tool, apk, out, target_class)
         _write_sidecar(out, want)
