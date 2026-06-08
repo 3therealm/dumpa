@@ -8,6 +8,7 @@ import json
 
 from dumpa.core.report import (
     AppFacts,
+    CompanyRollup,
     Confidence,
     DomainRecord,
     Evidence,
@@ -15,6 +16,7 @@ from dumpa.core.report import (
     FindingState,
     Location,
     Report,
+    companies,
     domain_records,
     render_blocklist,
     render_domains_csv,
@@ -384,3 +386,50 @@ def test_export_reenriches_domain_aware_only(tmp_path, monkeypatch) -> None:
         calls.clear()
         export_cmd.export(tmp_path, fmt=fmt, out=tmp_path / f"{fmt}.txt")
         assert calls == [], fmt
+
+
+# --- C6: company grouping ------------------------------------------------
+
+
+def _companies_report() -> Report:
+    return Report(
+        dumpa_version="0.1.0", created="t", input_path="/x.apk",
+        facts=AppFacts(input_sha256="a" * 64, input_size=1024),
+        findings=[
+            Finding(kind="tracker", subject="AdMob", confidence=Confidence.HIGH,
+                    attributes={"owner": "Google", "category": "ads"},
+                    locations=[Location(domain="googleads.g.doubleclick.net")]),
+            Finding(kind="tracker", subject="Firebase Analytics", confidence=Confidence.HIGH,
+                    attributes={"owner": "Google", "category": "analytics"},
+                    locations=[Location(domain="firebase.googleapis.com")]),
+            Finding(kind="tracker", subject="AppLovin MAX", confidence=Confidence.HIGH,
+                    attributes={"owner": "AppLovin", "category": "ad mediation"}),
+            Finding(kind="tracker", subject="MysterySDK", confidence=Confidence.LOW),
+        ],
+    )
+
+
+def test_companies_groups_by_owner() -> None:
+    rollups = companies(_companies_report())
+    assert set(rollups) == {"Google", "AppLovin"}  # MysterySDK (no owner) excluded
+    google = rollups["Google"]
+    assert isinstance(google, CompanyRollup)
+    assert google.trackers == ["AdMob", "Firebase Analytics"]
+    assert google.categories == ["ads", "analytics"]
+    assert google.domains == ["firebase.googleapis.com", "googleads.g.doubleclick.net"]
+
+
+def test_companies_mediation_adapters_count() -> None:
+    rollups = companies(_companies_report())
+    assert rollups["AppLovin"].mediation_adapters == 1
+    assert rollups["Google"].mediation_adapters == 0
+
+
+def test_density_score_mediation_adapters() -> None:
+    from dumpa.core.report import density_score
+    assert density_score(_companies_report())["mediation_adapters"] == 1
+
+
+def test_markdown_companies_line() -> None:
+    md = render_markdown(_companies_report())
+    assert "companies: AppLovin (1), Google (2)" in md

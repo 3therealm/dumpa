@@ -274,6 +274,59 @@ def read_json(path: Path) -> Report | None:
 
 
 _AD_CATEGORIES = frozenset({"ads", "ad mediation"})
+_MEDIATION_CATEGORY = "ad mediation"
+
+
+@dataclass(frozen=True)
+class CompanyRollup:
+    """Per-company view of the tracker findings owned by one company."""
+    owner: str
+    trackers: list[str]        # subjects, sorted-distinct
+    categories: list[str]      # sorted-distinct
+    domains: list[str]         # sorted-distinct, from grouped findings' Location.domain
+    mediation_adapters: int    # count of grouped trackers with category == "ad mediation"
+
+
+def companies(report: Report) -> dict[str, CompanyRollup]:
+    """Group tracker findings by their `owner` attribute into per-company rollups.
+
+    Only `kind == "tracker"` findings carrying an `owner` attribute participate;
+    unattributed trackers are skipped. For each owner, collect sorted-distinct subjects,
+    categories, and Location.domain values, plus a count of trackers whose
+    category == "ad mediation". Keyed by owner string.
+    """
+    subjects: dict[str, set[str]] = {}
+    categories: dict[str, set[str]] = {}
+    domains: dict[str, set[str]] = {}
+    mediation: dict[str, set[str]] = {}
+    for finding in report.findings:
+        if finding.kind != "tracker":
+            continue
+        owner = finding.attributes.get("owner")
+        if not owner:
+            continue
+        subjects.setdefault(owner, set()).add(finding.subject)
+        categories.setdefault(owner, set())
+        domains.setdefault(owner, set())
+        mediation.setdefault(owner, set())
+        category = finding.attributes.get("category")
+        if category:
+            categories[owner].add(category)
+        if category == _MEDIATION_CATEGORY:
+            mediation[owner].add(finding.subject)
+        for loc in finding.locations:
+            if loc.domain:
+                domains[owner].add(loc.domain)
+    return {
+        owner: CompanyRollup(
+            owner=owner,
+            trackers=sorted(subjects[owner]),
+            categories=sorted(categories[owner]),
+            domains=sorted(domains[owner]),
+            mediation_adapters=len(mediation[owner]),
+        )
+        for owner in subjects
+    }
 
 
 def density_score(report: Report) -> dict[str, float]:
@@ -286,6 +339,8 @@ def density_score(report: Report) -> dict[str, float]:
         "trackers": len(trackers),
         "companies": len(owners),
         "ad_sdks": len(ad_sdks),
+        "mediation_adapters": len([f for f in trackers
+                                   if f.attributes.get("category") == _MEDIATION_CATEGORY]),
         "per_mb": round(len(trackers) / size_mb, 3) if size_mb > 0 else 0.0,
     }
     return out
@@ -548,6 +603,12 @@ def render_markdown(report: Report) -> str:
                 owner = t.attributes.get("owner")
                 suffix = f" — {owner}" if owner else ""
                 lines.append(f"- {t.subject}{suffix} (confidence: {t.confidence.value})")
+            lines.append("")
+        rollups = companies(report)
+        if rollups:
+            parts = [f"{r.owner} ({len(r.trackers)})"
+                     for r in sorted(rollups.values(), key=lambda r: r.owner)]
+            lines.append(f"companies: {', '.join(parts)}")
             lines.append("")
 
     lines.append("## Protections")

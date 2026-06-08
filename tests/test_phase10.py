@@ -33,6 +33,11 @@ def _tracker(subject: str) -> Finding:
     return Finding(kind="tracker", subject=subject, confidence=Confidence.HIGH)
 
 
+def _tracker_owned(subject: str, owner: str) -> Finding:
+    return Finding(kind="tracker", subject=subject, confidence=Confidence.HIGH,
+                   attributes={"owner": owner})
+
+
 # --- diff --------------------------------------------------------------------
 
 def test_diff_added_and_removed() -> None:
@@ -56,6 +61,36 @@ def test_diff_no_changes() -> None:
     same = _report(_tracker("AdMob"), engine="Unity")
     d = diff_reports(same, _report(_tracker("AdMob"), engine="Unity"))
     assert not d.changed
+
+
+def test_diff_companies_added_removed() -> None:
+    old = _report(_tracker_owned("AdMob", "Google"))
+    new = _report(_tracker_owned("AdMob", "Google"), _tracker_owned("AppLovin MAX", "Meta"))
+    d = diff_reports(old, new)
+    assert d.companies_added == ["Meta"]
+    assert d.companies_removed == []
+
+
+def test_diff_company_only_change_is_changed() -> None:
+    # identical tracker subject; only the owner attribute differs -> subject deltas empty,
+    # but the company set changed, so .changed must be True.
+    old = _report(_tracker_owned("AdMob", "Google"))
+    new = _report(_tracker_owned("AdMob", "Meta"))
+    d = diff_reports(old, new)
+    assert all(not delta.changed for delta in d.deltas)
+    assert d.companies_added == ["Meta"]
+    assert d.companies_removed == ["Google"]
+    assert d.changed
+
+
+def test_render_diff_companies_block() -> None:
+    old = _report(_tracker_owned("AdMob", "Google"))
+    new = _report(_tracker_owned("AdMob", "Meta"))
+    text = render_diff("a", "b", diff_reports(old, new))
+    assert "## companies" in text
+    assert "  + Meta" in text
+    assert "  - Google" in text
+    assert "no finding changes" not in text
 
 
 # --- blocklist ---------------------------------------------------------------
