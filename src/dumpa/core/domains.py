@@ -12,10 +12,21 @@ they are versioned and unit-tested alongside the algorithms that consume them.
 
 from __future__ import annotations
 
+import importlib.resources
+import logging
+import os
 import re
+import tomllib
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, cast
 
 from dumpa.core.errors import ConfigError
+
+logger = logging.getLogger("dumpa")
+
+const_data_package = "dumpa.data"
+const_domains_filename = "domains.toml"
 
 # Multi-tenant hosts that must NEVER attribute via suffix; an observed host under one of
 # these is shared platform infrastructure, not a tracker signal, so it attributes only on
@@ -177,21 +188,124 @@ class DomainTable:
         return self._owners[best] if best is not None else None
 
 
+def _require_str(table: dict[str, Any], key: str, ctx: str) -> str:
+    value = table.get(key)
+    if not isinstance(value, str) or not value:
+        raise ConfigError(f"{ctx}: missing or non-string {key!r}")
+    return value
+
+
+def _parse_domain_entry(raw: object, index: int, *, name: str, version: str) -> tuple[str, DomainOwner]:
+    """One [[domain]] table -> (validated host, DomainOwner). Raises ConfigError if malformed."""
+    if not isinstance(raw, dict):
+        raise ConfigError(f"domain #{index}: must be a table")
+    table = cast("dict[str, Any]", raw)
+    ctx = f"domain #{index}"
+    host = validate_host(_require_str(table, "host", ctx))
+    owner = _require_str(table, "owner", ctx)
+    category = _require_str(table, "category", ctx)
+    subject = table.get("subject")
+    if subject is not None and (not isinstance(subject, str) or not subject):
+        raise ConfigError(f"{ctx}: 'subject' must be a non-empty string when present")
+    return host, DomainOwner(owner=owner, category=category, subject=subject,
+                             source=name, version=version)
+
+
+def _parse_domains_toml(
+    data: dict[str, Any], *, default_source: str
+) -> tuple[str, str, str, str, dict[str, DomainOwner]]:
+    """Parse a domains.toml dict into (name, version, source, updated, owners).
+
+    Mirrors the [bundle] provenance discipline of core.rules._parse_bundle.
+    """
+    bundle_tbl = data.get("bundle")
+    if not isinstance(bundle_tbl, dict):
+        raise ConfigError("domains bundle: missing [bundle] table")
+    bundle_tbl = cast("dict[str, Any]", bundle_tbl)
+    name = _require_str(bundle_tbl, "name", "[bundle]")
+    version = _require_str(bundle_tbl, "version", "[bundle]")
+    updated = _require_str(bundle_tbl, "updated", "[bundle]")
+    src = bundle_tbl.get("source")
+    source = src if isinstance(src, str) and src else default_source
+
+    domains_raw = data.get("domain", [])
+    if not isinstance(domains_raw, list):
+        raise ConfigError("domains bundle: [[domain]] must be an array of tables")
+    owners: dict[str, DomainOwner] = {}
+    for i, entry in enumerate(cast("list[object]", domains_raw)):
+        host, owner = _parse_domain_entry(entry, i, name=name, version=version)
+        owners[host] = owner
+    return name, version, source, updated, owners
+
+
+def _user_domains_path() -> Path:
+    """User override bundle: $XDG_CONFIG_HOME/dumpa/domains.toml (fallback ~/.config)."""
+    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    base = Path(xdg).expanduser() if xdg else Path.home() / ".config"
+    return base / "dumpa" / "domains.toml"
+
+
 def load_domains_bundle() -> DomainBundle:
     """Load the in-repo data/domains.toml seed, then merge an optional user bundle.
 
-    The body (seed read + user-bundle merge) is implemented in the seed section; this stub
-    returns an empty bundle so the public surface is stable for earlier sections.
+    Seed: importlib.resources.files("dumpa.data") / "domains.toml" (always present;
+          a broken seed is a packaging bug and may raise).
+    User bundle: $XDG_CONFIG_HOME/dumpa/domains.toml (fallback ~/.config/dumpa/domains.toml).
+    Merge: user entries override/extend per host (user precedence). A malformed user bundle
+           (bad TOML, missing [bundle], or a host failing validate_host) is logged at debug
+           and IGNORED — it never crashes a report; the seed still loads.
+    Each entry's `host` is normalized through validate_host; `owner`/`category` are required
+    non-empty strings; `subject` is optional.
+
+    Future (design only, not implemented): `dumpa update-signatures --domains
+    --from {tracker-radar|exodus} <local-dir>` would convert a user's locally-downloaded
+    dataset into a gitignored user bundle at this same $XDG_CONFIG_HOME path.
     """
-    return DomainBundle(name="domains", version="0", source="builtin:domains",
-                        updated="", owners=())
+    resource = importlib.resources.files(const_data_package) / const_domains_filename
+    with resource.open("rb") as f:
+        seed_data = tomllib.load(f)
+    name, version, source, updated, owners = _parse_domains_toml(
+        seed_data, default_source=f"builtin:{const_domains_filename}")
+
+    user_path = _user_domains_path()
+    if user_path.is_file():
+        try:
+            with user_path.open("rb") as f:
+                user_data = tomllib.load(f)
+            _, _, _, _, user_owners = _parse_domains_toml(
+                user_data, default_source=str(user_path))
+            owners.update(user_owners)  # user wins per host
+        except (OSError, tomllib.TOMLDecodeError, ConfigError):
+            logger.debug("ignoring malformed user domains bundle %s", user_path, exc_info=True)
+
+    return DomainBundle(name=name, version=version, source=source, updated=updated,
+                        owners=tuple(owners.items()))
 
 
 def build_domain_table() -> DomainTable:
-    """Assemble the DomainTable from the ownership sources.
+    """Assemble the DomainTable from all ownership sources.
 
-    Wired to the trackers-bundle domain rules + the seed in later sections; this stub
-    assembles only from load_domains_bundle() so an empty table is valid and resolvable.
+    Precedence (low -> high): trackers-bundle `domains` rules, data/domains.toml seed,
+    user bundle. Each declared host maps to a DomainOwner carrying its source bundle
+    name/version for provenance. A missing/empty trackers source is treated as "no domain
+    rules" so the table still works from the seed alone.
     """
+    owners: dict[str, DomainOwner] = {}
+    try:
+        from dumpa.core.rules import load_builtin
+        trackers = load_builtin("trackers")
+        domain_rules = trackers.domain_rules() if hasattr(trackers, "domain_rules") else ()
+        for rule in domain_rules:
+            for host in rule.domains:
+                owners[host] = DomainOwner(
+                    owner=rule.attributes.get("owner", ""),
+                    category=rule.attributes.get("category", ""),
+                    subject=rule.subject,
+                    source=trackers.name, version=trackers.version,
+                )
+    except (ConfigError, OSError):
+        logger.debug("no trackers-bundle domain rules available", exc_info=True)
+
     bundle = load_domains_bundle()
-    return DomainTable(dict(bundle.owners))
+    owners.update(dict(bundle.owners))  # seed (+ user, already merged) override trackers
+    return DomainTable(owners)
