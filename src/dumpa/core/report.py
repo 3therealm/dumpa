@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import csv
 import enum
+import html
 import io
 import json
 from dataclasses import dataclass, field
@@ -707,3 +708,203 @@ def render_markdown(report: Report) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+
+_HTML_STYLE = """\
+:root { color-scheme: light dark; }
+body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 60rem;
+       padding: 0 1rem; }
+h1 { font-size: 1.6rem; } h2 { margin-top: 2rem; border-bottom: 1px solid #8884;
+       padding-bottom: .2rem; } h3 { font-size: 1.05rem; color: #888; }
+table { border-collapse: collapse; width: 100%; margin: .5rem 0; }
+th, td { text-align: left; padding: .3rem .6rem; border-bottom: 1px solid #8883;
+       vertical-align: top; }
+th { white-space: nowrap; color: #888; font-weight: 600; }
+code { font-family: ui-monospace, monospace; word-break: break-all; }
+.none { color: #888; font-style: italic; }
+.meta { color: #888; font-size: .85rem; }
+"""
+
+
+def _h(value: object) -> str:
+    """Escape any dynamic value for safe HTML output (markup + attribute context)."""
+    return html.escape(str(value), quote=True)
+
+
+def render_html(report: Report) -> str:
+    """Render a self-contained static HTML view of a report (inline CSS, no JS/assets).
+
+    Mirrors render_markdown's sections. Every interpolated value is HTML-escaped via
+    `_h`; report text (package names, snippets, domains, ...) is attacker-controlled, so
+    nothing reaches the markup unescaped.
+    """
+    f = report.facts
+    title = f.package or Path(report.input_path).name
+    out: list[str] = [
+        "<!DOCTYPE html>",
+        '<html lang="en"><head><meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        f"<title>dumpa report — {_h(title)}</title>",
+        f"<style>{_HTML_STYLE}</style>",
+        "</head><body>",
+        f"<h1>dumpa report — {_h(title)}</h1>",
+        '<p class="meta">'
+        f"input <code>{_h(report.input_path)}</code><br>"
+        f"sha256 <code>{_h(f.input_sha256)}</code><br>"
+        f"size {f.input_size / (1024 * 1024):.2f} MB · created {_h(report.created)}</p>",
+    ]
+
+    version = f.version_name or "?"
+    if f.version_code:
+        version += f" ({f.version_code})"
+    app_rows = [
+        ("package", f.package or "unknown"),
+        ("version", version),
+        ("minSdk", f.min_sdk or "?"),
+        ("targetSdk", f.target_sdk or "?"),
+        ("engine", f.engine or "n/a"),
+        ("game type", ", ".join(f.game_types) if f.game_types else "n/a"),
+        ("ABIs", ", ".join(f.abis) if f.abis else "none"),
+        ("permissions", str(len(f.permissions))),
+        ("exported components", str(f.exported_component_count)
+         if f.exported_component_count is not None else "?"),
+        ("debuggable", _flag_label(f.debuggable)),
+        ("allowBackup", _flag_label(f.allow_backup)),
+        ("signer cert", f.signer_cert_sha256 or "unsigned/unknown"),
+        ("schemes", "+".join(f.signing_schemes) if f.signing_schemes else "none"),
+    ]
+    out.append("<h2>App</h2><table>")
+    out += [f"<tr><th>{_h(k)}</th><td>{_h(v)}</td></tr>" for k, v in app_rows]
+    out.append("</table>")
+
+    trackers = [x for x in report.findings if x.kind == "tracker"]
+    protections = [x for x in report.findings if x.kind == "protection"]
+    secrets = [x for x in report.findings if x.kind == "secret"]
+    data_access = [x for x in report.findings if x.kind in ("capability", "data-access")]
+    endpoints = [x for x in report.findings if x.kind == "endpoint"]
+    native_libs = [x for x in report.findings if x.kind == "native"]
+    native_symbols = [x for x in report.findings if x.kind == "native-symbol"]
+    dexes = [x for x in report.findings if x.kind == "dex"]
+    _sectioned = ("tracker", "protection", "secret", "capability", "data-access",
+                  "endpoint", "native", "native-symbol", "dex")
+    others = [x for x in report.findings if x.kind not in _sectioned]
+
+    out.append("<h2>Trackers</h2>")
+    if not trackers:
+        out.append('<p class="none">none</p>')
+    else:
+        d = density_score(report)
+        out.append('<p class="meta">'
+                   f"{int(d['trackers'])} tracker(s) from {int(d['companies'])} "
+                   f"company(ies); {int(d['ad_sdks'])} ad SDK(s); "
+                   f"{d['per_mb']} trackers/MB</p>")
+        by_category: dict[str, list[Finding]] = {}
+        for t in trackers:
+            by_category.setdefault(t.attributes.get("category", "uncategorized"), []).append(t)
+        for category in sorted(by_category):
+            out.append(f"<h3>{_h(category)}</h3><table>")
+            for t in sorted(by_category[category], key=lambda x: x.subject):
+                owner = t.attributes.get("owner", "")
+                out.append(f"<tr><td>{_h(t.subject)}</td><td>{_h(owner)}</td>"
+                           f"<td>{_h(t.confidence.value)}</td></tr>")
+            out.append("</table>")
+        rollups = companies(report)
+        if rollups:
+            parts = [f"{r.owner} ({len(r.trackers)})"
+                     for r in sorted(rollups.values(), key=lambda r: r.owner)]
+            out.append(f'<p class="meta">companies: {_h(", ".join(parts))}</p>')
+
+    out += _html_simple_section("Protections", protections, tag_attr="category")
+    out += _html_simple_section("Secrets", secrets, tag_attr="category")
+
+    out.append("<h2>Data access</h2>")
+    if not data_access:
+        out.append('<p class="none">none</p>')
+    else:
+        by_cat: dict[str, list[Finding]] = {}
+        for x in data_access:
+            by_cat.setdefault(x.attributes.get("category", "other"), []).append(x)
+        for category in sorted(by_cat):
+            out.append(f"<h3>{_h(category)}</h3><table>")
+            for x in sorted(by_cat[category], key=lambda i: i.subject):
+                out.append(f"<tr><td>{_h(x.subject)}</td><td>{_h(x.state.value)}</td>"
+                           f"<td>{_h(x.confidence.value)}</td></tr>")
+            out.append("</table>")
+
+    out.append("<h2>Endpoints</h2>")
+    if not endpoints:
+        out.append('<p class="none">none</p>')
+    else:
+        out.append("<table>")
+        out += [f"<tr><td><code>{_h(x.subject)}</code></td></tr>"
+                for x in sorted(endpoints, key=lambda i: i.subject)]
+        out.append("</table>")
+
+    out.append("<h2>Native</h2>")
+    if not native_libs and not native_symbols:
+        out.append('<p class="none">none</p>')
+    else:
+        counts = {s.subject: s.attributes for s in native_symbols}
+        out.append("<table>")
+        for lib in sorted(native_libs, key=lambda i: i.subject):
+            arch = f"{lib.attributes.get('machine', '')} {lib.attributes.get('bitness', '')}".strip()
+            extra = counts.get(lib.subject)
+            if extra:
+                arch += (f" — {extra.get('export_count', '0')} exports, "
+                         f"{extra.get('import_count', '0')} imports, "
+                         f"{extra.get('section_count', '0')} sections")
+            out.append(f"<tr><td><code>{_h(lib.subject)}</code></td><td>{_h(arch)}</td></tr>")
+        out.append("</table>")
+
+    out.append("<h2>DEX</h2>")
+    if not dexes:
+        out.append('<p class="none">none</p>')
+    else:
+        out.append("<table>")
+        for dx in sorted(dexes, key=lambda i: i.subject):
+            a = dx.attributes
+            detail = (f"{a.get('class_count', '0')} classes, "
+                      f"{a.get('method_count', '0')} methods, "
+                      f"{a.get('field_count', '0')} fields")
+            out.append(f"<tr><td><code>{_h(dx.subject)}</code></td><td>{_h(detail)}</td></tr>")
+        out.append("</table>")
+
+    out.append("<h2>Findings</h2>")
+    if not others:
+        out.append('<p class="none">none</p>')
+    else:
+        out.append("<table>")
+        for finding in others:
+            ev = "; ".join(e.description for e in finding.evidence)
+            out.append(f"<tr><td>{_h(finding.kind)}</td><td>{_h(finding.subject)}</td>"
+                       f"<td>{_h(finding.confidence.value)}</td><td>{_h(ev)}</td></tr>")
+        out.append("</table>")
+
+    if report.warnings:
+        out.append("<h2>Warnings</h2><ul>")
+        out += [f"<li>{_h(w)}</li>" for w in report.warnings]
+        out.append("</ul>")
+
+    if report.tool_versions:
+        out.append("<h2>Tool versions</h2><table>")
+        out += [f"<tr><th>{_h(name)}</th><td>{_h(ver)}</td></tr>"
+                for name, ver in sorted(report.tool_versions.items())]
+        out.append("</table>")
+
+    out.append("</body></html>")
+    return "\n".join(out) + "\n"
+
+
+def _html_simple_section(heading: str, findings: list[Finding], *, tag_attr: str) -> list[str]:
+    """Render a flat subject/tag/confidence table section (Protections, Secrets)."""
+    out = [f"<h2>{_h(heading)}</h2>"]
+    if not findings:
+        out.append('<p class="none">none</p>')
+        return out
+    out.append("<table>")
+    for item in sorted(findings, key=lambda i: i.subject):
+        tag = item.attributes.get(tag_attr, "")
+        out.append(f"<tr><td>{_h(item.subject)}</td><td>{_h(tag)}</td>"
+                   f"<td>{_h(item.confidence.value)}</td></tr>")
+    out.append("</table>")
+    return out

@@ -39,6 +39,7 @@ const_dir_extracted = "extracted"
 const_dir_dumps = "dumps"
 const_dir_reports = "reports"
 const_dir_cache = "cache"
+const_dir_smali = "smali"
 const_dir_native = "native"
 const_dir_dex = "dex"
 const_dir_playstore = "playstore"
@@ -95,6 +96,15 @@ class Workspace:
     @property
     def extracted_dir(self) -> Path:
         return self.root / const_dir_extracted
+
+    @property
+    def smali_dir(self) -> Path:
+        """apktool decode tree (smali/ + res/ + manifest); produced by `dumpa unpack --decode`."""
+        return self.root / const_dir_smali
+
+    def has_smali(self) -> bool:
+        """True when the apktool decode tree exists and has content."""
+        return self.smali_dir.is_dir() and any(self.smali_dir.iterdir())
 
     @property
     def dumps_dir(self) -> Path:

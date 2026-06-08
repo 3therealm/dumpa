@@ -20,7 +20,9 @@ from dumpa.commands import dump_il2cpp as dump_il2cpp_cmd
 from dumpa.commands import export as export_cmd
 from dumpa.commands import info as info_cmd
 from dumpa.commands import load as load_cmd
+from dumpa.commands import repack as repack_cmd
 from dumpa.commands import rules as rules_cmd
+from dumpa.commands import unpack as unpack_cmd
 from dumpa.commands.base import run_command
 from dumpa.core.logging import configure_logging
 
@@ -58,6 +60,39 @@ def convert(
     """Convert a split .xapk bundle into a single installable .apk."""
     run_command(lambda: convert_cmd.run_convert(
         xapk_file, signing=signing, workspace=workspace, force=force))
+
+
+@app.command()
+def unpack(
+    input_file: Path = typer.Argument(
+        ..., exists=True, dir_okay=False, readable=True,
+        help="Path to the .apk or .xapk to unpack.",
+    ),
+    workspace: Path | None = typer.Option(
+        None, "--workspace", help="Workspace directory (default: ./<stem>-workspace)."),
+    force: bool = typer.Option(
+        False, "--force", help="Rebuild even if a matching workspace already exists."),
+    decode: bool = typer.Option(
+        True, "--decode/--no-decode",
+        help="Run apktool decode into smali/ (required for `dumpa repack`)."),
+) -> None:
+    """Extract an APK/XAPK into a workspace and decode it to an editable smali tree."""
+    run_command(lambda: unpack_cmd.unpack(
+        input_file, workspace=workspace, force=force, decode=decode))
+
+
+@app.command()
+def repack(
+    workspace: Path = typer.Argument(
+        ..., exists=True, file_okay=False, readable=True,
+        help="Workspace directory produced by `dumpa unpack --decode`.",
+    ),
+    signing: str | None = typer.Option(None, "--signing", help=_SIGNING_HELP),
+    out: Path | None = typer.Option(
+        None, "--out", help="Output apk path (default: ./<workspace>-repacked.apk)."),
+) -> None:
+    """Rebuild a workspace's smali tree into an installable (optionally re-signed) apk."""
+    run_command(lambda: repack_cmd.repack(workspace, signing=signing, out=out))
 
 
 @app.command()
@@ -103,7 +138,7 @@ def export(
     ),
     fmt: str = typer.Option(
         "json", "--format",
-        help="Report format: json | md | hosts | adguard | nextdns | rethinkdns | "
+        help="Report format: json | md | html | hosts | adguard | nextdns | rethinkdns | "
              "trackercontrol | csv | domains-csv."),
     out: Path | None = typer.Option(
         None, "--out", help="Write to this file instead of stdout."),
@@ -114,7 +149,7 @@ def export(
         help="Narrow blocklist formats to attributed tracker-owned domains "
              "(default: all endpoints; no effect on json/md/csv)."),
 ) -> None:
-    """Render a workspace's report as JSON, Markdown, a domain blocklist, or CSV."""
+    """Render a workspace's report as JSON, Markdown, HTML, a domain blocklist, or CSV."""
     run_command(lambda: export_cmd.export(
         workspace, fmt=fmt, out=out, use_cache=not no_cache, trackers_only=trackers_only))
 
@@ -187,9 +222,13 @@ def rules_list() -> None:
 
 
 @app.command()
-def doctor() -> None:
+def doctor(
+    full: bool = typer.Option(
+        False, "--full",
+        help="Also report advisory environment checks (Python/Java/SDK, signing, rule bundles)."),
+) -> None:
     """Check that required external tools (apktool, zipalign, ...) are installed."""
-    run_command(doctor_cmd.doctor)
+    run_command(lambda: doctor_cmd.doctor(full=full))
 
 
 @app.command(name="dump-il2cpp")

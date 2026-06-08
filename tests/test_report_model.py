@@ -20,6 +20,7 @@ from dumpa.core.report import (
     domain_records,
     render_blocklist,
     render_domains_csv,
+    render_html,
     render_markdown,
     render_trackers_csv,
     report_domains,
@@ -433,3 +434,48 @@ def test_density_score_mediation_adapters() -> None:
 def test_markdown_companies_line() -> None:
     md = render_markdown(_companies_report())
     assert "companies: AppLovin (1), Google (2)" in md
+
+
+# --- HTML exporter -------------------------------------------------------
+
+
+def test_html_renders_key_fields() -> None:
+    out = render_html(_sample())
+    assert out.lstrip().startswith("<!DOCTYPE html>")
+    assert "com.example.game" in out
+    assert "firebase-analytics" in out
+    assert "apk is unsigned" in out
+    # same data as markdown: signing schemes joined
+    assert "v2+v3" in out
+
+
+def test_html_is_self_contained() -> None:
+    out = render_html(_sample())
+    # inline style, no external asset references
+    assert "<style>" in out
+    assert "src=" not in out
+    assert 'href="http' not in out
+
+
+def test_html_no_findings() -> None:
+    bare = Report(
+        dumpa_version="0.1.0", created="t", input_path="/x.apk",
+        facts=AppFacts(input_sha256="a" * 64, input_size=1024),
+    )
+    out = render_html(bare)
+    assert "<!DOCTYPE html>" in out
+    assert "Trackers" in out  # section still rendered, just empty
+
+
+def test_html_escapes_dynamic_text() -> None:
+    """Report text is attacker-controlled; it must never inject live markup."""
+    evil = '<script>alert(1)</script>'
+    report = Report(
+        dumpa_version="0.1.0", created="t", input_path="/x.apk",
+        facts=AppFacts(input_sha256="a" * 64, input_size=1024, package=evil),
+        findings=[Finding(kind="tracker", subject=evil, confidence=Confidence.HIGH)],
+        warnings=[evil],
+    )
+    out = render_html(report)
+    assert "<script>alert(1)</script>" not in out
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in out

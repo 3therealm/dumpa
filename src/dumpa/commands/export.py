@@ -1,9 +1,9 @@
 """`dumpa export` — render a workspace's analysis report in a chosen format.
 
 Reads `<workspace>/reports/report.json` (rebuilding it from the workspace if it is
-missing) and emits JSON, Markdown, a domain blocklist (`hosts`, `adguard`, `nextdns`,
-`rethinkdns`, `trackercontrol`), or CSV (`csv` trackers, `domains-csv` domains) to
-stdout or a file. HTML/SARIF are not yet supported.
+missing) and emits JSON, Markdown, HTML, a domain blocklist (`hosts`, `adguard`,
+`nextdns`, `rethinkdns`, `trackercontrol`), or CSV (`csv` trackers, `domains-csv`
+domains) to stdout or a file. SARIF is not yet supported.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from dumpa.core.report import (
     read_json,
     render_blocklist,
     render_domains_csv,
+    render_html,
     render_markdown,
     render_trackers_csv,
     to_json,
@@ -32,11 +33,11 @@ from dumpa.scanners import enrich_domain_attribution
 logger = logging.getLogger("dumpa")
 
 const_export_formats = (
-    "json", "md", "markdown", "hosts", "adguard",
+    "json", "md", "markdown", "html", "hosts", "adguard",
     "csv", "domains-csv",                       # section-05
     "nextdns", "rethinkdns", "trackercontrol",  # section-06
 )
-_NOT_YET = ("html", "sarif")
+_NOT_YET = ("sarif",)
 
 # Formats whose output depends on current domain attribution; re-enriched on export.
 _DOMAIN_AWARE = ("hosts", "adguard", "nextdns", "rethinkdns", "trackercontrol",
@@ -47,6 +48,8 @@ _BLOCKLIST_FORMATS = ("hosts", "adguard", "nextdns", "rethinkdns", "trackercontr
 def _render(report: Report, name: str, *, trackers_only: bool = False) -> str:
     if name == "json":
         return to_json(report)
+    if name == "html":
+        return render_html(report)
     if name == "csv":
         return render_trackers_csv(report)
     if name == "domains-csv":
@@ -76,13 +79,13 @@ def _load_report(workspace: Path, *, use_cache: bool = True) -> Report:
 
 def export(workspace: Path, *, fmt: str, out: Path | None = None, use_cache: bool = True,
            trackers_only: bool = False) -> None:
-    """Render the report for a workspace as JSON, Markdown, a blocklist, or CSV."""
+    """Render the report for a workspace as JSON, Markdown, HTML, a blocklist, or CSV."""
     name = fmt.lower()
     if name in _NOT_YET:
         raise DumpaError(f"export format {name!r} is not supported yet")
     if name not in const_export_formats:
         raise DumpaError(
-            f"unknown export format {fmt!r} (expected json, md, hosts, adguard, "
+            f"unknown export format {fmt!r} (expected json, md, html, hosts, adguard, "
             "nextdns, rethinkdns, trackercontrol, csv, or domains-csv)")
 
     report = _load_report(workspace, use_cache=use_cache)
