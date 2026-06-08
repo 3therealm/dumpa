@@ -23,6 +23,7 @@ from dumpa.commands import load as load_cmd
 from dumpa.commands import repack as repack_cmd
 from dumpa.commands import rules as rules_cmd
 from dumpa.commands import unpack as unpack_cmd
+from dumpa.commands import update_signatures as update_signatures_cmd
 from dumpa.commands.base import run_command
 from dumpa.core.logging import configure_logging
 
@@ -181,6 +182,19 @@ def clean(
 ) -> None:
     """Remove a dumpa workspace directory (refuses non-workspace dirs)."""
     run_command(lambda: clean_cmd.clean(workspace))
+
+
+@app.command(name="update-signatures")
+def update_signatures(
+    source: str | None = typer.Option(
+        None, "--source", help="Exodus trackers API URL (default: the official endpoint)."),
+    out: Path | None = typer.Option(
+        None, "--out", dir_okay=False,
+        help="Write the bundle here (default: the user rules dir; point at the in-repo "
+             "bundle to regenerate the vendored snapshot)."),
+) -> None:
+    """Refresh imported tracker signatures from Exodus Privacy (explicit, networked)."""
+    run_command(lambda: update_signatures_cmd.update_signatures(source=source, out=out))
 
 
 rules_app = typer.Typer(

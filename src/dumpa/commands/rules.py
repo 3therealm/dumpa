@@ -115,6 +115,8 @@ def rules_list() -> None:
         bundle = load_builtin(name)
         print(f"{name}: v{bundle.version}  source={bundle.source}  "
               f"updated={bundle.updated}  rules={len(bundle.rules)}")
+        if bundle.license:
+            print(f"    license={bundle.license}")
     # The domains seed is not a rule bundle (not in builtin_bundle_names) — surface it.
     db = load_domains_bundle()
     print(f"{db.name}: v{db.version}  source={db.source}  "
