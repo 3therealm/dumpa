@@ -20,6 +20,7 @@ from dumpa.core.report import Confidence, Evidence, Finding, Location
 from dumpa.core.rules import load_builtin
 from dumpa.core.workspace import Workspace, WorkspaceMeta
 from dumpa.scanners import (
+    cocos,
     dex,
     dumpcs,
     endpoint,
@@ -74,6 +75,11 @@ UNITY_SPECS: tuple[ScannerSpec, ...] = (
     ScannerSpec("unity", unity.scan),
     ScannerSpec("unity_rules", unity_rules.scan, ("unity",)),
     ScannerSpec("unity_assets", unity_assets.scan),
+)
+# Cocos2d-x deep helper runs only when the engine scanner flagged Cocos2d-x. Code-only
+# (locates/decrypts script bundles), so it is keyed on the dumpa version alone.
+COCOS_SPECS: tuple[ScannerSpec, ...] = (
+    ScannerSpec("cocos", cocos.scan),
 )
 
 _CONFIDENCE_RANK = {Confidence.HIGH: 3, Confidence.MEDIUM: 2, Confidence.LOW: 1}
@@ -321,6 +327,9 @@ def run_all(ws: Workspace, *, use_cache: bool = True) -> list[Finding]:
         findings.extend(_run_spec(ws, spec, meta))
     if any(f.kind == "engine" and f.subject == "Unity" for f in findings):
         for spec in UNITY_SPECS:
+            findings.extend(_run_spec(ws, spec, meta))
+    if any(f.kind == "engine" and f.subject == "Cocos2d-x" for f in findings):
+        for spec in COCOS_SPECS:
             findings.extend(_run_spec(ws, spec, meta))
     findings = enrich_native_rvas(findings, ws)
     findings = enrich_dex_locations(findings, ws)
