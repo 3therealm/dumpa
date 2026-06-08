@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 
 from dumpa.core.report import (
     AppFacts,
     Confidence,
+    DomainRecord,
     Evidence,
     Finding,
     FindingState,
     Location,
     Report,
+    domain_records,
+    render_domains_csv,
     render_markdown,
+    render_trackers_csv,
     to_json,
 )
 
@@ -121,3 +127,122 @@ def test_markdown_no_findings() -> None:
     )
     md = render_markdown(bare)
     assert "## Findings\n_none_" in md
+
+
+# --- C4: CSV exporters ---------------------------------------------------
+
+
+def _attributed() -> Report:
+    """A report with an attributed endpoint + a tracker carrying a domain location."""
+    return Report(
+        dumpa_version="0.1.0", created="t", input_path="/x.apk",
+        facts=AppFacts(input_sha256="a" * 64, input_size=1024),
+        findings=[
+            Finding(
+                kind="tracker", subject="firebase-analytics", confidence=Confidence.HIGH,
+                state=FindingState.REFERENCED,
+                attributes={"owner": "Google", "category": "analytics"},
+                locations=[
+                    Location(domain="firebase.googleapis.com",
+                             file_path="lib/arm64-v8a/libapp.so", file_offset=4096),
+                    Location(domain="firebase.googleapis.com", file_path="classes.dex"),
+                ],
+            ),
+            Finding(
+                kind="endpoint", subject="firebase.googleapis.com", confidence=Confidence.LOW,
+                attributes={"owner": "Google", "category": "analytics"},
+            ),
+            Finding(
+                kind="endpoint", subject="api.example.com", confidence=Confidence.LOW,
+            ),
+        ],
+    )
+
+
+def test_domain_records_one_per_unique_domain() -> None:
+    records = domain_records(_attributed())
+    assert [r.domain for r in records] == ["api.example.com", "firebase.googleapis.com"]
+    fb = records[1]
+    assert isinstance(fb, DomainRecord)
+    assert fb.owner == "Google"
+    assert fb.category == "analytics"
+    assert fb.subject == "firebase-analytics"
+    assert fb.first_file == "lib/arm64-v8a/libapp.so"
+    assert fb.first_offset == 4096
+    # endpoint-only domain with no domain-bearing location
+    other = records[0]
+    assert other.owner is None
+    assert other.first_file is None
+    assert other.first_offset is None
+
+
+def test_domain_records_tracker_first_owner() -> None:
+    # endpoint precedes the owning tracker and disagrees on owner/category;
+    # the tracker's attribution must win.
+    report = Report(
+        dumpa_version="0.1.0", created="t", input_path="/x.apk",
+        facts=AppFacts(input_sha256="a" * 64, input_size=1024),
+        findings=[
+            Finding(kind="endpoint", subject="d.example.com", confidence=Confidence.LOW,
+                    attributes={"owner": "WrongOwner", "category": "wrong"}),
+            Finding(kind="tracker", subject="real-sdk", confidence=Confidence.HIGH,
+                    attributes={"owner": "RightOwner", "category": "ads"},
+                    locations=[Location(domain="d.example.com")]),
+        ],
+    )
+    rec = domain_records(report)[0]
+    assert rec.owner == "RightOwner"
+    assert rec.category == "ads"
+    assert rec.subject == "real-sdk"
+
+
+def test_render_trackers_csv() -> None:
+    rows = list(csv.reader(io.StringIO(render_trackers_csv(_attributed()))))
+    assert rows[0] == ["subject", "owner", "category", "confidence", "state", "domains", "files"]
+    assert rows[1] == [
+        "firebase-analytics", "Google", "analytics", "high", "referenced",
+        "firebase.googleapis.com", "classes.dex;lib/arm64-v8a/libapp.so",
+    ]
+    assert len(rows) == 2  # only the one tracker finding
+
+
+def test_render_domains_csv() -> None:
+    rows = list(csv.reader(io.StringIO(render_domains_csv(_attributed()))))
+    assert rows[0] == ["domain", "owner", "category", "subject", "first_file", "first_offset"]
+    assert rows[1] == ["api.example.com", "", "", "", "", ""]
+    assert rows[2] == [
+        "firebase.googleapis.com", "Google", "analytics", "firebase-analytics",
+        "lib/arm64-v8a/libapp.so", "4096",
+    ]
+
+
+def test_csv_escaping_round_trips() -> None:
+    report = Report(
+        dumpa_version="0.1.0", created="t", input_path="/x.apk",
+        facts=AppFacts(input_sha256="a" * 64, input_size=1024),
+        findings=[
+            Finding(kind="tracker", subject='weird,"name', confidence=Confidence.HIGH),
+        ],
+    )
+    rows = list(csv.reader(io.StringIO(render_trackers_csv(report))))
+    assert rows[1][0] == 'weird,"name'
+
+
+def test_csv_empty_report_emits_header() -> None:
+    bare = Report(
+        dumpa_version="0.1.0", created="t", input_path="/x.apk",
+        facts=AppFacts(input_sha256="a" * 64, input_size=1024),
+    )
+    assert render_trackers_csv(bare).splitlines() == [
+        "subject,owner,category,confidence,state,domains,files"
+    ]
+    assert render_domains_csv(bare).splitlines() == [
+        "domain,owner,category,subject,first_file,first_offset"
+    ]
+
+
+def test_export_wiring() -> None:
+    from dumpa.commands.export import _NOT_YET, const_export_formats
+    assert "csv" in const_export_formats
+    assert "domains-csv" in const_export_formats
+    assert "csv" not in _NOT_YET

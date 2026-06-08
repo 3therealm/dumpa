@@ -13,7 +13,9 @@ entry, an asset path, or a domain) — whichever apply to that kind of finding.
 
 from __future__ import annotations
 
+import csv
 import enum
+import io
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -306,6 +308,125 @@ def render_blocklist(report: Report, fmt: str) -> str:
     domains = report_domains(report)
     lines = [f"||{d}^" for d in domains] if fmt == "adguard" else [f"0.0.0.0 {d}" for d in domains]
     return "\n".join(lines) + "\n" if lines else ""
+
+
+@dataclass(frozen=True)
+class DomainRecord:
+    """One attributed domain: ownership + first observed location.
+
+    The single source for the domains CSV and (section-06) grouped blocklists, since
+    report_domains() returns only list[str] and loses owner/category/subject/location.
+    """
+    domain: str
+    owner: str | None
+    category: str | None
+    subject: str | None          # owning tracker subject, if attributed
+    first_file: str | None
+    first_offset: int | None
+
+
+def domain_records(report: Report) -> list[DomainRecord]:
+    """One DomainRecord per unique domain across the report, sorted by domain.
+
+    Collects every domain from endpoint finding subjects and every Location.domain on
+    any finding. For each domain: `subject` is the owning tracker subject when a tracker
+    finding carries that domain in a Location; owner/category come from whichever finding
+    carries the domain (tracker first, then endpoint whose subject == domain); and
+    first_file/first_offset come from the first domain-bearing Location in report order.
+    """
+    domains: set[str] = set()
+    for finding in report.findings:
+        if finding.kind == "endpoint":
+            domains.add(finding.subject)
+        for loc in finding.locations:
+            if loc.domain:
+                domains.add(loc.domain)
+
+    records: list[DomainRecord] = []
+    for domain in sorted(d for d in domains if d):
+        owner: str | None = None
+        category: str | None = None
+        subject: str | None = None
+        first_file: str | None = None
+        first_offset: int | None = None
+        located = False
+        # Tracker carriers win on subject + owner/category (tracker-first).
+        for finding in report.findings:
+            if finding.kind != "tracker":
+                continue
+            if any(loc.domain == domain for loc in finding.locations):
+                if subject is None:
+                    subject = finding.subject
+                if owner is None:
+                    owner = finding.attributes.get("owner")
+                if category is None:
+                    category = finding.attributes.get("category")
+        # Endpoint fallback for owner/category only if no tracker supplied them.
+        if owner is None or category is None:
+            for finding in report.findings:
+                if finding.kind == "endpoint" and finding.subject == domain:
+                    if owner is None:
+                        owner = finding.attributes.get("owner")
+                    if category is None:
+                        category = finding.attributes.get("category")
+        # First domain-bearing location in report order.
+        for finding in report.findings:
+            for loc in finding.locations:
+                if loc.domain == domain:
+                    first_file = loc.file_path
+                    first_offset = loc.file_offset
+                    located = True
+                    break
+            if located:
+                break
+        records.append(DomainRecord(
+            domain=domain, owner=owner, category=category, subject=subject,
+            first_file=first_file, first_offset=first_offset,
+        ))
+    return records
+
+
+def _csv_writer(header: list[str]) -> tuple[io.StringIO, Any]:
+    buf = io.StringIO()
+    writer = csv.writer(buf, quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
+    writer.writerow(header)
+    return buf, writer
+
+
+def render_trackers_csv(report: Report) -> str:
+    """CSV, one row per tracker finding (kind == 'tracker'), sorted by subject.
+
+    header: subject,owner,category,confidence,state,domains,files
+    domains/files are ';'-joined sorted-distinct non-empty Location values.
+    """
+    buf, writer = _csv_writer(
+        ["subject", "owner", "category", "confidence", "state", "domains", "files"])
+    trackers = sorted((f for f in report.findings if f.kind == "tracker"),
+                      key=lambda f: f.subject)
+    for f in trackers:
+        domains = sorted({loc.domain for loc in f.locations if loc.domain})
+        files = sorted({loc.file_path for loc in f.locations if loc.file_path})
+        writer.writerow([
+            f.subject, f.attributes.get("owner", ""), f.attributes.get("category", ""),
+            f.confidence.value, f.state.value, ";".join(domains), ";".join(files),
+        ])
+    return buf.getvalue()
+
+
+def render_domains_csv(report: Report) -> str:
+    """CSV, one row per unique domain (sorted), driven by domain_records(report).
+
+    header: domain,owner,category,subject,first_file,first_offset
+    None fields render as empty string.
+    """
+    buf, writer = _csv_writer(
+        ["domain", "owner", "category", "subject", "first_file", "first_offset"])
+    for r in domain_records(report):
+        writer.writerow([
+            r.domain, r.owner or "", r.category or "", r.subject or "",
+            r.first_file or "", "" if r.first_offset is None else r.first_offset,
+        ])
+    return buf.getvalue()
 
 
 def _flag_label(value: bool | None) -> str:

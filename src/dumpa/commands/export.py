@@ -1,8 +1,9 @@
 """`dumpa export` — render a workspace's analysis report in a chosen format.
 
 Reads `<workspace>/reports/report.json` (rebuilding it from the workspace if it is
-missing) and emits JSON, Markdown, or a domain blocklist (Pi-hole-style `hosts` or
-AdGuard `||host^`) to stdout or a file. CSV/HTML/SARIF are not yet supported.
+missing) and emits JSON, Markdown, a domain blocklist (Pi-hole-style `hosts` or
+AdGuard `||host^`), or CSV (`csv` trackers, `domains-csv` domains) to stdout or a
+file. HTML/SARIF are not yet supported.
 """
 
 from __future__ import annotations
@@ -13,15 +14,23 @@ from pathlib import Path
 from dumpa.commands.analyze import const_file_report_json
 from dumpa.core.config import load_config
 from dumpa.core.errors import DumpaError
-from dumpa.core.report import Report, read_json, render_blocklist, render_markdown, to_json
+from dumpa.core.report import (
+    Report,
+    read_json,
+    render_blocklist,
+    render_domains_csv,
+    render_markdown,
+    render_trackers_csv,
+    to_json,
+)
 from dumpa.core.tools import build_default_registry
 from dumpa.core.workspace import Workspace
 from dumpa.reporting import build_report
 
 logger = logging.getLogger("dumpa")
 
-const_export_formats = ("json", "md", "markdown", "hosts", "adguard")
-_NOT_YET = ("csv", "html", "sarif")
+const_export_formats = ("json", "md", "markdown", "hosts", "adguard", "csv", "domains-csv")
+_NOT_YET = ("html", "sarif")
 
 
 def _render(report: Report, name: str) -> str:
@@ -29,6 +38,10 @@ def _render(report: Report, name: str) -> str:
         return to_json(report)
     if name in ("hosts", "adguard"):
         return render_blocklist(report, name)
+    if name == "csv":
+        return render_trackers_csv(report)
+    if name == "domains-csv":
+        return render_domains_csv(report)
     return render_markdown(report)
 
 
@@ -56,7 +69,9 @@ def export(workspace: Path, *, fmt: str, out: Path | None = None, use_cache: boo
     if name in _NOT_YET:
         raise DumpaError(f"export format {name!r} is not supported yet")
     if name not in const_export_formats:
-        raise DumpaError(f"unknown export format {fmt!r} (expected json, md, hosts, or adguard)")
+        raise DumpaError(
+            f"unknown export format {fmt!r} "
+            "(expected json, md, hosts, adguard, csv, or domains-csv)")
 
     report = _load_report(workspace, use_cache=use_cache)
     text = _render(report, name)
