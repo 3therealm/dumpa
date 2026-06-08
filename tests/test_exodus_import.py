@@ -70,3 +70,15 @@ def test_provenance_recorded(tmp_path) -> None:
     assert "Exodus" in bundle.source
     assert bundle.license
     assert bundle.updated == "2026-06-08"
+
+
+def test_toml_escapes_control_characters(tmp_path) -> None:
+    bundle, _ = _load(
+        {"trackers": {"1": {
+            "name": "Odd\x01Tracker",
+            "code_signature": "com.odd.sdk.",
+            "website": "https://example.com/\x02",
+        }}},
+        tmp_path,
+    )
+    assert bundle.rules[0].subject == "Odd\x01Tracker"

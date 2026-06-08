@@ -295,9 +295,11 @@ def _parse_bundle(data: dict[str, Any], *, default_source: str) -> RuleBundle:
     bundle_tbl = cast("dict[str, Any]", bundle_tbl)
     name = _require_str(bundle_tbl, "name", "[bundle]")
     version = _require_str(bundle_tbl, "version", "[bundle]")
-    source = bundle_tbl.get("source") if isinstance(bundle_tbl.get("source"), str) else default_source
+    source_raw = bundle_tbl.get("source")
+    source = source_raw if isinstance(source_raw, str) else default_source
     updated = _require_str(bundle_tbl, "updated", "[bundle]")
-    license_str = bundle_tbl.get("license") if isinstance(bundle_tbl.get("license"), str) else ""
+    license_raw = bundle_tbl.get("license")
+    license_str = license_raw if isinstance(license_raw, str) else ""
 
     default_targets: tuple[str, ...] = ()
     if "default_targets" in bundle_tbl:
@@ -583,25 +585,25 @@ class _RegexSet:
         n = len(window)
         candidates: set[str] = set()
         for rx, ci, table in self._prefilters:
-            for m in rx.finditer(window):
-                key = m.group().lower() if ci else m.group()
+            for anchor_match in rx.finditer(window):
+                key = anchor_match.group().lower() if ci else anchor_match.group()
                 candidates |= table.get(key, set())
         hits: list[tuple[str, re.Match[bytes]]] = []
         seen: set[str] = set()
         for src in candidates:
             if src in self._found or src in seen:
                 continue
-            m = self._real[src].search(window)
-            if m is not None and (at_eof or m.end() != n):
+            real_match = self._real[src].search(window)
+            if real_match is not None and (at_eof or real_match.end() != n):
                 seen.add(src)
-                hits.append((src, m))
+                hits.append((src, real_match))
         for src, rx in self._standalone.items():
             if src in self._found or src in seen:
                 continue
-            m = rx.search(window)
-            if m is not None and (at_eof or m.end() != n):
+            standalone_match = rx.search(window)
+            if standalone_match is not None and (at_eof or standalone_match.end() != n):
                 seen.add(src)
-                hits.append((src, m))
+                hits.append((src, standalone_match))
         return hits
 
 

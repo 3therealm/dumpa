@@ -106,22 +106,41 @@ def _valid_signature(sig: Any) -> str | None:
     """A usable regex source: non-empty, not trivially broad, and individually compilable."""
     if not isinstance(sig, str):
         return None
-    sig = sig.strip()
-    if len(sig) < const_min_signature_len:
+    candidate: str = sig.strip()
+    if len(candidate) < const_min_signature_len:
         return None
     try:
-        re.compile(sig.encode())
+        re.compile(candidate.encode())
     except re.error:
-        logger.debug("exodus import: dropping uncompilable signature %r", sig)
+        logger.debug("exodus import: dropping uncompilable signature %r", candidate)
         return None
-    return sig
+    return candidate
 
 
 def _toml_basic(s: str) -> str:
     """Escape a string into a TOML basic (double-quoted) string — safe for regex sources."""
-    out = s.replace("\\", "\\\\").replace('"', '\\"')
-    out = out.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
-    return f'"{out}"'
+    out: list[str] = []
+    for char in s:
+        code = ord(char)
+        if char == "\\":
+            out.append("\\\\")
+        elif char == '"':
+            out.append('\\"')
+        elif char == "\b":
+            out.append("\\b")
+        elif char == "\t":
+            out.append("\\t")
+        elif char == "\n":
+            out.append("\\n")
+        elif char == "\f":
+            out.append("\\f")
+        elif char == "\r":
+            out.append("\\r")
+        elif code < 0x20:
+            out.append(f"\\u{code:04x}")
+        else:
+            out.append(char)
+    return f'"{"".join(out)}"'
 
 
 def _rule_block(subject: str, *, regex: str, category: str, owner: str) -> str:

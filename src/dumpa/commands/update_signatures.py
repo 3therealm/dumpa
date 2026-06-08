@@ -26,15 +26,25 @@ logger = logging.getLogger("dumpa")
 
 const_fetch_timeout = 60
 const_user_agent = "dumpa/update-signatures"
+const_max_fetch_bytes = 16 << 20
 
 
 def _fetch(url: str) -> Any:
-    req = urllib.request.Request(url, headers={"User-Agent": const_user_agent})
     try:
+        req = urllib.request.Request(url, headers={"User-Agent": const_user_agent})
         with urllib.request.urlopen(req, timeout=const_fetch_timeout) as resp:
-            return json.loads(resp.read().decode())
+            raw = resp.read(const_max_fetch_bytes + 1)
     except (OSError, ValueError) as e:
         raise DumpaError(f"failed to fetch Exodus signatures from {url}: {e}") from e
+    if len(raw) > const_max_fetch_bytes:
+        raise DumpaError(
+            f"failed to fetch Exodus signatures from {url}: response exceeds "
+            f"{const_max_fetch_bytes} bytes"
+        )
+    try:
+        return json.loads(raw.decode())
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise DumpaError(f"failed to parse Exodus signatures from {url}: {e}") from e
 
 
 def _subjects(toml_text: str) -> set[str]:
