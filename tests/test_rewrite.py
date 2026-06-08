@@ -92,6 +92,24 @@ replace = '\\g<5>x'
         _bundle(toml)
 
 
+def test_invalid_replace_escape_rejected() -> None:
+    toml = r"""
+[bundle]
+name = "bad"
+version = "1"
+updated = "2026-06-08"
+[[rule]]
+kind = "rewrite"
+subject = "bad escape"
+category = "x"
+confidence = "low"
+regex = ['foo']
+replace = '\q'
+"""
+    with pytest.raises(ConfigError, match="invalid replace template"):
+        _bundle(toml)
+
+
 def test_match_only_bundle_has_no_replace() -> None:
     rule = _bundle(_MATCH_ONLY_TOML).rules[0]
     assert rule.replace == ""
@@ -206,6 +224,20 @@ def test_apply_only_selected(tmp_path: Path) -> None:
     apply_edits(tmp_path, plan, {1}, rule_version="1")
     assert "127.0.0.1" in a.read_text(encoding="latin-1")
     assert "analytics.example.com" in b.read_text(encoding="latin-1")  # untouched
+
+
+def test_apply_preflights_all_files_before_writing(tmp_path: Path) -> None:
+    a = _write_smali(tmp_path, "a.smali", 'const-string v0, "analytics.example.com"\n')
+    b = _write_smali(tmp_path, "b.smali", 'const-string v1, "analytics.example.com"\n')
+    rules = rewrite_rules_from_bundle(_bundle(_REWRITE_TOML))
+    plan = plan_edits(tmp_path, rules)
+
+    b.write_text('const-string v1, "changed.example.com"\n', encoding="latin-1")
+
+    with pytest.raises(DumpaError, match="no longer matches"):
+        apply_edits(tmp_path, plan, {1, 2}, rule_version="1")
+    assert "analytics.example.com" in a.read_text(encoding="latin-1")
+    assert "changed.example.com" in b.read_text(encoding="latin-1")
 
 
 def test_apply_right_to_left_length_change(tmp_path: Path) -> None:

@@ -62,6 +62,7 @@ const_max_content_scan_bytes = 512 << 20    # skip individual files larger than 
 const_regex_overlap = 1024                  # chunk overlap for regex matches near an edge
 const_max_match_text = 200                  # cap a captured match (e.g. a secret) in evidence
 const_min_anchor_len = 3                    # shortest literal run usable as a regex prefilter anchor
+const_rewrite_encoding = "latin-1"          # byte-exact smali rewrite matching/replacement
 
 
 def _empty_attrs() -> dict[str, str]:
@@ -200,30 +201,17 @@ def _parse_attributes(table: dict[str, Any], ctx: str) -> dict[str, str]:
     return attrs
 
 
-# A rewrite `replace` template references a group via `\g<NAME>` or `\NUMBER`.
-_TEMPLATE_REF = re.compile(r"\\g<([^>]*)>|\\(\d+)")
-
-
 def _validate_template(template: str, compiled: re.Pattern[bytes], ctx: str) -> None:
-    """Reject a `replace` template that references a group the regex does not define.
+    """Reject a `replace` template that Python's replacement parser cannot apply.
 
-    Validated at load (fail closed) so a bad backref never surfaces mid-apply. Group 0
-    (whole match) is always valid; numeric refs must be <= the pattern's group count;
-    named refs must name a real group.
+    Validated at load (fail closed) so a bad backref or escape never surfaces mid-apply.
     """
-    for name, number in _TEMPLATE_REF.findall(template):
-        if number:
-            if int(number) > compiled.groups:
-                raise ConfigError(
-                    f"{ctx}: replace references group \\{number} but regex defines "
-                    f"{compiled.groups}")
-        elif name.isdigit():
-            if int(name) > compiled.groups:
-                raise ConfigError(
-                    f"{ctx}: replace references group \\g<{name}> but regex defines "
-                    f"{compiled.groups}")
-        elif name not in compiled.groupindex:
-            raise ConfigError(f"{ctx}: replace references unknown group \\g<{name}>")
+    try:
+        compiled.sub(template.encode(const_rewrite_encoding), b"", count=0)
+    except UnicodeEncodeError as e:
+        raise ConfigError(f"{ctx}: 'replace' must be encodable as {const_rewrite_encoding}") from e
+    except re.error as e:
+        raise ConfigError(f"{ctx}: invalid replace template: {e}") from e
 
 
 def _parse_rule(raw: object, index: int) -> Rule:
@@ -282,9 +270,13 @@ def _parse_rule(raw: object, index: int) -> Rule:
             strings = _parse_str_list(table.get("strings"), "strings", ctx)
         else:
             regex = _parse_str_list(table.get("regex"), "regex", ctx)
+            regex_encoding = const_rewrite_encoding if kind == "rewrite" else "utf-8"
             for pattern in regex:
                 try:
-                    compiled_regex.append(re.compile(pattern.encode()))
+                    compiled_regex.append(re.compile(pattern.encode(regex_encoding)))
+                except UnicodeEncodeError as e:
+                    raise ConfigError(
+                        f"{ctx}: regex {pattern!r} must be encodable as {regex_encoding}") from e
                 except re.error as e:
                     raise ConfigError(f"{ctx}: invalid regex {pattern!r}: {e}") from e
         if "targets" in table:

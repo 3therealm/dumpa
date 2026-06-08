@@ -23,7 +23,7 @@ from pathlib import Path
 
 from dumpa.core.errors import ConfigError, DumpaError
 from dumpa.core.report import Confidence
-from dumpa.core.rules import RuleBundle
+from dumpa.core.rules import RuleBundle, const_rewrite_encoding
 
 logger = logging.getLogger("dumpa")
 
@@ -32,7 +32,7 @@ const_max_rewrite_file_bytes = 512 << 20    # skip a pathological smali file rat
 
 # Smali is ASCII/UTF-8; we read and write as raw bytes via latin-1 so a round-trip is
 # byte-exact regardless of any stray non-ASCII bytes in a string literal.
-_ENC = "latin-1"
+_ENC = const_rewrite_encoding
 
 
 @dataclass(frozen=True)
@@ -237,17 +237,18 @@ def apply_edits(smali_dir: Path, plan: RewritePlan, selection: set[int],
     """Write the selected substitutions back to the smali tree.
 
     Substitutions in one file are applied right-to-left by offset so earlier offsets stay
-    valid as replacement lengths change. Each selected match is re-verified at its offset
-    before writing (guards against an edited-since-preview tree). Two selected matches that
-    overlap in one file raise DumpaError and write nothing. A match-only plan (no `after`)
-    cannot be applied.
+    valid as replacement lengths change. Every selected match is re-verified before any
+    file is written (guards against an edited-since-preview tree). Two selected matches
+    that overlap in one file raise DumpaError and write nothing. A match-only plan (no
+    `after`) cannot be applied.
     """
     chosen = [m for m in plan.matches if m.index in selection]
     by_file: dict[str, list[Match]] = defaultdict(list)
     for m in chosen:
         by_file[m.file_rel].append(m)
 
-    edits: list[AppliedEdit] = []
+    ordered_by_file: dict[str, list[Match]] = {}
+    data_by_file: dict[str, bytes] = {}
     for rel, group in by_file.items():
         ordered = sorted(group, key=lambda m: m.byte_offset)
         for a, b in itertools.pairwise(ordered):
@@ -257,7 +258,7 @@ def apply_edits(smali_dir: Path, plan: RewritePlan, selection: set[int],
                     f"choose one")
         path = smali_dir / rel
         data = path.read_bytes()
-        for m in reversed(ordered):
+        for m in ordered:
             if m.after is None:
                 raise DumpaError(
                     f"edit {m.index} has no replacement (use a --replace bundle)")
@@ -266,8 +267,18 @@ def apply_edits(smali_dir: Path, plan: RewritePlan, selection: set[int],
             if data[start:end] != before:
                 raise DumpaError(
                     f"edit {m.index} no longer matches at {m.locator}; re-run the preview")
+        ordered_by_file[rel] = ordered
+        data_by_file[rel] = data
+
+    edits: list[AppliedEdit] = []
+    for rel, ordered in ordered_by_file.items():
+        data = data_by_file[rel]
+        for m in reversed(ordered):
+            before = m.before.encode(_ENC)
+            start, end = m.byte_offset, m.byte_offset + len(before)
+            assert m.after is not None
             data = data[:start] + m.after.encode(_ENC) + data[end:]
-        path.write_bytes(data)
+        (smali_dir / rel).write_bytes(data)
         for m in ordered:
             edits.append(AppliedEdit(match=m, rule_version=rule_version))
     return edits
