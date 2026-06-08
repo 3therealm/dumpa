@@ -58,7 +58,7 @@ from dumpa.core.config import (
 )
 from dumpa.core.env import env_positive_int
 from dumpa.core.errors import ConfigError, ManifestError, ToolNotFoundError, XapkToApkError
-from dumpa.core.fs import link_or_copy, working_tmp_dir
+from dumpa.core.fs import working_tmp_dir
 from dumpa.core.hashing import sha256_file
 from dumpa.core.tools import ToolRegistry, build_default_registry
 from dumpa.core.workspace import Workspace, decide_reuse, make_meta, open_workspace
@@ -254,7 +254,7 @@ def _emit_apk(src: Path, working_dir: Path, target_name: str) -> Path:
         raise XapkToApkError(f"refusing to overwrite directory at {dst}")
     if dst.exists():
         dst.unlink()
-    link_or_copy(src, dst)
+    shutil.copy2(src, dst)
     return dst
 
 
@@ -370,7 +370,7 @@ def build_workspace(registry: ToolRegistry, ws: Workspace, input_abs: Path,
         if sign_config is not None:
             tool_names.append('apksigner')
     else:
-        link_or_copy(input_abs, ws.app_apk)
+        shutil.copy2(input_abs, ws.app_apk)
         tool_names = ['aapt']
 
     safe_extract_zip(ws.app_apk, ws.extracted_dir)

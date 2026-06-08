@@ -31,6 +31,7 @@ import logging
 import struct
 from dataclasses import dataclass
 from pathlib import Path
+from typing import BinaryIO
 
 from dumpa.core.errors import DexError
 
@@ -113,7 +114,7 @@ def _is_class_descriptor(value: str) -> bool:
     return len(value) >= 2 and value[0] == "L" and value[-1] == ";"
 
 
-def _read_at(f, offset: int, size: int) -> bytes:
+def _read_at(f: BinaryIO, offset: int, size: int) -> bytes:
     f.seek(offset)
     blob = f.read(size)
     if len(blob) != size:
@@ -135,7 +136,7 @@ def _uleb128(buf: bytes, pos: int) -> tuple[int, int]:
     raise DexError("uleb128 too long")
 
 
-def _parse(f) -> DexFile:
+def _parse(f: BinaryIO) -> DexFile:
     head = f.read(_HEADER_SIZE)
     if len(head) < _HEADER_SIZE or head[:4] != _DEX_MAGIC:
         raise DexError("not a dex file")
@@ -179,7 +180,7 @@ def _parse_version(raw: bytes) -> int:
     return int(digits)
 
 
-def _read_strings(f, en: str, off: int, size: int,
+def _read_strings(f: BinaryIO, en: str, off: int, size: int,
                   file_size: int) -> tuple[list[str], list[tuple[int, int]]]:
     """Return (string values by index, (content_start, content_end) by index).
 
@@ -224,7 +225,7 @@ def _mutf8(raw: bytes) -> str:
         return raw.decode("latin-1")
 
 
-def _read_type_ids(f, en: str, off: int, size: int) -> list[int]:
+def _read_type_ids(f: BinaryIO, en: str, off: int, size: int) -> list[int]:
     """type_idx -> descriptor string index."""
     if size == 0:
         return []
@@ -232,7 +233,7 @@ def _read_type_ids(f, en: str, off: int, size: int) -> list[int]:
     return list(struct.unpack(en + "I" * size, table))
 
 
-def _read_member_names(f, en: str, off: int, size: int, strings: list[str]) -> list[str]:
+def _read_member_names(f: BinaryIO, en: str, off: int, size: int, strings: list[str]) -> list[str]:
     """field_id/method_id index -> member name. Both items are 8 bytes with name_idx at +4."""
     if size == 0:
         return []
@@ -261,7 +262,7 @@ def _build_desc_spans(type_desc: list[int], strings: list[str],
     return spans
 
 
-def _read_classes(f, en: str, off: int, size: int, file_size: int,
+def _read_classes(f: BinaryIO, en: str, off: int, size: int, file_size: int,
                   strings: list[str], type_desc: list[int],
                   field_names: list[str], method_names: list[str],
                   ) -> tuple[list[DexClass], list[tuple[int, int, str, str]]]:
@@ -300,7 +301,7 @@ def _read_classes(f, en: str, off: int, size: int, file_size: int,
     return classes, code_spans
 
 
-def _read_class_data(f, off: int, file_size: int, class_name: str,
+def _read_class_data(f: BinaryIO, off: int, file_size: int, class_name: str,
                      field_names: list[str], method_names: list[str], en: str,
                      code_spans: list[tuple[int, int, str, str]],
                      ) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -347,7 +348,7 @@ def _read_encoded_fields(buf: bytes, pos: int, count: int,
     return pos
 
 
-def _read_encoded_methods(f, buf: bytes, pos: int, count: int, file_size: int,
+def _read_encoded_methods(f: BinaryIO, buf: bytes, pos: int, count: int, file_size: int,
                           class_name: str, method_names: list[str], en: str,
                           code_spans: list[tuple[int, int, str, str]],
                           out: list[str]) -> int:
@@ -366,7 +367,7 @@ def _read_encoded_methods(f, buf: bytes, pos: int, count: int, file_size: int,
     return pos
 
 
-def _code_span(f, code_off: int, file_size: int, en: str) -> tuple[int, int] | None:
+def _code_span(f: BinaryIO, code_off: int, file_size: int, en: str) -> tuple[int, int] | None:
     """[code_off, code_off + header + insns_bytes) from the code_item header only."""
     if code_off + _CODE_ITEM_HEADER > file_size:
         return None

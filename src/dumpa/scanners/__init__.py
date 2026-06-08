@@ -61,11 +61,9 @@ SCANNERS: tuple[ScannerSpec, ...] = (
     # gametype resolves a networked, TTL-bound Play genre -> never cached (the
     # dumps/gametype.json sidecar already memoizes the fetch within a workspace).
     ScannerSpec("gametype", gametype.scan, cacheable=False),
-    # dumpcs caches on its bundle versions. Caveat: dump.cs is derived from the apk by
-    # the il2cpp dumper; a re-dump with a different dumper on the same apk won't change
-    # the input hash, so use --no-cache after swapping the dumper (tool-version keying
-    # is deferred per the roadmap until a scanner invokes a versioned tool directly).
-    ScannerSpec("dumpcs", dumpcs.scan, dumpcs.const_dumpcs_bundles),
+    # dumpcs depends on mutable workspace sidecars (`dumps/dump.cs`, gametype.json), not
+    # only on the apk input hash, so always run it until those sidecars are part of the key.
+    ScannerSpec("dumpcs", dumpcs.scan, dumpcs.const_dumpcs_bundles, cacheable=False),
 )
 # Unity deep helper runs only when the engine scanner flagged Unity.
 UNITY_SPEC = ScannerSpec("unity", unity.scan)
@@ -95,7 +93,7 @@ def enrich_native_rvas(findings: list[Finding], ws: Workspace) -> list[Finding]:
 
     out: list[Finding] = []
     for finding in findings:
-        new_locs: list | None = None
+        new_locs: list[Location] | None = None
         for i, loc in enumerate(finding.locations):
             if (loc.rva is not None or loc.file_offset is None
                     or not loc.file_path or not _is_lib_so(loc.file_path)):
@@ -133,7 +131,7 @@ def enrich_dex_locations(findings: list[Finding], ws: Workspace) -> list[Finding
 
     out: list[Finding] = []
     for finding in findings:
-        new_locs: list | None = None
+        new_locs: list[Location] | None = None
         for i, loc in enumerate(finding.locations):
             if (loc.dex_class is not None or loc.file_offset is None
                     or not loc.file_path or not loc.file_path.endswith(".dex")):

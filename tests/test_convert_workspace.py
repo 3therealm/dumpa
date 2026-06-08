@@ -8,11 +8,13 @@ stubbed so no external tool is touched.
 from __future__ import annotations
 
 from pathlib import Path
+from zipfile import ZipFile
 
 import pytest
 
 from dumpa.convert import pipeline
-from dumpa.convert.pipeline import _emit_apk, convert_into_workspace, workspace_build_options
+from dumpa.convert.pipeline import _emit_apk, build_workspace, convert_into_workspace, workspace_build_options
+from dumpa.core.errors import ToolNotFoundError
 from dumpa.core.tools import build_default_registry
 from dumpa.core.workspace import Workspace, make_meta
 
@@ -85,6 +87,8 @@ def test_emit_apk_copies_without_moving(tmp_path: Path) -> None:
     assert dst == out / "myapp.apk"
     assert dst.read_bytes() == b"apkdata"
     assert src.exists()                         # source survives (copy, not rename)
+    dst.write_bytes(b"changed")
+    assert src.read_bytes() == b"apkdata"        # no hardlink aliasing
 
 
 def test_emit_apk_overwrites_existing_file(tmp_path: Path) -> None:
@@ -104,6 +108,22 @@ def test_emit_apk_refuses_directory_target(tmp_path: Path) -> None:
     (out / "myapp.apk").mkdir(parents=True)
     with pytest.raises(Exception, match="refusing to overwrite directory"):
         _emit_apk(src, out, "myapp")
+
+
+def test_build_workspace_apk_copies_canonical_apk(tmp_path: Path) -> None:
+    apk = tmp_path / "in.apk"
+    with ZipFile(apk, "w") as zf:
+        zf.writestr("AndroidManifest.xml", b"manifest")
+    original = apk.read_bytes()
+    ws = Workspace(root=tmp_path / "ws")
+
+    class _NoTools:
+        def resolve(self, name: str) -> object:
+            raise ToolNotFoundError(f"missing {name}")
+
+    build_workspace(_NoTools(), ws, apk, "apk", _SHA, None)
+    ws.app_apk.write_bytes(b"changed")
+    assert apk.read_bytes() == original
 
 
 # --- workspace_build_options -------------------------------------------------

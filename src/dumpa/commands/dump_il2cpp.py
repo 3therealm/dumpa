@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from dumpa.commands.analyze import input_type
+from dumpa.commands.analyze import const_file_report_json, input_type
 from dumpa.convert.pipeline import build_workspace
 from dumpa.core.archive import safe_extract_zip
 from dumpa.core.config import load_config
@@ -29,6 +29,17 @@ from dumpa.tools.il2cpp import (
 logger = logging.getLogger("dumpa")
 
 const_dump_cs = "dump.cs"
+
+
+def _invalidate_report(ws: Workspace) -> None:
+    """Drop report.json after dump.cs changes so export rebuilds scanner findings."""
+    report_path = ws.reports_dir / const_file_report_json
+    try:
+        report_path.unlink()
+    except FileNotFoundError:
+        return
+    except OSError:
+        logger.debug("could not invalidate report %s", report_path, exc_info=True)
 
 
 def autodump_workspace(registry: ToolRegistry, ws: Workspace, *, engine_name: str) -> bool:
@@ -54,6 +65,7 @@ def autodump_workspace(registry: ToolRegistry, ws: Workspace, *, engine_name: st
     except DumpaError:
         logger.warning("auto-dump failed; continuing without dump.cs", exc_info=True)
         return False
+    _invalidate_report(ws)
     return (ws.dumps_dir / const_dump_cs).is_file()
 
 
@@ -103,6 +115,8 @@ def dump_il2cpp(apk_file: Path | None, *, engine: str | None = None,
             out = out_dir.resolve() if out_dir else ws.dumps_dir
             out.mkdir(parents=True, exist_ok=True)
             _run_dump(eng, engine_name, tool, ws.extracted_dir, arch, out)
+            if out == ws.dumps_dir:
+                _invalidate_report(ws)
         return
 
     if apk_file is None:

@@ -149,6 +149,22 @@ def test_run_spec_no_cache_without_meta(tmp_path: Path) -> None:
     assert not ws.cache_dir.exists()
 
 
+def test_run_spec_cacheable_false_skips_cache_with_meta(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    meta = _meta()
+    calls: list[int] = []
+
+    def fn(_ws: Workspace) -> list[Finding]:
+        calls.append(1)
+        return _sample()
+
+    spec = ScannerSpec("faketest", fn, cacheable=False)
+    _run_spec(ws, spec, meta)
+    _run_spec(ws, spec, meta)
+    assert calls == [1, 1]
+    assert not ws.cache_dir.exists()
+
+
 # --- run_all: identical output cached vs cold; cache files written -----------
 
 def test_run_all_caches_and_reproduces(tmp_path: Path) -> None:

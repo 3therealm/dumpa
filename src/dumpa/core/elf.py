@@ -19,6 +19,7 @@ import logging
 import struct
 from dataclasses import dataclass
 from pathlib import Path
+from typing import BinaryIO
 
 from dumpa.core.errors import ElfError
 
@@ -100,7 +101,7 @@ class ElfFile:
         return None
 
 
-def _read_at(f, offset: int, size: int) -> bytes:
+def _read_at(f: BinaryIO, offset: int, size: int) -> bytes:
     f.seek(offset)
     blob = f.read(size)
     if len(blob) != size:
@@ -127,7 +128,7 @@ def parse_elf(path: Path) -> ElfFile | None:
         return None
 
 
-def _parse(f) -> ElfFile:
+def _parse(f: BinaryIO) -> ElfFile:
     head = f.read(64)
     if len(head) < 52 or head[:4] != _ELF_MAGIC:
         raise ElfError("not an ELF file")
@@ -166,7 +167,7 @@ def _parse(f) -> ElfFile:
                    symbols=symbols, loads=loads)
 
 
-def _parse_program_headers(f, en: str, is64: bool, phoff: int, entsize: int,
+def _parse_program_headers(f: BinaryIO, en: str, is64: bool, phoff: int, entsize: int,
                            num: int) -> tuple[tuple[int, int, int], ...]:
     if not (phoff and num):
         return ()
@@ -190,7 +191,7 @@ def _parse_program_headers(f, en: str, is64: bool, phoff: int, entsize: int,
 _RawSection = tuple[int, int, int, int, int, int, int, int]
 
 
-def _parse_section_headers(f, en: str, is64: bool, shoff: int, entsize: int,
+def _parse_section_headers(f: BinaryIO, en: str, is64: bool, shoff: int, entsize: int,
                            num: int) -> list[_RawSection]:
     if not (shoff and num):
         return []
@@ -211,7 +212,7 @@ def _parse_section_headers(f, en: str, is64: bool, shoff: int, entsize: int,
     return out
 
 
-def _read_strtab(f, raw: list[_RawSection], index: int) -> bytes:
+def _read_strtab(f: BinaryIO, raw: list[_RawSection], index: int) -> bytes:
     if not (0 <= index < len(raw)):
         return b""
     _, _, _, _, offset, size, _, _ = raw[index]
@@ -219,7 +220,7 @@ def _read_strtab(f, raw: list[_RawSection], index: int) -> bytes:
     return _read_at(f, offset, size) if size else b""
 
 
-def _resolve_sections(f, raw: list[_RawSection], shstrndx: int) -> tuple[Section, ...]:
+def _resolve_sections(f: BinaryIO, raw: list[_RawSection], shstrndx: int) -> tuple[Section, ...]:
     names = _read_strtab(f, raw, shstrndx)
     return tuple(
         Section(name=_cstr(names, r[0]), type=r[1], addr=r[3],
@@ -228,7 +229,7 @@ def _resolve_sections(f, raw: list[_RawSection], shstrndx: int) -> tuple[Section
     )
 
 
-def _parse_symbols(f, en: str, is64: bool, raw: list[_RawSection]) -> tuple[Symbol, ...]:
+def _parse_symbols(f: BinaryIO, en: str, is64: bool, raw: list[_RawSection]) -> tuple[Symbol, ...]:
     entry_size = 24 if is64 else 16
     symbols: list[Symbol] = []
     for _, sh_type, _, _, sh_offset, sh_size, sh_link, sh_entsize in raw:

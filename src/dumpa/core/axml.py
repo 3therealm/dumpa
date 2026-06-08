@@ -99,13 +99,13 @@ class AxmlDocument:
 def _u16(data: bytes, off: int) -> int:
     if off + 2 > len(data):
         raise AxmlError(f"truncated u16 at offset {off}")
-    return struct.unpack_from("<H", data, off)[0]
+    return int(struct.unpack_from("<H", data, off)[0])
 
 
 def _u32(data: bytes, off: int) -> int:
     if off + 4 > len(data):
         raise AxmlError(f"truncated u32 at offset {off}")
-    return struct.unpack_from("<I", data, off)[0]
+    return int(struct.unpack_from("<I", data, off)[0])
 
 
 def _utf8_len(data: bytes, pos: int) -> tuple[int, int]:
