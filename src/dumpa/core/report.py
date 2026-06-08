@@ -291,23 +291,70 @@ def density_score(report: Report) -> dict[str, float]:
     return out
 
 
-def report_domains(report: Report) -> list[str]:
-    """Sorted unique hosts/domains from the report (endpoint hosts + any domain locations)."""
+def report_domains(report: Report, *, trackers_only: bool = False) -> list[str]:
+    """Sorted unique domain strings (string-only helper; CSV/grouped views use domain_records()).
+
+    Default (trackers_only=False) = all hosts: endpoint subjects UNION every Location.domain.
+    trackers_only=True -> only tracker-owned hosts:
+        - a Location.domain present on a tracker finding, OR
+        - an endpoint finding's subject when that endpoint carries an `owner` attribute.
+    """
     domains: set[str] = set()
     for finding in report.findings:
-        if finding.kind == "endpoint":
-            domains.add(finding.subject)
-        for loc in finding.locations:
-            if loc.domain:
-                domains.add(loc.domain)
+        if trackers_only:
+            if finding.kind == "tracker":
+                for loc in finding.locations:
+                    if loc.domain:
+                        domains.add(loc.domain)
+            elif finding.kind == "endpoint" and finding.attributes.get("owner"):
+                domains.add(finding.subject)
+        else:
+            if finding.kind == "endpoint":
+                domains.add(finding.subject)
+            for loc in finding.locations:
+                if loc.domain:
+                    domains.add(loc.domain)
     return sorted(d for d in domains if d)
 
 
-def render_blocklist(report: Report, fmt: str) -> str:
-    """Render a domain blocklist: 'hosts' (0.0.0.0 lines) or 'adguard' (||host^)."""
-    domains = report_domains(report)
-    lines = [f"||{d}^" for d in domains] if fmt == "adguard" else [f"0.0.0.0 {d}" for d in domains]
-    return "\n".join(lines) + "\n" if lines else ""
+_BLOCKLIST_UNATTRIBUTED = "(unattributed)"
+
+
+def render_blocklist(report: Report, fmt: str, *, trackers_only: bool = False) -> str:
+    """Render a domain blocklist in `fmt`, scoped per `trackers_only`.
+
+    fmt line shapes:
+      hosts          -> '0.0.0.0 <domain>'
+      adguard        -> '||<domain>^'
+      nextdns        -> bare '<domain>'
+      rethinkdns     -> bare '<domain>' with a leading '! dumpa' comment line
+      trackercontrol -> '0.0.0.0 <domain>' grouped under '# <owner>' headers (via domain_records())
+    """
+    if fmt == "trackercontrol":
+        scoped = set(report_domains(report, trackers_only=trackers_only))
+        by_owner: dict[str, set[str]] = {}
+        for rec in domain_records(report):
+            if rec.domain not in scoped:
+                continue
+            by_owner.setdefault(rec.owner or _BLOCKLIST_UNATTRIBUTED, set()).add(rec.domain)
+        lines: list[str] = []
+        for owner in sorted(by_owner):
+            lines.append(f"# {owner}")
+            lines.extend(f"0.0.0.0 {d}" for d in sorted(by_owner[owner]))
+        return "\n".join(lines) + "\n" if lines else ""
+
+    domains = report_domains(report, trackers_only=trackers_only)
+    if not domains:
+        return ""
+    if fmt == "adguard":
+        lines = [f"||{d}^" for d in domains]
+    elif fmt == "nextdns":
+        lines = list(domains)
+    elif fmt == "rethinkdns":
+        lines = ["! dumpa", *domains]
+    else:  # hosts
+        lines = [f"0.0.0.0 {d}" for d in domains]
+    return "\n".join(lines) + "\n"
 
 
 @dataclass(frozen=True)

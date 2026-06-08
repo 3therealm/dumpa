@@ -97,14 +97,22 @@ def export(
         ..., exists=True, file_okay=False, readable=True,
         help="Workspace directory produced by `dumpa analyze`.",
     ),
-    fmt: str = typer.Option("json", "--format", help="Report format: json | md | hosts | adguard."),
+    fmt: str = typer.Option(
+        "json", "--format",
+        help="Report format: json | md | hosts | adguard | nextdns | rethinkdns | "
+             "trackercontrol | csv | domains-csv."),
     out: Path | None = typer.Option(
         None, "--out", help="Write to this file instead of stdout."),
     no_cache: bool = typer.Option(
         False, "--no-cache", help="Rebuild from a fresh scan instead of cached findings/report.json."),
+    trackers_only: bool = typer.Option(
+        False, "--trackers-only",
+        help="Narrow blocklist formats to attributed tracker-owned domains "
+             "(default: all endpoints; no effect on json/md/csv)."),
 ) -> None:
-    """Render a workspace's report as JSON, Markdown, or a domain blocklist."""
-    run_command(lambda: export_cmd.export(workspace, fmt=fmt, out=out, use_cache=not no_cache))
+    """Render a workspace's report as JSON, Markdown, a domain blocklist, or CSV."""
+    run_command(lambda: export_cmd.export(
+        workspace, fmt=fmt, out=out, use_cache=not no_cache, trackers_only=trackers_only))
 
 
 @app.command()

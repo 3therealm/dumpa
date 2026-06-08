@@ -16,9 +16,11 @@ from dumpa.core.report import (
     Location,
     Report,
     domain_records,
+    render_blocklist,
     render_domains_csv,
     render_markdown,
     render_trackers_csv,
+    report_domains,
     to_json,
 )
 
@@ -246,3 +248,139 @@ def test_export_wiring() -> None:
     assert "csv" in const_export_formats
     assert "domains-csv" in const_export_formats
     assert "csv" not in _NOT_YET
+
+
+# --- C5: blocklist scoping + formats -------------------------------------
+
+
+def _scoped() -> Report:
+    """First-party endpoint (no owner) + a tracker-owned host."""
+    return Report(
+        dumpa_version="0.1.0", created="t", input_path="/x.apk",
+        facts=AppFacts(input_sha256="a" * 64, input_size=1024),
+        findings=[
+            Finding(kind="endpoint", subject="api.myapp.example", confidence=Confidence.LOW),
+            Finding(kind="tracker", subject="firebase-analytics", confidence=Confidence.HIGH,
+                    attributes={"owner": "Google", "category": "analytics"},
+                    locations=[Location(domain="firebase.googleapis.com")]),
+        ],
+    )
+
+
+def test_report_domains_default_includes_first_party() -> None:
+    assert "api.myapp.example" in report_domains(_scoped())
+    assert "firebase.googleapis.com" in report_domains(_scoped())
+
+
+def test_report_domains_trackers_only_drops_first_party() -> None:
+    scoped = report_domains(_scoped(), trackers_only=True)
+    assert scoped == ["firebase.googleapis.com"]
+
+
+def test_report_domains_trackers_only_keeps_owned_endpoint() -> None:
+    report = Report(
+        dumpa_version="0.1.0", created="t", input_path="/x.apk",
+        facts=AppFacts(input_sha256="a" * 64, input_size=1024),
+        findings=[
+            Finding(kind="endpoint", subject="ads.example", confidence=Confidence.LOW,
+                    attributes={"owner": "AdCo"}),
+        ],
+    )
+    assert report_domains(report, trackers_only=True) == ["ads.example"]
+
+
+def _single(domain: str = "d", owner: str | None = None) -> Report:
+    attrs = {"owner": owner} if owner else {}
+    return Report(
+        dumpa_version="0.1.0", created="t", input_path="/x.apk",
+        facts=AppFacts(input_sha256="a" * 64, input_size=1024),
+        findings=[
+            Finding(kind="tracker", subject="sdk", confidence=Confidence.HIGH,
+                    attributes=attrs, locations=[Location(domain=domain)]),
+        ],
+    )
+
+
+def test_render_blocklist_hosts() -> None:
+    assert render_blocklist(_single(), "hosts") == "0.0.0.0 d\n"
+
+
+def test_render_blocklist_adguard() -> None:
+    assert render_blocklist(_single(), "adguard") == "||d^\n"
+
+
+def test_render_blocklist_nextdns() -> None:
+    assert render_blocklist(_single(), "nextdns") == "d\n"
+
+
+def test_render_blocklist_rethinkdns() -> None:
+    assert render_blocklist(_single(), "rethinkdns") == "! dumpa\nd\n"
+
+
+def test_render_blocklist_trackercontrol() -> None:
+    out = render_blocklist(_single(owner="Google"), "trackercontrol")
+    assert out == "# Google\n0.0.0.0 d\n"
+
+
+def test_trackercontrol_groups_by_owner() -> None:
+    report = Report(
+        dumpa_version="0.1.0", created="t", input_path="/x.apk",
+        facts=AppFacts(input_sha256="a" * 64, input_size=1024),
+        findings=[
+            Finding(kind="tracker", subject="ga", confidence=Confidence.HIGH,
+                    attributes={"owner": "Google"},
+                    locations=[Location(domain="g1.example"), Location(domain="g2.example")]),
+            Finding(kind="endpoint", subject="unknown.example", confidence=Confidence.LOW),
+        ],
+    )
+    out = render_blocklist(report, "trackercontrol")
+    lines = out.splitlines()
+    assert "# Google" in lines
+    gi = lines.index("# Google")
+    assert lines[gi + 1] == "0.0.0.0 g1.example"
+    assert lines[gi + 2] == "0.0.0.0 g2.example"
+    assert "# (unattributed)" in lines
+    ui = lines.index("# (unattributed)")
+    assert lines[ui + 1] == "0.0.0.0 unknown.example"
+
+
+def test_render_blocklist_scope_threads_into_every_format() -> None:
+    for fmt in ("hosts", "adguard", "nextdns", "rethinkdns", "trackercontrol"):
+        scoped = render_blocklist(_scoped(), fmt, trackers_only=True)
+        assert "api.myapp.example" not in scoped
+        assert "firebase.googleapis.com" in scoped
+
+
+def test_render_blocklist_empty_is_blank_for_all_formats() -> None:
+    bare = Report(
+        dumpa_version="0.1.0", created="t", input_path="/x.apk",
+        facts=AppFacts(input_sha256="a" * 64, input_size=1024),
+    )
+    for fmt in ("hosts", "adguard", "nextdns", "rethinkdns", "trackercontrol"):
+        assert render_blocklist(bare, fmt) == ""
+
+
+def test_export_reenriches_domain_aware_only(tmp_path, monkeypatch) -> None:
+    from dumpa.commands import export as export_cmd
+
+    report = _single()
+    calls: list[str] = []
+
+    def spy_enrich(findings, ws):
+        calls.append("called")
+        return findings
+
+    monkeypatch.setattr(export_cmd, "_load_report", lambda ws, *, use_cache=True: report)
+    monkeypatch.setattr(export_cmd, "enrich_domain_attribution", spy_enrich)
+
+    # every domain-aware format re-enriches the loaded report
+    for i, fmt in enumerate(export_cmd._DOMAIN_AWARE):
+        calls.clear()
+        export_cmd.export(tmp_path, fmt=fmt, out=tmp_path / f"aware-{i}.txt")
+        assert calls == ["called"], fmt
+
+    # json and md are "report as built" — never re-enriched
+    for fmt in ("json", "md", "markdown"):
+        calls.clear()
+        export_cmd.export(tmp_path, fmt=fmt, out=tmp_path / f"{fmt}.txt")
+        assert calls == [], fmt
