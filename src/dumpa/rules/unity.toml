@@ -1,0 +1,118 @@
+# Unity integration markers (deep-helper detail bundle).
+#
+# Runs only when the engines bundle has already flagged Unity (see scanners/__init__.py
+# UNITY_SPECS gate), so every rule here assumes a Unity app. It reports the Unity
+# *integration surface* the tracker inventory does not assert: Unity Gaming Services,
+# Firebase project-config residue, Addressables, and non-tracker native plugins.
+#
+# Dedup discipline: this bundle MUST NOT re-detect an SDK already owned by trackers.toml.
+# In particular `com/unity3d/services/ads`, `com/unity3d/ads`, and
+# `com/google/firebase/remoteconfig` are tracker subjects and are deliberately absent here.
+#
+# Detection reality: a built APK has no Assets/Plugins/Android/ tree — Unity merges it at
+# build time into lib/<abi>/*.so, the merged manifest, and resources.arsc. So "plugin"
+# detection keys on the merged native libraries, not a source directory.
+#
+# Content rules scan the default target set (**/*.dex, lib/**/*.so, AndroidManifest.xml,
+# resources.arsc); dex string pools carry class paths, resources.arsc carries the
+# google-services resource names. kind="engine-detail" matches scanners/unity.py.
+
+[bundle]
+name = "unity"
+version = "2026.06.1"
+source = "dumpa built-in"
+updated = "2026-06-08"
+
+# --- Unity Gaming Services (class-path references in dex) ---------------------
+
+[[rule]]
+kind = "engine-detail"
+subject = "Unity service: Analytics"
+confidence = "high"
+state = "referenced"
+strings = ["com/unity3d/services/analytics"]
+
+[[rule]]
+kind = "engine-detail"
+subject = "Unity service: In-App Purchasing"
+confidence = "high"
+state = "referenced"
+match = "any"
+strings = ["com/unity3d/services/store", "com/unity3d/purchasing"]
+
+[[rule]]
+kind = "engine-detail"
+subject = "Unity service: Authentication"
+confidence = "high"
+state = "referenced"
+strings = ["com/unity3d/services/authentication"]
+
+[[rule]]
+kind = "engine-detail"
+subject = "Unity Gaming Services core"
+confidence = "medium"
+state = "referenced"
+strings = ["com/unity3d/services/core"]
+
+# Remote config: the Unity-native service only. Firebase Remote Config is a tracker
+# subject (trackers.toml) and is intentionally not duplicated here.
+[[rule]]
+kind = "engine-detail"
+subject = "Unity Remote Config"
+confidence = "high"
+state = "referenced"
+strings = ["com/unity3d/services/remoteconfig"]
+
+# --- Firebase project-config residue (distinct from the Firebase SDK trackers) ----
+
+# The values baked from google-services.json into resources.arsc. Detecting these
+# identifies the Firebase *project* wiring, which the class-based tracker rules do not.
+[[rule]]
+kind = "engine-detail"
+subject = "Firebase config (google-services residue)"
+confidence = "medium"
+state = "present"
+match = "any"
+strings = ["google_app_id", "gcm_defaultSenderId", "firebase_database_url"]
+
+# Firebase C++ runtime shipped by the Unity Firebase plugin (native lib, not a class).
+[[rule]]
+kind = "engine-detail"
+subject = "Firebase native runtime (Unity plugin)"
+confidence = "high"
+state = "present"
+globs = ["lib/*/libFirebaseCppApp*.so", "lib/*/libFirebaseCpp*.so"]
+
+# --- Addressables ------------------------------------------------------------
+
+# Presence of the Addressable Asset System content catalog. Remote-load URLs inside the
+# catalog are attributed separately by scanners/unity_assets.py.
+[[rule]]
+kind = "engine-detail"
+subject = "Unity Addressables catalog"
+confidence = "high"
+state = "present"
+match = "any"
+globs = [
+    "assets/aa/**/catalog*.json",
+    "assets/aa/**/settings.json",
+    "assets/aa/catalog*.bin",
+    "assets/aa/**/catalog*.bundle",
+]
+
+# --- Non-tracker native plugins ----------------------------------------------
+
+[[rule]]
+kind = "engine-detail"
+subject = "Unity native plugin: Google Play Games Services"
+confidence = "high"
+state = "present"
+globs = ["lib/*/libgpg.so"]
+
+[[rule]]
+kind = "engine-detail"
+subject = "Unity native plugin: ARCore"
+confidence = "high"
+state = "present"
+match = "any"
+globs = ["lib/*/libarcore_sdk_c.so", "lib/*/libarcore_sdk_jni.so"]

@@ -40,6 +40,7 @@ const_dir_dumps = "dumps"
 const_dir_reports = "reports"
 const_dir_cache = "cache"
 const_dir_smali = "smali"
+const_dir_decompiled = "decompiled"
 const_dir_native = "native"
 const_dir_dex = "dex"
 const_dir_playstore = "playstore"
@@ -105,6 +106,11 @@ class Workspace:
     def has_smali(self) -> bool:
         """True when the apktool decode tree exists and has content."""
         return self.smali_dir.is_dir() and any(self.smali_dir.iterdir())
+
+    @property
+    def decompiled_dir(self) -> Path:
+        """JADX read-only decompile output (decompiled/); produced by `dumpa decompile`."""
+        return self.root / const_dir_decompiled
 
     @property
     def dumps_dir(self) -> Path:

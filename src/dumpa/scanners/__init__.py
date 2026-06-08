@@ -32,6 +32,8 @@ from dumpa.scanners import (
     secret,
     tracker,
     unity,
+    unity_assets,
+    unity_rules,
 )
 
 Scanner = Callable[[Workspace], list[Finding]]
@@ -65,8 +67,14 @@ SCANNERS: tuple[ScannerSpec, ...] = (
     # only on the apk input hash, so always run it until those sidecars are part of the key.
     ScannerSpec("dumpcs", dumpcs.scan, dumpcs.const_dumpcs_bundles, cacheable=False),
 )
-# Unity deep helper runs only when the engine scanner flagged Unity.
-UNITY_SPEC = ScannerSpec("unity", unity.scan)
+# Unity deep helpers run only when the engine scanner flagged Unity. unity_rules consumes
+# the `unity` bundle (cache-keyed on its version); unity.scan and unity_assets.scan are
+# code-only (keyed on the dumpa version).
+UNITY_SPECS: tuple[ScannerSpec, ...] = (
+    ScannerSpec("unity", unity.scan),
+    ScannerSpec("unity_rules", unity_rules.scan, ("unity",)),
+    ScannerSpec("unity_assets", unity_assets.scan),
+)
 
 _CONFIDENCE_RANK = {Confidence.HIGH: 3, Confidence.MEDIUM: 2, Confidence.LOW: 1}
 
@@ -312,7 +320,8 @@ def run_all(ws: Workspace, *, use_cache: bool = True) -> list[Finding]:
     for spec in SCANNERS:
         findings.extend(_run_spec(ws, spec, meta))
     if any(f.kind == "engine" and f.subject == "Unity" for f in findings):
-        findings.extend(_run_spec(ws, UNITY_SPEC, meta))
+        for spec in UNITY_SPECS:
+            findings.extend(_run_spec(ws, spec, meta))
     findings = enrich_native_rvas(findings, ws)
     findings = enrich_dex_locations(findings, ws)
     return enrich_domain_attribution(findings, ws)

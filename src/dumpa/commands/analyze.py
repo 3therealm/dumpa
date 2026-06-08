@@ -107,9 +107,18 @@ def _maybe_autodump(registry: ToolRegistry, ws: Workspace, config: Config, *, en
     autodump_workspace(registry, ws, engine_name=config.il2cpp_engine)
 
 
+def _maybe_decompile(ws_path: Path, *, enabled: bool) -> None:
+    """Run a full JADX decompile into the workspace when --jadx was passed (opt-in, heavy)."""
+    if not enabled:
+        return
+    # Lazy import: decompile imports analyze at module load, so this breaks the cycle.
+    from dumpa.commands.decompile import decompile as run_decompile
+    run_decompile(None, all_classes=True, workspace=ws_path)
+
+
 def analyze(input_file: Path, *, workspace: Path | None = None, force: bool = False,
             signing: str | None = None, use_cache: bool = True,
-            no_dump: bool = False, no_network: bool = False) -> None:
+            no_dump: bool = False, no_network: bool = False, jadx: bool = False) -> None:
     """Extract input_file into a reproducible workspace, reusing it when unchanged."""
     if no_network:
         os.environ[const_env_play_lookup] = "0"  # scanners read play_lookup from config/env
@@ -136,10 +145,12 @@ def analyze(input_file: Path, *, workspace: Path | None = None, force: bool = Fa
             _maybe_autodump(registry, ws, config, enabled=autodump_enabled)
             _report_workspace(registry, ws, signed_expected=signed_expected, input_size=size,
                               use_cache=use_cache)
-            return
+        else:
+            build_workspace(registry, ws, input_abs, in_type, input_sha, sign_config, build_options)
+            logger.info("workspace ready")
+            _maybe_autodump(registry, ws, config, enabled=autodump_enabled)
+            _report_workspace(registry, ws, signed_expected=signed_expected,
+                              input_size=input_abs.stat().st_size, use_cache=use_cache)
+        decompile_ws = ws.root
 
-        build_workspace(registry, ws, input_abs, in_type, input_sha, sign_config, build_options)
-        logger.info("workspace ready")
-        _maybe_autodump(registry, ws, config, enabled=autodump_enabled)
-        _report_workspace(registry, ws, signed_expected=signed_expected,
-                          input_size=input_abs.stat().st_size, use_cache=use_cache)
+    _maybe_decompile(decompile_ws, enabled=jadx)
