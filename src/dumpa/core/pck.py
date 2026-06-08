@@ -71,7 +71,9 @@ def find_embedded(path: Path) -> int | None:
             trailer = f.read(_TRAILER.size)
             if len(trailer) < _TRAILER.size:
                 return None
-            pck_size, magic = _TRAILER.unpack(trailer)
+            pck_size_raw, magic_raw = _TRAILER.unpack(trailer)
+            pck_size = int(pck_size_raw)
+            magic = int(magic_raw)
             if struct.pack("<I", magic) != const_magic:
                 return None
             start = size - _TRAILER.size - pck_size
@@ -138,8 +140,10 @@ def parse_at(path: Path, start: int) -> Pck | None:
 def _safe_dest(out_dir: Path, res_path: str) -> Path | None:
     """Map a res:// path under out_dir, rejecting traversal/absolute escapes."""
     p = res_path[6:] if res_path.startswith("res://") else res_path
-    parts = [seg for seg in p.split("/") if seg not in ("", ".", "..")]
-    if not parts:
+    if p.startswith("/") or "\\" in p:
+        return None
+    parts = p.split("/")
+    if not parts or any(seg in ("", ".", "..") for seg in parts):
         return None
     dest = out_dir.joinpath(*parts)
     try:

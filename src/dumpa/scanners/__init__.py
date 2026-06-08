@@ -77,15 +77,15 @@ UNITY_SPECS: tuple[ScannerSpec, ...] = (
     ScannerSpec("unity_rules", unity_rules.scan, ("unity",)),
     ScannerSpec("unity_assets", unity_assets.scan),
 )
-# Cocos2d-x deep helper runs only when the engine scanner flagged Cocos2d-x. Code-only
-# (locates/decrypts script bundles), so it is keyed on the dumpa version alone.
+# Cocos2d-x deep helper runs only when the engine scanner flagged Cocos2d-x. It writes
+# decrypted bundle artifacts, so keep it uncached until those sidecars are part of the key.
 COCOS_SPECS: tuple[ScannerSpec, ...] = (
-    ScannerSpec("cocos", cocos.scan),
+    ScannerSpec("cocos", cocos.scan, cacheable=False),
 )
-# Godot deep helper runs only when the engine scanner flagged Godot. Code-only (parses
-# and extracts the PCK archive), so it is keyed on the dumpa version alone.
+# Godot deep helper runs only when the engine scanner flagged Godot. It extracts PCK
+# resources, so keep it uncached until those sidecars are part of the key.
 GODOT_SPECS: tuple[ScannerSpec, ...] = (
-    ScannerSpec("godot", godot.scan),
+    ScannerSpec("godot", godot.scan, cacheable=False),
 )
 
 _CONFIDENCE_RANK = {Confidence.HIGH: 3, Confidence.MEDIUM: 2, Confidence.LOW: 1}

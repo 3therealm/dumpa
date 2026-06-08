@@ -7,9 +7,10 @@ from pathlib import Path
 from _pck_build import build_pck, build_pck_v2_encrypted, embed_in_binary
 
 from dumpa.core.report import FindingState
-from dumpa.core.workspace import Workspace
+from dumpa.core.workspace import Workspace, make_meta
 from dumpa.scanners import godot, run_all
 
+_SHA = "d" * 64
 _FILES = {
     "res://scenes/main.tscn": b"[gd_scene]\n",
     "res://scripts/player.gd": b"extends Node\n",
@@ -26,6 +27,12 @@ def _touch(root: Path, rel: str, data: bytes) -> None:
     p = root / rel
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(data)
+
+
+def _mark_reusable(ws: Workspace) -> None:
+    ws.write_meta(make_meta(
+        input_path=Path("app.apk"), input_sha256=_SHA, input_size=1,
+        input_type="apk", tool_versions={}))
 
 
 def test_standalone_pck_listed_and_extracted(tmp_path: Path) -> None:
@@ -89,3 +96,17 @@ def test_gate_fires_only_for_godot(tmp_path: Path) -> None:
     _touch(other.extracted_dir, "lib/arm64-v8a/libunity.so", b"\x00")
     subjects2 = {f.subject for f in run_all(other, use_cache=False)}
     assert not any(s.startswith("Godot") for s in subjects2)
+
+
+def test_cached_run_all_recreates_extracted_resources(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    _mark_reusable(ws)
+    _touch(ws.extracted_dir, "assets/game.pck", build_pck(_FILES))
+    out = ws.dumps_dir / "godot" / "pck" / "game" / "scenes/main.tscn"
+
+    run_all(ws)
+    assert out.read_bytes() == _FILES["res://scenes/main.tscn"]
+
+    out.unlink()
+    run_all(ws)
+    assert out.read_bytes() == _FILES["res://scenes/main.tscn"]

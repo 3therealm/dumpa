@@ -83,5 +83,6 @@ def test_path_traversal_not_written(tmp_path: Path) -> None:
     pck = _write(tmp_path, "evil.pck", build_pck({"res://../../etc/passwd": b"x"}))
     parsed = parse_standalone(pck)
     out = tmp_path / "out"
-    extract(pck, parsed, out)
+    assert extract(pck, parsed, out) == 0
     assert not (tmp_path / "etc" / "passwd").exists()
+    assert not (out / "etc" / "passwd").exists()

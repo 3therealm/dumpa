@@ -66,7 +66,7 @@ def _collect(ex: Path) -> list[_Pack]:
 
 def _f(subject: str, confidence: Confidence, state: FindingState,
        description: str, snippet: str, locations: list[Location],
-       attributes: dict | None = None) -> Finding:
+       attributes: dict[str, str] | None = None) -> Finding:
     return Finding(
         kind=const_kind, subject=subject, confidence=confidence, state=state,
         attributes=attributes or {},
@@ -75,7 +75,7 @@ def _f(subject: str, confidence: Confidence, state: FindingState,
     )
 
 
-def _write_sidecar(ws: Workspace, payload: dict) -> None:
+def _write_sidecar(ws: Workspace, payload: dict[str, object]) -> None:
     path = ws.dumps_dir / "godot" / const_sidecar
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -110,7 +110,7 @@ def scan(ws: Workspace) -> list[Finding]:
             f"PCK header in {packs[0].rel}", packs[0].rel, [Location(file_path=packs[0].rel)],
             {"version": _ver_str(version)}))
 
-    sidecar_packs: list[dict] = []
+    sidecar_packs: list[dict[str, object]] = []
     for pk in packs:
         deferred = pk.pck.encrypted or pk.pck.fmt_version >= 2
         if deferred:

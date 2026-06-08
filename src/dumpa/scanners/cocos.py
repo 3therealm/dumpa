@@ -163,7 +163,7 @@ def _write_decrypted(ws: Workspace, rel: str, data: bytes) -> str | None:
     return dest.relative_to(ws.root).as_posix()
 
 
-def _write_sidecar(ws: Workspace, payload: dict) -> None:
+def _write_sidecar(ws: Workspace, payload: dict[str, object]) -> None:
     path = ws.dumps_dir / "cocos" / const_sidecar
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -176,7 +176,7 @@ def _write_sidecar(ws: Workspace, payload: dict) -> None:
 
 def _f(subject: str, confidence: Confidence, state: FindingState,
        description: str, snippet: str, locations: list[Location],
-       attributes: dict | None = None) -> Finding:
+       attributes: dict[str, str] | None = None) -> Finding:
     return Finding(
         kind=const_kind, subject=subject, confidence=confidence, state=state,
         attributes=attributes or {},

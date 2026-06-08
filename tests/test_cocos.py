@@ -7,9 +7,10 @@ from pathlib import Path
 from _xxtea_build import make_signed
 
 from dumpa.core.report import FindingState
-from dumpa.core.workspace import Workspace
+from dumpa.core.workspace import Workspace, make_meta
 from dumpa.scanners import cocos, run_all
 
+_SHA = "c" * 64
 _KEY = b"my-secret-key-16"
 _SIGN = b"XXTEA"
 _SCRIPT = b'cc.log("hello from a cocos script");\nvar x = 1 + 2;\n' * 4
@@ -40,6 +41,12 @@ def _cocos_app(tmp_path: Path, *, with_key: bool) -> Workspace:
            b"junk cocos2d-x 3.17.2 junk " + _lib_with_key(key_in_lib))
     _touch(ws.extracted_dir, "assets/src/game.jsc", make_signed(_SCRIPT, _KEY, _SIGN))
     return ws
+
+
+def _mark_reusable(ws: Workspace) -> None:
+    ws.write_meta(make_meta(
+        input_path=Path("app.apk"), input_sha256=_SHA, input_size=1,
+        input_type="apk", tool_versions={}))
 
 
 def test_reports_scripting_and_version(tmp_path: Path) -> None:
@@ -104,3 +111,16 @@ def test_gate_fires_only_for_cocos(tmp_path: Path) -> None:
     _touch(other.extracted_dir, "lib/arm64-v8a/libunity.so", b"\x00")
     subjects2 = {f.subject for f in run_all(other, use_cache=False)}
     assert not any(s.startswith("Cocos2d-x") for s in subjects2)
+
+
+def test_cached_run_all_recreates_decrypted_artifacts(tmp_path: Path) -> None:
+    ws = _cocos_app(tmp_path, with_key=True)
+    _mark_reusable(ws)
+    out = ws.dumps_dir / "cocos" / "decrypted" / "assets/src/game.js"
+
+    run_all(ws)
+    assert out.read_bytes() == _SCRIPT
+
+    out.unlink()
+    run_all(ws)
+    assert out.read_bytes() == _SCRIPT
