@@ -93,6 +93,7 @@ class Rule:
     attributes: dict[str, str] = field(default_factory=_empty_attrs)
     case_insensitive: bool = False              # compile `regex` with re.IGNORECASE
     game_types: tuple[str, ...] = ()            # dumpcs category selectors; empty = always-on
+    replace: str = ""                           # substitution template (kind="rewrite" only)
 
     @property
     def is_content(self) -> bool:
@@ -199,6 +200,32 @@ def _parse_attributes(table: dict[str, Any], ctx: str) -> dict[str, str]:
     return attrs
 
 
+# A rewrite `replace` template references a group via `\g<NAME>` or `\NUMBER`.
+_TEMPLATE_REF = re.compile(r"\\g<([^>]*)>|\\(\d+)")
+
+
+def _validate_template(template: str, compiled: re.Pattern[bytes], ctx: str) -> None:
+    """Reject a `replace` template that references a group the regex does not define.
+
+    Validated at load (fail closed) so a bad backref never surfaces mid-apply. Group 0
+    (whole match) is always valid; numeric refs must be <= the pattern's group count;
+    named refs must name a real group.
+    """
+    for name, number in _TEMPLATE_REF.findall(template):
+        if number:
+            if int(number) > compiled.groups:
+                raise ConfigError(
+                    f"{ctx}: replace references group \\{number} but regex defines "
+                    f"{compiled.groups}")
+        elif name.isdigit():
+            if int(name) > compiled.groups:
+                raise ConfigError(
+                    f"{ctx}: replace references group \\g<{name}> but regex defines "
+                    f"{compiled.groups}")
+        elif name not in compiled.groupindex:
+            raise ConfigError(f"{ctx}: replace references unknown group \\g<{name}>")
+
+
 def _parse_rule(raw: object, index: int) -> Rule:
     if not isinstance(raw, dict):
         raise ConfigError(f"rule #{index}: must be a table")
@@ -227,6 +254,7 @@ def _parse_rule(raw: object, index: int) -> Rule:
     domain_search = False
     manifest_field = const_manifest_field_any
     targets: tuple[str, ...] = ()
+    compiled_regex: list[re.Pattern[bytes]] = []
     if "globs" in table:
         globs = _parse_globs(table.get("globs"), ctx)
     elif "domains" in table:
@@ -256,7 +284,7 @@ def _parse_rule(raw: object, index: int) -> Rule:
             regex = _parse_str_list(table.get("regex"), "regex", ctx)
             for pattern in regex:
                 try:
-                    re.compile(pattern.encode())
+                    compiled_regex.append(re.compile(pattern.encode()))
                 except re.error as e:
                     raise ConfigError(f"{ctx}: invalid regex {pattern!r}: {e}") from e
         if "targets" in table:
@@ -278,13 +306,26 @@ def _parse_rule(raw: object, index: int) -> Rule:
     game_types = (_parse_str_list(table.get("game_types"), "game_types", ctx)
                   if "game_types" in table else ())
 
+    replace = ""
+    if "replace" in table:
+        if kind != "rewrite":
+            raise ConfigError(f"{ctx}: 'replace' is only valid on a kind='rewrite' rule")
+        if not regex:
+            raise ConfigError(f"{ctx}: 'replace' requires 'regex'")
+        rep = table.get("replace")
+        if not isinstance(rep, str) or not rep:
+            raise ConfigError(f"{ctx}: 'replace' must be a non-empty string")
+        for compiled in compiled_regex:
+            _validate_template(rep, compiled, ctx)
+        replace = rep
+
     return Rule(
         kind=kind, subject=subject, confidence=confidence,
         globs=globs, strings=strings, regex=regex, manifest=manifest,
         domains=domains, domain_search=domain_search,
         manifest_field=manifest_field, targets=targets, match=match,
         state=state, attributes=_parse_attributes(table, ctx),
-        case_insensitive=ci, game_types=game_types,
+        case_insensitive=ci, game_types=game_types, replace=replace,
     )
 
 

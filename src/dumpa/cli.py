@@ -21,6 +21,7 @@ from dumpa.commands import export as export_cmd
 from dumpa.commands import info as info_cmd
 from dumpa.commands import load as load_cmd
 from dumpa.commands import repack as repack_cmd
+from dumpa.commands import rewrite as rewrite_cmd
 from dumpa.commands import rules as rules_cmd
 from dumpa.commands import unpack as unpack_cmd
 from dumpa.commands import update_signatures as update_signatures_cmd
@@ -94,6 +95,34 @@ def repack(
 ) -> None:
     """Rebuild a workspace's smali tree into an installable (optionally re-signed) apk."""
     run_command(lambda: repack_cmd.repack(workspace, signing=signing, out=out))
+
+
+@app.command()
+def rewrite(
+    workspace: Path = typer.Argument(
+        ..., exists=True, file_okay=False, readable=True,
+        help="Workspace directory (smali tree auto-decoded if missing).",
+    ),
+    pattern: Path = typer.Option(
+        ..., "--pattern", exists=True, dir_okay=False, readable=True,
+        help="TOML bundle of kind='rewrite' rules to match (preview)."),
+    replace: Path | None = typer.Option(
+        None, "--replace", exists=True, dir_okay=False, readable=True,
+        help="TOML bundle with `replace` templates; required to apply."),
+    select: str | None = typer.Option(
+        None, "--select", help="all | index list/ranges over the preview, e.g. 2,5 or 1-3,7."),
+    category: list[str] = typer.Option(
+        [], "--category", help="Limit to these rule categories (repeatable)."),
+    rebuild: bool = typer.Option(
+        False, "--rebuild", help="After applying, repack + re-sign into a patched apk."),
+    signing: str | None = typer.Option(None, "--signing", help=_SIGNING_HELP),
+    out: Path | None = typer.Option(
+        None, "--out", help="Patched apk path for --rebuild (default: ./<workspace>-rewritten.apk)."),
+) -> None:
+    """Preview or apply TOML-driven find-and-replace over a workspace's smali tree."""
+    run_command(lambda: rewrite_cmd.rewrite(
+        workspace, pattern=pattern, replace=replace, select=select,
+        category=tuple(category), rebuild=rebuild, signing=signing, out=out))
 
 
 @app.command()
