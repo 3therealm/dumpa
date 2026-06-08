@@ -72,12 +72,16 @@ def analyze(
         False, "--force", help="Rebuild even if a matching workspace already exists."),
     no_cache: bool = typer.Option(
         False, "--no-cache", help="Re-run all scanners instead of reusing cached findings."),
+    no_dump: bool = typer.Option(
+        False, "--no-dump", help="Skip auto-dumping il2cpp (dump.cs) during analysis."),
+    no_network: bool = typer.Option(
+        False, "--no-network", help="Disable the networked Play store genre lookup."),
     signing: str | None = typer.Option(None, "--signing", help=_SIGNING_HELP),
 ) -> None:
     """Extract an APK/XAPK once into a reproducible workspace."""
     run_command(lambda: analyze_cmd.analyze(
         input_file, workspace=workspace, force=force, signing=signing,
-        use_cache=not no_cache))
+        use_cache=not no_cache, no_dump=no_dump, no_network=no_network))
 
 
 @app.command()

@@ -90,6 +90,8 @@ class Rule:
     match: str = const_match_any
     state: FindingState = FindingState.PRESENT
     attributes: dict[str, str] = field(default_factory=_empty_attrs)
+    case_insensitive: bool = False              # compile `regex` with re.IGNORECASE
+    game_types: tuple[str, ...] = ()            # dumpcs category selectors; empty = always-on
 
     @property
     def is_content(self) -> bool:
@@ -268,12 +270,19 @@ def _parse_rule(raw: object, index: int) -> Rule:
     except ValueError as e:
         raise ConfigError(f"{ctx}: invalid state {state_raw!r}") from e
 
+    ci = table.get("case_insensitive", False)
+    if not isinstance(ci, bool):
+        raise ConfigError(f"{ctx}: 'case_insensitive' must be a boolean")
+    game_types = (_parse_str_list(table.get("game_types"), "game_types", ctx)
+                  if "game_types" in table else ())
+
     return Rule(
         kind=kind, subject=subject, confidence=confidence,
         globs=globs, strings=strings, regex=regex, manifest=manifest,
         domains=domains, domain_search=domain_search,
         manifest_field=manifest_field, targets=targets, match=match,
         state=state, attributes=_parse_attributes(table, ctx),
+        case_insensitive=ci, game_types=game_types,
     )
 
 
@@ -475,8 +484,18 @@ def _content_finding(rule: Rule, bundle: RuleBundle, hits: dict[str, _Hit]) -> F
     )
 
 
+def scan_content_rules(rules: list[Rule], bundle: RuleBundle, root: Path) -> list[Finding]:
+    """Apply content rules rooted at `root`, returning their Findings.
+
+    Public entry for scanners that scan a non-`extracted/` root — e.g. the dumpcs
+    scanner streams regex bundles over `dump.cs`/`script.json` under `dumps/`. Reuses
+    the same streaming primitive (`_scan_content`) as the extracted-tree path.
+    """
+    return _apply_content_rules(rules, bundle, root)
+
+
 def _apply_content_rules(rules: list[Rule], bundle: RuleBundle,
-                         extracted_dir: Path) -> list[Finding]:
+                         root: Path) -> list[Finding]:
     """Scan each target-set once for all its rules' patterns, then assemble findings."""
     fallback = bundle.default_targets or const_default_content_targets
     by_targets: dict[tuple[str, ...], list[Rule]] = {}
@@ -487,8 +506,11 @@ def _apply_content_rules(rules: list[Rule], bundle: RuleBundle,
     for targets, group in by_targets.items():
         # Literal keys come from `strings` and, for domain-search rules, their `domains`.
         literals = {k: k.encode() for rule in group for k in rule.keys if not rule.regex}
-        regexes = {p: re.compile(p.encode()) for rule in group for p in rule.regex}
-        hits = _scan_content(_content_targets(extracted_dir, targets), literals, regexes, extracted_dir)
+        # Keyed by pattern source so _content_finding can look hits up via rule.keys;
+        # per-rule case flag is folded into the compile (IGNORECASE for ported dumpcs rules).
+        regexes = {p: re.compile(p.encode(), re.IGNORECASE if rule.case_insensitive else 0)
+                   for rule in group for p in rule.regex}
+        hits = _scan_content(_content_targets(root, targets), literals, regexes, root)
         for rule in group:
             rule_hits = {k: hits[k] for k in rule.keys if k in hits}
             fired = (len(rule_hits) == len(rule.keys)) if rule.match == const_match_all else bool(rule_hits)

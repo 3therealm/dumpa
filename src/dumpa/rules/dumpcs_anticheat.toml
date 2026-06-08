@@ -1,0 +1,64 @@
+# Anti-cheat / integrity markers in IL2CPP dump.cs (new; not in DumpExplorer).
+# Always-on (no game_types): integrity/tamper checks matter for every game.
+[bundle]
+name = "dumpcs_anticheat"
+version = "2026.06.1"
+source = "dumpa built-in"
+updated = "2026-06-08"
+default_targets = ["dump.cs"]
+
+[[rule]]
+kind = "dumpcs"
+subject = "integrity-check"
+confidence = "medium"
+case_insensitive = true
+regex = ['(Integrity|Checksum|Verification|Validation).*((Check|Verify|Validate|Compute|Hash|Manager|Service))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "tamper-detect"
+confidence = "high"
+case_insensitive = true
+regex = ['(Tamper|Modification|Hook|Inject).*((Detect|Check|Found|Guard|Protect|Prevent))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "root-detect"
+confidence = "high"
+case_insensitive = true
+regex = ['(Root|Jailbreak|Superuser|Magisk|Xposed).*((Detect|Check|Found|Is|Guard))|(Is|Check|Detect).*(Rooted|Jailbroken)']
+
+[[rule]]
+kind = "dumpcs"
+subject = "emulator-detect"
+confidence = "high"
+case_insensitive = true
+regex = ['(Emulator|Simulator|VirtualDevice|Genymotion|Bluestacks).*((Detect|Check|Found|Is))|(Is|Check|Detect).*Emulator']
+
+[[rule]]
+kind = "dumpcs"
+subject = "debugger-detect"
+confidence = "high"
+case_insensitive = true
+regex = ['(Debugger|AntiDebug|Debug).*((Detect|Check|Attached|Present|Guard|Prevent))|(Is|Check|Detect).*Debugger']
+
+[[rule]]
+kind = "dumpcs"
+subject = "speed-hack-detect"
+confidence = "high"
+case_insensitive = true
+regex = ['(Speed|Time).*(Hack|Cheat|Manipulation|Tamper).*((Detect|Check|Guard))|(SpeedHack|TimeHack).*((Detect|Check))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "memory-edit-detect"
+confidence = "high"
+case_insensitive = true
+regex = ['(Memory|Value).*(Edit|Hack|Tamper|GameGuardian).*((Detect|Check|Guard|Protect))|(AntiCheat|CheatDetect).*((Manager|Service|System))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "signature-verify"
+confidence = "medium"
+case_insensitive = true
+regex = ['(Signature|Certificate|Apk|Package).*((Verify|Validate|Check|Hash|Fingerprint))']

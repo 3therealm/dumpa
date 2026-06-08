@@ -20,7 +20,7 @@ from dumpa.core.privacy import permission_findings
 from dumpa.core.report import AppFacts, Report
 from dumpa.core.tools import ToolRegistry
 from dumpa.core.workspace import Workspace
-from dumpa.scanners import primary_engine, run_all
+from dumpa.scanners import game_types, primary_engine, run_all
 from dumpa.tools import aapt, apksigner
 
 logger = logging.getLogger("dumpa")
@@ -86,6 +86,7 @@ def build_report(registry: ToolRegistry, ws: Workspace, *, use_cache: bool = Tru
         min_sdk=_prefer(manifest.min_sdk if manifest else None, badging.min_sdk),
         target_sdk=_prefer(manifest.target_sdk if manifest else None, badging.target_sdk),
         engine=primary_engine(findings),
+        game_types=game_types(findings),
         abis=list(badging.abis),
         permissions=permissions,
         signer_cert_sha256=signer.cert_sha256 if signer else None,

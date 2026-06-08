@@ -1,0 +1,87 @@
+# Ported from DumpExplorer patterns/strategy.json. Selected for the "strategy" category.
+[bundle]
+name = "dumpcs_strategy"
+version = "2026.06.1"
+source = "ported from DumpExplorer patterns/strategy.json"
+updated = "2026-06-08"
+default_targets = ["dump.cs"]
+
+[[rule]]
+kind = "dumpcs"
+subject = "resource-production"
+confidence = "high"
+case_insensitive = true
+game_types = ["strategy"]
+regex = ['(Resource|Material).*((Produce|Generate|Collect|Gather|Harvest|Mine|Extract|Yield|Rate|PerSecond|PerMinute|Output))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "resource-storage"
+confidence = "high"
+case_insensitive = true
+game_types = ["strategy"]
+regex = ['(Storage|Warehouse|Silo|Barn).*((Capacity|Limit|Max|Current|Add|Remove|IsFull|IsEmpty|Upgrade|Expand))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "building-system"
+confidence = "high"
+case_insensitive = true
+game_types = ["strategy"]
+regex = ['(Building|Structure|Construction).*((Build|Construct|Place|Upgrade|LevelUp|Demolish|Destroy|Move|Rotate|Cost|Time|Speed|Queue|Complete))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "tech-tree"
+confidence = "high"
+case_insensitive = true
+game_types = ["strategy"]
+regex = ['(Tech|Technology|Research).*((Unlock|Tree|Node|Branch|Progress|Complete|Start|Cost|Requirement|Prereq|Prerequisite))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "unit-training"
+confidence = "high"
+case_insensitive = true
+game_types = ["strategy"]
+regex = ['(Unit|Troop|Soldier|Army).*((Train|Recruit|Hire|Create|Spawn|Queue|Time|Speed|Cost|Capacity|Limit|Max))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "combat-military"
+confidence = "high"
+case_insensitive = true
+game_types = ["strategy"]
+regex = ['(Battle|War|Fight|Combat|Attack).*((Start|Begin|End|Resolve|Calculate|Simulate|Auto|Manual|Result|Victory|Defeat|Loss|Win))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "map-territory"
+confidence = "medium"
+case_insensitive = true
+game_types = ["strategy"]
+regex = ['(Map|Territory|Region|Land).*((Unlock|Claim|Capture|Occupy|Control|Own|Defend|Protect|Expand|Border|Boundary))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "alliance-diplomacy"
+confidence = "medium"
+case_insensitive = true
+game_types = ["strategy"]
+regex = ['(Alliance|Guild|Clan|Diplomacy).*((Create|Join|Leave|Invite|Kick|Member|Role|Rank|Leader|Officer|Chat|Message|War|Peace|Treaty|Trade))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "trade-market"
+confidence = "medium"
+case_insensitive = true
+game_types = ["strategy"]
+regex = ['(Trade|Market|Exchange|Shop).*((Buy|Sell|Offer|Request|Price|Cost|Rate|Tax|Fee|Merchant|Caravan|Route))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "time-speed"
+confidence = "medium"
+case_insensitive = true
+game_types = ["strategy"]
+regex = ['(Time|Speed|Clock).*((Pause|Resume|Fast|Forward|Skip|Boost|Accelerate|Realtime|Multiplier|Scale|Rate))']

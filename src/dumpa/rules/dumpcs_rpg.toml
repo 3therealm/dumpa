@@ -1,0 +1,103 @@
+# Ported from DumpExplorer patterns/rpg.json. Selected for the "rpg" category.
+[bundle]
+name = "dumpcs_rpg"
+version = "2026.06.1"
+source = "ported from DumpExplorer patterns/rpg.json"
+updated = "2026-06-08"
+default_targets = ["dump.cs"]
+
+[[rule]]
+kind = "dumpcs"
+subject = "character-stats"
+confidence = "high"
+case_insensitive = true
+game_types = ["rpg"]
+regex = ['(Strength|Dexterity|Intelligence|Wisdom|Constitution|Charisma|Agility|Vitality|Luck|Critical).*((Stat|Value|Attribute|Bonus|Modifier|Calc|Set|Get|Add))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "health-system"
+confidence = "high"
+case_insensitive = true
+game_types = ["rpg"]
+regex = ['(HP|Health|HitPoint).*((Current|Max|Heal|Damage|Regen|Restore|Reduce|Kill|Die|Death|Set|Get|Add))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "mana-system"
+confidence = "high"
+case_insensitive = true
+game_types = ["rpg"]
+regex = ['(MP|Mana|Magic|Energy|Stamina|Focus).*((Current|Max|Regen|Restore|Consume|Cast|Spend|Refill|Set|Get))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "experience-level"
+confidence = "high"
+case_insensitive = true
+game_types = ["rpg"]
+regex = ['(XP|EXP|Experience|Level).*((Gain|Award|Give|Add|Progress|Up|Upgrade|Threshold|Require|Calc|Set|Get))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "inventory-management"
+confidence = "high"
+case_insensitive = true
+game_types = ["rpg"]
+regex = ['(Inventory|Backpack|Bag).*((Add|Remove|Has|Check|Contains|Equip|Unequip|Use|Drop|Sell|Buy|Count|Slot|Capacity|Size|IsFull))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "combat-system"
+confidence = "high"
+case_insensitive = true
+game_types = ["rpg"]
+regex = ['(Attack|Defend|Damage|Hit|Crit).*((Calculate|Compute|Apply|Deal|Receive|Mitigate|Reduce|Chance|Rate|Formula|Roll))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "skill-ability"
+confidence = "high"
+case_insensitive = true
+game_types = ["rpg"]
+regex = ['(Skill|Ability|Power|Spell).*((Cast|Use|Activate|Trigger|Learn|Unlock|Upgrade|Cooldown|Duration|Effect|Target|Range|Area))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "quest-system"
+confidence = "high"
+case_insensitive = true
+game_types = ["rpg"]
+regex = ['(Quest|Mission|Task|Objective).*((Accept|Decline|Start|Begin|Complete|Finish|Fail|Abandon|Progress|Update|Track|Reward|Give|Claim))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "dialogue-narrative"
+confidence = "medium"
+case_insensitive = true
+game_types = ["rpg"]
+regex = ['(Dialogue|Dialog|Conversation|Narrative).*((Start|Begin|End|Next|Prev|Option|Choice|Select|Branch|Progress|Node|Page))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "save-load"
+confidence = "medium"
+case_insensitive = true
+game_types = ["rpg"]
+regex = ['(Save|Load).*((Game|State|Data|Progress|Slot|File|SlotIndex|Auto|Quick|Manual|Checkpoint))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "party-management"
+confidence = "medium"
+case_insensitive = true
+game_types = ["rpg"]
+regex = ['(Party|Team|Squad|Companion).*((Add|Remove|Member|Leader|Switch|Swap|Formation|Position|Max|Count|Size|Full))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "companion-ai"
+confidence = "medium"
+case_insensitive = true
+game_types = ["rpg"]
+regex = ['(Companion|Ally|Follower|Pet).*((AI|Behavior|Action|Attack|Defend|Follow|Stay|Command|Order|Mode|State))']

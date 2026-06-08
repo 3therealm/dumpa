@@ -1,0 +1,113 @@
+# Ported from DumpExplorer patterns/general.json (IL2CPP Explorer).
+# Always-on: no `game_types`, so these run for every IL2CPP dump.cs regardless of genre.
+[bundle]
+name = "dumpcs_general"
+version = "2026.06.1"
+source = "ported from DumpExplorer patterns/general.json"
+updated = "2026-06-08"
+default_targets = ["dump.cs"]
+
+[[rule]]
+kind = "dumpcs"
+subject = "player-manager"
+confidence = "medium"
+case_insensitive = true
+regex = ['[Pp]layer.*([Mm]anager|[Cc]ontroller|[Hh]andler)|[Mm]anager.*[Pp]layer']
+
+[[rule]]
+kind = "dumpcs"
+subject = "game-manager"
+confidence = "medium"
+case_insensitive = true
+regex = ['[Gg]ame.*([Mm]anager|[Cc]ontroller|[Dd]irector)|([Mm]anager|[Cc]ontroller|[Dd]irector).*[Gg]ame']
+
+[[rule]]
+kind = "dumpcs"
+subject = "save-system"
+confidence = "medium"
+case_insensitive = true
+regex = ['(Save|Load|Persist|Storage).*((Manager|System|Service|Handler|Controller|Data|File|Slot|Path|Key))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "settings-prefs"
+confidence = "medium"
+case_insensitive = true
+regex = ['(Setting|Preference|Config|Option).*((Manager|System|Load|Save|Apply|Reset|Default|Get|Set|Value))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "network-online"
+confidence = "medium"
+case_insensitive = true
+regex = ['(Network|Online|Connect|Connection).*((Manager|Client|Server|State|Status|Connect|Disconnect|Reconnect|Latency|Ping))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "authentication"
+confidence = "medium"
+case_insensitive = true
+regex = ['(Auth|Login|Sign|Account|User|Profile).*((In|Out|Register|Create|Delete|Validate|Verify|Check|Manager|Service|Handler))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "analytics-tracking"
+confidence = "medium"
+case_insensitive = true
+regex = ['(Analytic|Track|Event|Metric|Log|Report).*((Manager|Service|Send|Log|Record|Queue|Flush|Event|Name|Data|Parameter))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "monetization-iap"
+confidence = "high"
+case_insensitive = true
+regex = ['(IAP|Purchase|Store|Shop|Buy|Payment|Transaction|Billing).*((Manager|Service|Handler|Process|Complete|Fail|Verify|Validate|Restore|Product|Item|Price|Cost))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "ads-advertising"
+confidence = "high"
+case_insensitive = true
+regex = ['(Ad|Advertisement|Banner|Interstitial|Reward).*((Show|Hide|Load|Ready|Available|Click|Impression|Manager|Handler|Service|Callback|Event))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "ui-system"
+confidence = "low"
+case_insensitive = true
+regex = ['(UI|UserInterface|Menu|Screen|Panel|Dialog|Popup).*((Manager|Controller|Show|Hide|Open|Close|Navigate|Transition|Animate))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "audio-sound"
+confidence = "low"
+case_insensitive = true
+regex = ['(Audio|Sound|Music).*((Manager|Player|Controller|Play|Stop|Pause|Resume|Volume|Mute|Fade|BGM|SFX|Effect))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "tutorial-onboarding"
+confidence = "low"
+case_insensitive = true
+regex = ['(Tutorial|Guide|Help|Onboard|Teach).*((Start|Step|Progress|Complete|Skip|Advance|Manager|Handler|Controller|Lesson|Page))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "achievement"
+confidence = "low"
+case_insensitive = true
+regex = ['(Achievement|Accomplishment|Badge|Trophy).*((Unlock|Lock|Progress|Complete|Track|Manager|Handler|Service|ID|Name|Description))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "notification-push"
+confidence = "medium"
+case_insensitive = true
+regex = ['(Notification|Push|Alert).*((Schedule|Send|Show|Hide|Cancel|Clear|Manager|Service|Handler|Permission|Register|Token))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "debug-cheat"
+confidence = "high"
+case_insensitive = true
+regex = ['(Debug|Cheat|Console).*((Mode|Enable|Disable|Command|Execute|Log|Print|Spawn|Create|Give|Add|Set|God|Unlimited|Infinite))']

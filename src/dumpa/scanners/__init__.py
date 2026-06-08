@@ -21,8 +21,10 @@ from dumpa.core.rules import load_builtin
 from dumpa.core.workspace import Workspace, WorkspaceMeta
 from dumpa.scanners import (
     dex,
+    dumpcs,
     endpoint,
     engine,
+    gametype,
     manifest_privacy,
     native,
     privacy,
@@ -41,6 +43,7 @@ class ScannerSpec:
     name: str                       # cache id, e.g. "tracker"
     fn: Scanner
     bundles: tuple[str, ...] = ()    # builtin bundle names the scanner consumes
+    cacheable: bool = True           # False: always re-run (e.g. networked / TTL-driven)
 
 
 # Registration order is the run order; engine detection first so its findings exist
@@ -55,6 +58,14 @@ SCANNERS: tuple[ScannerSpec, ...] = (
     ScannerSpec("native", native.scan),
     ScannerSpec("dex", dex.scan),
     ScannerSpec("endpoint", endpoint.scan),
+    # gametype resolves a networked, TTL-bound Play genre -> never cached (the
+    # dumps/gametype.json sidecar already memoizes the fetch within a workspace).
+    ScannerSpec("gametype", gametype.scan, cacheable=False),
+    # dumpcs caches on its bundle versions. Caveat: dump.cs is derived from the apk by
+    # the il2cpp dumper; a re-dump with a different dumper on the same apk won't change
+    # the input hash, so use --no-cache after swapping the dumper (tool-version keying
+    # is deferred per the roadmap until a scanner invokes a versioned tool directly).
+    ScannerSpec("dumpcs", dumpcs.scan, dumpcs.const_dumpcs_bundles),
 )
 # Unity deep helper runs only when the engine scanner flagged Unity.
 UNITY_SPEC = ScannerSpec("unity", unity.scan)
@@ -276,7 +287,7 @@ def _run_spec(ws: Workspace, spec: ScannerSpec, meta: WorkspaceMeta | None) -> l
     Caching is active only for a marked workspace (meta present); without it there is no
     input hash to key on, so the scanner just runs (the case for in-memory unit tests).
     """
-    if meta is None:
+    if meta is None or not spec.cacheable:
         return list(spec.fn(ws))
     key = cache.compute_scanner_key(
         meta.input_sha256, {b: load_builtin(b).version for b in spec.bundles}
@@ -315,3 +326,8 @@ def primary_engine(findings: list[Finding]) -> str | None:
     if not engines:
         return None
     return max(engines, key=lambda f: _CONFIDENCE_RANK[f.confidence]).subject
+
+
+def game_types(findings: list[Finding]) -> list[str]:
+    """Resolved Play genres, in scanner order, for AppFacts.game_types."""
+    return [f.subject for f in findings if f.kind == "game-type"]

@@ -9,12 +9,15 @@ inputs are linked in directly.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from dumpa.convert.pipeline import build_workspace, prepare_convert, workspace_build_options
 from dumpa.convert.validate import report_output_apk
 from dumpa.core.config import (
+    Config,
     const_default_validation_timeout,
+    const_env_play_lookup,
     const_env_validation_timeout,
     load_config,
 )
@@ -95,12 +98,25 @@ def report_for_input(input_path: Path) -> Report:
         return build_report(registry, ws)
 
 
-def analyze(input_file: Path, *, workspace: Path | None = None,
-            force: bool = False, signing: str | None = None, use_cache: bool = True) -> None:
+def _maybe_autodump(registry: ToolRegistry, ws: Workspace, config: Config, *, enabled: bool) -> None:
+    """Auto-dump il2cpp into the workspace when enabled (so the dumpcs scanner has input)."""
+    if not enabled:
+        return
+    # Lazy import: dump_il2cpp imports analyze at module load, so this breaks the cycle.
+    from dumpa.commands.dump_il2cpp import autodump_workspace
+    autodump_workspace(registry, ws, engine_name=config.il2cpp_engine)
+
+
+def analyze(input_file: Path, *, workspace: Path | None = None, force: bool = False,
+            signing: str | None = None, use_cache: bool = True,
+            no_dump: bool = False, no_network: bool = False) -> None:
     """Extract input_file into a reproducible workspace, reusing it when unchanged."""
+    if no_network:
+        os.environ[const_env_play_lookup] = "0"  # scanners read play_lookup from config/env
     config = load_config()
     registry = build_default_registry(config.tool_paths)
     sign_config = resolve_signing(signing, config, registry)
+    autodump_enabled = config.analysis.auto_dump and not no_dump
 
     input_abs = input_file.resolve()
     in_type = input_type(input_abs)
@@ -117,11 +133,13 @@ def analyze(input_file: Path, *, workspace: Path | None = None,
             logger.info("reusing workspace %s (input unchanged)", ws.root)
             meta = ws.read_meta()
             size = meta.input_size if meta else input_abs.stat().st_size
+            _maybe_autodump(registry, ws, config, enabled=autodump_enabled)
             _report_workspace(registry, ws, signed_expected=signed_expected, input_size=size,
                               use_cache=use_cache)
             return
 
         build_workspace(registry, ws, input_abs, in_type, input_sha, sign_config, build_options)
         logger.info("workspace ready")
+        _maybe_autodump(registry, ws, config, enabled=autodump_enabled)
         _report_workspace(registry, ws, signed_expected=signed_expected,
                           input_size=input_abs.stat().st_size, use_cache=use_cache)

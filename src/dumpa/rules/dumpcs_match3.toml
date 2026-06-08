@@ -1,0 +1,120 @@
+# Ported from DumpExplorer patterns/match3.json. Selected when the resolved game type
+# maps to the "match3" category (see rules/gametype_map.toml).
+[bundle]
+name = "dumpcs_match3"
+version = "2026.06.1"
+source = "ported from DumpExplorer patterns/match3.json"
+updated = "2026-06-08"
+default_targets = ["dump.cs"]
+
+[[rule]]
+kind = "dumpcs"
+subject = "boosters-activate"
+confidence = "medium"
+case_insensitive = true
+game_types = ["match3"]
+regex = ['(Booster|PowerUp|Special).*Activate|Activate.*(Booster|PowerUp|Special)']
+
+[[rule]]
+kind = "dumpcs"
+subject = "boosters-create"
+confidence = "medium"
+case_insensitive = true
+game_types = ["match3"]
+regex = ['(Create|Spawn|Generate).*Booster|Booster.*(Create|Spawn|Generate)']
+
+[[rule]]
+kind = "dumpcs"
+subject = "currency-hard"
+confidence = "high"
+case_insensitive = true
+game_types = ["match3"]
+regex = ['(Gold|Gem|Diamond|Crystal|Premium).*((Manager|Handler|Controller|Add|Remove|Set|Get|Spend))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "currency-soft"
+confidence = "high"
+case_insensitive = true
+game_types = ["match3"]
+regex = ['(Coin|Star|Cash|Money|Credit).*((Manager|Handler|Controller|Add|Remove|Set|Get|Spend|Earn))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "lives-system"
+confidence = "high"
+case_insensitive = true
+game_types = ["match3"]
+regex = ['(Life|Live|Heart|Energy).*((Manager|Handler|Count|Refill|Recover|Lose|Spend|Cost|Max|Regen))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "level-progress"
+confidence = "medium"
+case_insensitive = true
+game_types = ["match3"]
+regex = ['Level.*(Complete|Failed|Start|Begin|Load|Save|Progress|Unlock|Current|Index)']
+
+[[rule]]
+kind = "dumpcs"
+subject = "score-system"
+confidence = "medium"
+case_insensitive = true
+game_types = ["match3"]
+regex = ['(Score|Points|Star).*((Calculate|Compute|Add|Set|Get|Multiplier|Bonus|Threshold))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "moves-counter"
+confidence = "medium"
+case_insensitive = true
+game_types = ["match3"]
+regex = ['(Move|Turn).*((Count|Limit|Remaining|Left|Decrement|Increment|Reset|Checker))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "board-grid"
+confidence = "medium"
+case_insensitive = true
+game_types = ["match3"]
+regex = ['(Board|Grid|Field).*((Init|Initialize|Setup|Reset|Clear|Spawn|Fill|Refresh|Resize|Dimension))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "match-detection"
+confidence = "high"
+case_insensitive = true
+game_types = ["match3"]
+regex = ['(Match|Swap|Switch).*((Detect|Check|Find|Validate|Process|Handle|Execute))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "combo-system"
+confidence = "medium"
+case_insensitive = true
+game_types = ["match3"]
+regex = ['Combo.*(Count|Multiplier|Trigger|Activate|Reset|Chain|Cascade)']
+
+[[rule]]
+kind = "dumpcs"
+subject = "special-blocks"
+confidence = "medium"
+case_insensitive = true
+game_types = ["match3"]
+regex = ['(Special|Unique|Rare).*Block|Block.*(Special|Unique|Rare)|(Striped|Wrapped|Color|Rainbow).*Candy|Tile']
+
+[[rule]]
+kind = "dumpcs"
+subject = "daily-challenge"
+confidence = "medium"
+case_insensitive = true
+game_types = ["match3"]
+regex = ['(Daily|Day).*Challenge|(Challenge|Quest).*Daily']
+
+[[rule]]
+kind = "dumpcs"
+subject = "tournament"
+confidence = "medium"
+case_insensitive = true
+game_types = ["match3"]
+regex = ['(Tournament|Competition|Contest|Event).*((Manager|Handler|Start|End|Join|Leave|Rank|Score|Reward))']

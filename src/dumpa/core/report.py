@@ -171,6 +171,7 @@ class AppFacts:
     min_sdk: str | None = None
     target_sdk: str | None = None
     engine: str | None = None                       # reserved for Phase 4
+    game_types: list[str] = field(default_factory=_str_list)   # Play genres, primary first
     abis: list[str] = field(default_factory=_str_list)
     permissions: list[str] = field(default_factory=_str_list)
     signer_cert_sha256: str | None = None
@@ -185,6 +186,7 @@ class AppFacts:
             "package": self.package, "version_name": self.version_name,
             "version_code": self.version_code, "min_sdk": self.min_sdk,
             "target_sdk": self.target_sdk, "engine": self.engine,
+            "game_types": list(self.game_types),
             "abis": list(self.abis), "permissions": list(self.permissions),
             "signer_cert_sha256": self.signer_cert_sha256,
             "signing_schemes": list(self.signing_schemes),
@@ -199,6 +201,7 @@ class AppFacts:
             package=data.get("package"), version_name=data.get("version_name"),
             version_code=data.get("version_code"), min_sdk=data.get("min_sdk"),
             target_sdk=data.get("target_sdk"), engine=data.get("engine"),
+            game_types=[str(g) for g in data.get("game_types", [])],
             abis=[str(a) for a in data.get("abis", [])],
             permissions=[str(p) for p in data.get("permissions", [])],
             signer_cert_sha256=data.get("signer_cert_sha256"),
@@ -560,6 +563,7 @@ def render_markdown(report: Report) -> str:
         ("minSdk", f.min_sdk or "?"),
         ("targetSdk", f.target_sdk or "?"),
         ("engine", f.engine or "n/a"),
+        ("game type", ", ".join(f.game_types) if f.game_types else "n/a"),
         ("ABIs", ", ".join(f.abis) if f.abis else "none"),
         ("permissions", str(len(f.permissions))),
         ("exported components", str(f.exported_component_count)

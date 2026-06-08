@@ -41,7 +41,9 @@ const_dir_reports = "reports"
 const_dir_cache = "cache"
 const_dir_native = "native"
 const_dir_dex = "dex"
+const_dir_playstore = "playstore"
 const_file_app_apk = "app.apk"
+const_file_gametype = "gametype.json"
 
 
 def _empty_str_map() -> dict[str, str]:
@@ -116,6 +118,16 @@ class Workspace:
     def dex_dir(self) -> Path:
         """Per-dex class/method/field inventory sidecars (dumps/dex/)."""
         return self.dumps_dir / const_dir_dex
+
+    @property
+    def gametype_sidecar(self) -> Path:
+        """Resolved game-type cache shared by the gametype + dumpcs scanners (dumps/gametype.json)."""
+        return self.dumps_dir / const_file_gametype
+
+    @property
+    def playstore_cache_dir(self) -> Path:
+        """Cached Play store listings, keyed by package (cache/playstore/)."""
+        return self.cache_dir / const_dir_playstore
 
     @property
     def meta_path(self) -> Path:
