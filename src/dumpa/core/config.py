@@ -35,6 +35,8 @@ const_env_auto_dump = 'DUMPA_AUTO_DUMP'
 const_env_play_lookup = 'DUMPA_PLAY_LOOKUP'
 const_env_play_timeout = 'DUMPA_PLAY_TIMEOUT_SECONDS'
 const_env_play_cache_ttl_days = 'DUMPA_PLAY_CACHE_TTL_DAYS'
+# ASN/country host enrichment: separate opt-in (per-host, rate-limited), default off.
+const_env_asn_lookup = 'DUMPA_ASN_LOOKUP'
 
 const_default_validation_timeout = 300
 const_default_il2cpp_engine = 'dumper'
@@ -75,6 +77,9 @@ class AnalysisConfig:
     play_lookup: bool = True
     play_timeout: int = const_default_validation_timeout
     play_cache_ttl_days: int = const_default_play_cache_ttl_days
+    # Per-host ASN/country enrichment is a separate, default-off opt-in (rate-limited,
+    # networked); it reuses play_timeout/play_cache logic only loosely, so it gets its flag.
+    asn_lookup: bool = False
 
 
 @dataclass(frozen=True)
@@ -211,6 +216,7 @@ def _load_analysis(sec: dict[str, Any]) -> AnalysisConfig:
         play_lookup=_bool_setting(const_env_play_lookup, sec, 'play_lookup', True, 'play_lookup'),
         play_timeout=timeout if timeout is not None else const_default_validation_timeout,
         play_cache_ttl_days=ttl if ttl is not None else const_default_play_cache_ttl_days,
+        asn_lookup=_bool_setting(const_env_asn_lookup, sec, 'asn_lookup', False, 'asn_lookup'),
     )
 
 

@@ -48,6 +48,7 @@ const_dir_resources = "resources"
 const_dir_evidence = "evidence"
 const_dir_playstore = "playstore"
 const_dir_datasafety = "datasafety"
+const_dir_asn = "asn"
 const_file_app_apk = "app.apk"
 const_file_gametype = "gametype.json"
 const_file_datasafety = "datasafety.json"
@@ -180,6 +181,11 @@ class Workspace:
     def datasafety_cache_dir(self) -> Path:
         """Cached Play Data Safety pages, keyed by package (cache/datasafety/)."""
         return self.cache_dir / const_dir_datasafety
+
+    @property
+    def asn_cache_dir(self) -> Path:
+        """Cached ASN/country lookups, keyed by host (cache/asn/)."""
+        return self.cache_dir / const_dir_asn
 
     @property
     def meta_path(self) -> Path:

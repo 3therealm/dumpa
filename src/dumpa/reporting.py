@@ -12,6 +12,8 @@ import datetime
 import logging
 
 from dumpa import __version__
+from dumpa.core.asn import const_default_ttl_days as const_asn_ttl_days
+from dumpa.core.asn import enrich_asn_geo
 from dumpa.core.config import (
     const_default_validation_timeout,
     const_env_validation_timeout,
@@ -94,6 +96,14 @@ def build_report(registry: ToolRegistry, ws: Workspace, *, use_cache: bool = Tru
                                     ttl_days=analysis.play_cache_ttl_days)
     if disclosure is not None:
         findings.extend(compare(disclosure, findings))
+
+    # ASN/country enrichment runs here (not as a scanner) so it sees the final endpoint
+    # findings and is gated by its own default-off opt-in. Offline (flag off) it only reads
+    # the per-host cache, so a default report stays reproducible.
+    if analysis.asn_lookup:
+        findings = enrich_asn_geo(findings, ws, allow_network=analysis.asn_lookup,
+                                  timeout=analysis.play_timeout,
+                                  ttl_days=const_asn_ttl_days)
 
     facts = AppFacts(
         input_sha256=meta.input_sha256,

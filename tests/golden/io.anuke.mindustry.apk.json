@@ -117,6 +117,13 @@
         "present"
       ]
     ],
+    "ip-endpoint": [
+      [
+        "227.2.7.7",
+        "low",
+        "present"
+      ]
+    ],
     "manifest": [
       [
         "allowBackup=true",
