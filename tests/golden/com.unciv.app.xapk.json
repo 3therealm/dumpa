@@ -1,0 +1,242 @@
+{
+  "facts": {
+    "abis": [
+      "armeabi-v7a"
+    ],
+    "engine": "libGDX",
+    "exported_component_count": 5,
+    "game_types": [],
+    "input_sha256": "664eb0cb9c76ef417bca73f7b478abf63c4df739a1ad2c307866cd825c32763e",
+    "package": "com.unciv.app",
+    "permissions": [
+      "android.permission.ACCESS_NETWORK_STATE",
+      "android.permission.FOREGROUND_SERVICE",
+      "android.permission.INTERNET",
+      "android.permission.POST_NOTIFICATIONS",
+      "android.permission.RECEIVE_BOOT_COMPLETED",
+      "android.permission.WAKE_LOCK",
+      "com.unciv.app.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+    ],
+    "version_name": "4.20.11"
+  },
+  "findings": {
+    "capability": [
+      [
+        "Network state",
+        "high",
+        "present"
+      ]
+    ],
+    "data-access": [
+      [
+        "Clipboard access",
+        "medium",
+        "referenced"
+      ],
+      [
+        "Device identifiers (IMEI / serial / subscriber)",
+        "medium",
+        "referenced"
+      ],
+      [
+        "Location APIs",
+        "medium",
+        "referenced"
+      ],
+      [
+        "Microphone / audio capture",
+        "medium",
+        "referenced"
+      ]
+    ],
+    "dex": [
+      [
+        "classes.dex",
+        "high",
+        "present"
+      ],
+      [
+        "classes2.dex",
+        "high",
+        "present"
+      ],
+      [
+        "classes3.dex",
+        "high",
+        "present"
+      ],
+      [
+        "classes4.dex",
+        "high",
+        "present"
+      ]
+    ],
+    "endpoint": [
+      [
+        "android.googlesource.com",
+        "low",
+        "present"
+      ],
+      [
+        "api.dropboxapi.com",
+        "low",
+        "present"
+      ],
+      [
+        "api.github.com",
+        "low",
+        "present"
+      ],
+      [
+        "civdata.com",
+        "low",
+        "present"
+      ],
+      [
+        "content.dropboxapi.com",
+        "low",
+        "present"
+      ],
+      [
+        "developer.android.com",
+        "low",
+        "present"
+      ],
+      [
+        "discord.gg",
+        "low",
+        "present"
+      ],
+      [
+        "github.com",
+        "low",
+        "present"
+      ],
+      [
+        "issuetracker.google.com",
+        "low",
+        "present"
+      ],
+      [
+        "ktor.io",
+        "low",
+        "present"
+      ],
+      [
+        "localhost",
+        "low",
+        "present"
+      ],
+      [
+        "schemas.android.com",
+        "low",
+        "present"
+      ],
+      [
+        "unciv.app",
+        "low",
+        "present"
+      ],
+      [
+        "uncivserver.xyz",
+        "low",
+        "present"
+      ],
+      [
+        "wiki.wesnoth.org",
+        "low",
+        "present"
+      ],
+      [
+        "www.civfanatics.com",
+        "low",
+        "present"
+      ],
+      [
+        "www.slf4j.org",
+        "low",
+        "present"
+      ],
+      [
+        "yairm210.github.io",
+        "low",
+        "present"
+      ],
+      [
+        "youtrack.jetbrains.com",
+        "low",
+        "present"
+      ]
+    ],
+    "engine": [
+      [
+        "libGDX",
+        "high",
+        "present"
+      ]
+    ],
+    "manifest": [
+      [
+        "allowBackup=true",
+        "medium",
+        "present"
+      ],
+      [
+        "boot receiver: androidx.work.impl.background.systemalarm.RescheduleReceiver",
+        "medium",
+        "present"
+      ],
+      [
+        "deep link: https://unciv.app",
+        "low",
+        "present"
+      ],
+      [
+        "exported activity: com.unciv.app.AndroidLauncher",
+        "high",
+        "present"
+      ],
+      [
+        "exported activity: com.unciv.app.AndroidTvLauncher",
+        "high",
+        "present"
+      ],
+      [
+        "exported receiver: androidx.profileinstaller.ProfileInstallReceiver",
+        "medium",
+        "present"
+      ],
+      [
+        "exported receiver: androidx.work.impl.diagnostics.DiagnosticsReceiver",
+        "medium",
+        "present"
+      ],
+      [
+        "exported service: androidx.work.impl.background.systemjob.SystemJobService",
+        "medium",
+        "present"
+      ]
+    ],
+    "native": [
+      [
+        "armeabi-v7a/libgdx.so",
+        "high",
+        "present"
+      ]
+    ],
+    "native-symbol": [
+      [
+        "armeabi-v7a/libgdx.so",
+        "high",
+        "present"
+      ]
+    ],
+    "resource-table": [
+      [
+        "com.unciv.app",
+        "low",
+        "present"
+      ]
+    ]
+  }
+}

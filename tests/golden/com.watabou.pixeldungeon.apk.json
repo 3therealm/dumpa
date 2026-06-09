@@ -1,0 +1,139 @@
+{
+  "facts": {
+    "abis": [],
+    "engine": null,
+    "exported_component_count": 1,
+    "game_types": [],
+    "input_sha256": "711216c9d55abff9b6a5039870c9f77f0ea06e8d374638689dadc1c35feac0c1",
+    "package": "com.watabou.pixeldungeon",
+    "permissions": [
+      "android.permission.VIBRATE",
+      "com.android.vending.BILLING"
+    ],
+    "version_name": "1.9.2a"
+  },
+  "findings": {
+    "data-access": [
+      [
+        "Advertising ID API",
+        "high",
+        "referenced"
+      ],
+      [
+        "Android ID",
+        "medium",
+        "referenced"
+      ],
+      [
+        "Device identifiers (IMEI / serial / subscriber)",
+        "medium",
+        "referenced"
+      ],
+      [
+        "Location APIs",
+        "medium",
+        "referenced"
+      ]
+    ],
+    "dex": [
+      [
+        "classes.dex",
+        "high",
+        "present"
+      ]
+    ],
+    "endpoint": [
+      [
+        "goo.gl",
+        "low",
+        "present"
+      ],
+      [
+        "googleads.g.doubleclick.net",
+        "low",
+        "present"
+      ],
+      [
+        "hostname",
+        "low",
+        "present"
+      ],
+      [
+        "media.admob.com",
+        "low",
+        "present"
+      ],
+      [
+        "pixeldungeon.watabou.ru",
+        "low",
+        "present"
+      ],
+      [
+        "plus.google.com",
+        "low",
+        "present"
+      ],
+      [
+        "schemas.android.com",
+        "low",
+        "present"
+      ],
+      [
+        "ssl.google-analytics.com",
+        "low",
+        "present"
+      ],
+      [
+        "www.google-analytics.com",
+        "low",
+        "present"
+      ],
+      [
+        "www.google.com",
+        "low",
+        "present"
+      ],
+      [
+        "www.googleapis.com",
+        "low",
+        "present"
+      ],
+      [
+        "www.googletagmanager.com",
+        "low",
+        "present"
+      ]
+    ],
+    "manifest": [
+      [
+        "allowBackup=true",
+        "medium",
+        "present"
+      ],
+      [
+        "exported activity: .PixelDungeon",
+        "medium",
+        "present"
+      ]
+    ],
+    "resource-table": [
+      [
+        "com.watabou.pixeldungeon",
+        "low",
+        "present"
+      ]
+    ],
+    "tracker": [
+      [
+        "Google AdMob / Mobile Ads",
+        "high",
+        "present"
+      ],
+      [
+        "Google Analytics",
+        "high",
+        "present"
+      ]
+    ]
+  }
+}
