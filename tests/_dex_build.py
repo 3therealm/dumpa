@@ -6,7 +6,9 @@ string_data, type_ids, field_ids, method_ids, one class_def, its class_data_item
 code_item. checksum/signature are left zero (the parser is a reader, not a verifier).
 
 Layout: one class `Lcom/x/A;` (super `Ljava/lang/Object;`) with one instance field `bar`
-and one direct method `foo` carrying a code_item, plus a plain string constant "hello".
+and one direct method `foo` carrying a code_item. Two string constants: "hello" (never
+referenced by code) and "https://t.example.com/c" (loaded by foo's `const-string`), so
+tests can exercise both the unresolved-plain-string path and the const-string xref.
 """
 
 from __future__ import annotations
@@ -26,8 +28,17 @@ def _uleb(value: int) -> bytes:
             return bytes(out)
 
 
-def build_dex(*, version: bytes = b"035\x00") -> tuple[bytes, dict]:
-    """Return (dex_bytes, info). info has code_off/code_end, cd_off, and str_content."""
+_REF_CONST = "https://t.example.com/c"   # string@6, loaded by foo's const-string
+_REF_IDX = 6
+
+
+def build_dex(*, version: bytes = b"035\x00", insns: bytes | None = None) -> tuple[bytes, dict]:
+    """Return (dex_bytes, info). info has code_off/code_end, cd_off, str_content, ref_const.
+
+    By default foo's body is `const-string v0, string@6` (loads `_REF_CONST`). Pass `insns`
+    (raw little-endian code-unit bytes) to install a custom method body — used to exercise
+    the instruction walker's payload-skip path.
+    """
     # string pool — indices referenced by type/field/method ids below
     strings = [
         "Lcom/x/A;",            # 0: class descriptor
@@ -35,7 +46,8 @@ def build_dex(*, version: bytes = b"035\x00") -> tuple[bytes, dict]:
         "foo",                  # 2: method name
         "bar",                  # 3: field name
         "I",                    # 4: field type descriptor (primitive)
-        "hello",                # 5: a plain string constant (not a descriptor)
+        "hello",                # 5: a plain string constant, never loaded by code
+        _REF_CONST,             # 6: loaded by foo's const-string
     ]
     type_desc_idx = [0, 1, 4]   # type 0=A, 1=Object, 2=I
 
@@ -60,7 +72,8 @@ def build_dex(*, version: bytes = b"035\x00") -> tuple[bytes, dict]:
         str_content[s] = (content_start, content_start + len(raw))
 
     code_off = data_off + len(string_data)
-    insns = b"\x00\x01\x02\x03"          # 2 u16 code units
+    if insns is None:
+        insns = struct.pack("<HH", 0x001A, _REF_IDX)     # const-string v0, string@6
     code_item = struct.pack("<HHHHII", 1, 1, 0, 0, 0, len(insns) // 2) + insns
     code_end = code_off + len(code_item)
 
@@ -99,5 +112,5 @@ def build_dex(*, version: bytes = b"035\x00") -> tuple[bytes, dict]:
     out = bytes(header) + body
     assert len(out) == file_size
     info = {"code_off": code_off, "code_end": code_end, "cd_off": cd_off,
-            "str_content": str_content}
+            "str_content": str_content, "ref_const": _REF_CONST, "ref_idx": _REF_IDX}
     return out, info

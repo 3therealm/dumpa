@@ -135,6 +135,10 @@ def enrich_native_rvas(findings: list[Finding], ws: Workspace) -> list[Finding]:
     return out
 
 
+const_dex_xref_tool = "dex-string-xref"
+_DEX_XREF_MAX = 8                       # cap referencers enumerated in evidence
+
+
 def enrich_dex_locations(findings: list[Finding], ws: Workspace) -> list[Finding]:
     """Backfill Location.dex_class/.dex_method on any finding located by offset in a .dex.
 
@@ -155,6 +159,7 @@ def enrich_dex_locations(findings: list[Finding], ws: Workspace) -> list[Finding
     out: list[Finding] = []
     for finding in findings:
         new_locs: list[Location] | None = None
+        new_evidence: list[Evidence] | None = None
         for i, loc in enumerate(finding.locations):
             if (loc.dex_class is not None or loc.file_offset is None
                     or not loc.file_path or not loc.file_path.endswith(".dex")):
@@ -163,14 +168,41 @@ def enrich_dex_locations(findings: list[Finding], ws: Workspace) -> list[Finding
             if dex_file is None:
                 continue
             hit = dex_file.locate(loc.file_offset)
-            if hit is None:
+            if hit is not None:
+                dex_class, dex_method = hit
+                if new_locs is None:
+                    new_locs = list(finding.locations)
+                new_locs[i] = dataclasses.replace(loc, dex_class=dex_class,
+                                                  dex_method=dex_method)
                 continue
-            dex_class, dex_method = hit
-            if new_locs is None:
-                new_locs = list(finding.locations)
-            new_locs[i] = dataclasses.replace(loc, dex_class=dex_class, dex_method=dex_method)
-        out.append(dataclasses.replace(finding, locations=new_locs)
-                   if new_locs is not None else finding)
+            # No structural owner: the offset is in a plain string constant. Resolve the
+            # method(s) whose const-string loads it.
+            refs = dex_file.locate_string_xref(loc.file_offset)
+            if not refs:
+                continue
+            if len(refs) == 1:
+                cls, meth = refs[0]
+                if new_locs is None:
+                    new_locs = list(finding.locations)
+                new_locs[i] = dataclasses.replace(loc, dex_class=cls, dex_method=meth)
+            else:
+                # Loaded from several methods: naming one owner would mislead, so surface
+                # all referencers as evidence instead.
+                if new_evidence is None:
+                    new_evidence = []
+                shown = ", ".join(f"{c}#{m}" for c, m in refs[:_DEX_XREF_MAX])
+                more = "" if len(refs) <= _DEX_XREF_MAX else f" (+{len(refs) - _DEX_XREF_MAX} more)"
+                new_evidence.append(Evidence(
+                    description=f"string constant loaded by {len(refs)} methods",
+                    snippet=shown + more, tool=const_dex_xref_tool))
+        if new_locs is None and new_evidence is None:
+            out.append(finding)
+        else:
+            out.append(dataclasses.replace(
+                finding,
+                locations=new_locs if new_locs is not None else finding.locations,
+                evidence=(finding.evidence + new_evidence) if new_evidence is not None
+                else finding.evidence))
     return out
 
 
