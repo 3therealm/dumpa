@@ -58,10 +58,11 @@ class ScannerSpec:
 SCANNERS: tuple[ScannerSpec, ...] = (
     ScannerSpec("engine", engine.scan, ("engines",)),
     ScannerSpec("manifest_privacy", manifest_privacy.scan, ("manifest",)),
-    ScannerSpec("tracker", tracker.scan, ("trackers", "trackers_exodus")),
+    ScannerSpec("tracker", tracker.scan,
+                ("trackers", "trackers_exodus", "trackers_trackercontrol")),
     ScannerSpec("mediation", mediation.scan, ("mediation",)),
     ScannerSpec("privacy", privacy.scan, ("privacy",)),
-    ScannerSpec("protection", protection.scan, ("protections",)),
+    ScannerSpec("protection", protection.scan, ("protections", "protections_apkid")),
     ScannerSpec("secret", secret.scan, ("secrets",)),
     ScannerSpec("native", native.scan),
     ScannerSpec("dex", dex.scan),

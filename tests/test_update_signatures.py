@@ -31,9 +31,9 @@ def test_fetch_rejects_oversized_response(monkeypatch: pytest.MonkeyPatch) -> No
     )
 
     with pytest.raises(DumpaError, match="exceeds"):
-        update_cmd._fetch("https://example.invalid/trackers")
+        update_cmd._fetch_json("https://example.invalid/trackers")
 
 
 def test_fetch_maps_invalid_url_to_dumpa_error() -> None:
     with pytest.raises(DumpaError, match="failed to fetch"):
-        update_cmd._fetch("://bad-url")
+        update_cmd._fetch_json("://bad-url")

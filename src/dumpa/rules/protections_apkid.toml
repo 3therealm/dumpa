@@ -1,0 +1,351 @@
+# Imported APKiD protection signatures (generated — do not edit by hand).
+# Regenerate with `dumpa update-signatures --db apkid`. Curated `protections.toml`
+# stays authoritative; on a subject collision the curated rule wins.
+
+[bundle]
+name = "protections-apkid"
+version = "apkid.30.7345e053"
+source = "APKiD (https://api.github.com/repos/rednaga/APKiD/git/trees/master?recursive=1)"
+updated = "2026-06-09"
+license = "APKiD signature data — see https://github.com/rednaga/APKiD (rednaga/APKiD, dual-licensed GPL-3.0 / commercial; this bundle derives from the GPL-3.0 rules)"
+
+[[rule]]
+kind = "protection"
+subject = "AndroidRepublic"
+category = "obfuscator"
+confidence = "medium"
+strings = ["assets/emt.androidrepublic/config.png", "assets/emt.androidrepublic/monkey.png", "assets/emt.androidrepublic/system.png", "assets/emt.androidrepublic/system_000.png", "assets/emt.androidrepublic/system_001.png", "assets/emt.androidrepublic/system_002.png", "assets/emt.androidrepublic/system_003.png", "assets/emt.androidrepublic/system_004.png", "assets/emt.androidrepublic/system_005.png"]
+
+[[rule]]
+kind = "protection"
+subject = "AndroidRepublic VIP"
+category = "obfuscator"
+confidence = "medium"
+regex = ["assets\\/androidrepublic\\.org\\/(.*)\\.png"]
+
+[[rule]]
+kind = "protection"
+subject = "AppGuard"
+category = "packer"
+confidence = "medium"
+match = "all"
+strings = ["assets/appguard/", "assets/classes.sox"]
+
+[[rule]]
+kind = "protection"
+subject = "AppGuard"
+category = "packer"
+confidence = "medium"
+strings = ["assets/AppGuard0.jar", "assets/AppGuard.dgc", "libAppGuard-x86.so"]
+
+[[rule]]
+kind = "protection"
+subject = "AppGuard"
+category = "packer"
+confidence = "medium"
+regex = ["lib\\/(arm.*|x86.*)\\/libAppGuard\\.so"]
+
+[[rule]]
+kind = "protection"
+subject = "DexProtector for AIDE"
+category = "packer"
+confidence = "medium"
+match = "all"
+strings = ["assets/classes.dex.dat", "assets/dp-lib/dp.kotlin-v1.lua.mph"]
+
+[[rule]]
+kind = "protection"
+subject = "DexProtector for AIDE"
+category = "packer"
+confidence = "medium"
+match = "all"
+strings = ["assets/dexprotect/classes.dex.dat", "assets/eprotect.dat", "dexpro-build.properties"]
+
+[[rule]]
+kind = "protection"
+subject = "Jiagu (ApkToolPlus)"
+category = "packer"
+confidence = "medium"
+match = "all"
+strings = ["assets/jiagu_data.bin", "assets/sign.bin", "libapktoolplus_jiagu.so"]
+
+[[rule]]
+kind = "protection"
+subject = "Mobile Tencent Protect"
+category = "packer"
+confidence = "medium"
+regex = ["lib\\/(arm.*|x86.*)\\/libshell\\.so", "lib\\/(arm.*|x86.*)\\/libmobisecy\\.so"]
+
+[[rule]]
+kind = "protection"
+subject = "Mobile Tencent Protect"
+category = "packer"
+confidence = "medium"
+strings = ["/mix.dex"]
+
+[[rule]]
+kind = "protection"
+subject = "Mobile Tencent Protect"
+category = "packer"
+confidence = "medium"
+regex = ["lib\\/(arm.*|x86.*)\\/libshell(a|x)-\\d\\.\\d\\.\\d\\.\\d\\.so"]
+
+[[rule]]
+kind = "protection"
+subject = "Tencent Security Enterprise Edition"
+category = "packer"
+confidence = "medium"
+match = "all"
+regex = ["lib\\/(arm.*|x86.*)\\/libshell\\-superv(.*)\\.\\d{4}\\.so", "assets\\/dexMethod.*\\.dat"]
+
+[[rule]]
+kind = "protection"
+subject = "Ijiami"
+category = "packer"
+confidence = "medium"
+strings = ["assets/ijiami.dat", "assets/ijm_lib/", "assets/IJMDal.Data", "assets/libijmDataEncryption.so"]
+
+[[rule]]
+kind = "protection"
+subject = "Ijiami"
+category = "packer"
+confidence = "medium"
+regex = ["ijiami(3)?\\.ajm"]
+
+[[rule]]
+kind = "protection"
+subject = "Epic VM"
+category = "packer"
+confidence = "medium"
+regex = ["lib\\/(x86\\_64|armeabi\\-v7a|arm64\\-v8a|x86)\\/libEpic\\_Vm\\.so"]
+
+[[rule]]
+kind = "protection"
+subject = "AppCamo"
+category = "packer"
+confidence = "medium"
+match = "all"
+regex = ["lib\\/(.*)\\/libalib\\.so", "assets\\/[0-9a-f]{32}\\/[0-9a-f]{32}\\.png"]
+
+[[rule]]
+kind = "protection"
+subject = "Aegis - Android Republic Mods"
+category = "packer"
+confidence = "medium"
+strings = ["assets/aegis/aegis.mf", "assets/aegis/aegis.sig", "assets/aegis/nmsscr.nmss", "assets/aegis/nmssey.nmss", "assets/aegis/nmsskc.nmss", "assets/aegis/shield.dat"]
+
+[[rule]]
+kind = "protection"
+subject = "Aegis - Android Republic Mods"
+category = "packer"
+confidence = "medium"
+regex = ["assets\\/aegis\\/aegis[0-9]{1}\\.dat"]
+
+[[rule]]
+kind = "protection"
+subject = "KangaPack"
+category = "packer"
+confidence = "medium"
+regex = ["lib\\/(arm.*|x86.*)\\/libapksadfsalkwes.so"]
+
+[[rule]]
+kind = "protection"
+subject = "Zimperium (zShield)"
+category = "packer"
+confidence = "medium"
+match = "all"
+regex = ["lib\\/(arm.*|x86.*)\\/lib.*\\.so", "assets\\/.*\\/0\\.odex", "assets\\/.*\\.szip"]
+
+[[rule]]
+kind = "protection"
+subject = "Manxi Security"
+category = "packer"
+confidence = "medium"
+regex = ["assets\\/mxsafe\\/(arm.*|x86.*)\\/libdSafeShell\\.so", "assets\\/mx\\/(arm.*|x86.*)\\/libmxacc\\.so", "lib\\/(arm.*|x86.*)\\/libmanxi\\.so"]
+
+[[rule]]
+kind = "protection"
+subject = "Manxi Security"
+category = "packer"
+confidence = "medium"
+strings = ["assets/mxsafe.data", "assets/mxsafe.config", "assets/mxsafe.jar"]
+
+[[rule]]
+kind = "protection"
+subject = "DexProtect X (DexShellx)"
+category = "packer"
+confidence = "medium"
+strings = ["assets/libVMDexShellx.so", "assets/DexShell.mp3"]
+
+[[rule]]
+kind = "protection"
+subject = "DexProtect X (DexShellx)"
+category = "packer"
+confidence = "medium"
+regex = ["assets\\/dexshell\\/(arm.*|x86.*)\\/libdexshell\\.so"]
+
+[[rule]]
+kind = "protection"
+subject = "Venustech"
+category = "packer"
+confidence = "medium"
+regex = ["lib\\/(arm.*|x86.*)\\/libven(Sec|ustech)\\.so"]
+
+[[rule]]
+kind = "protection"
+subject = "FreeRASP"
+category = "anti-tamper"
+confidence = "medium"
+match = "all"
+regex = ["lib\\/(arm.*|x86.*)\\/libsecurity\\.so", "lib\\/(arm.*|x86.*)\\/libpolarssl\\.so"]
+
+[[rule]]
+kind = "protection"
+subject = "Ahope AppShield"
+category = "anti-tamper"
+confidence = "medium"
+regex = ["lib\\/(arm.*|x86.*)\\/libahope(.*)\\.so"]
+
+[[rule]]
+kind = "protection"
+subject = "ExTrus AppDefence"
+category = "anti-tamper"
+confidence = "medium"
+strings = ["assets/appdefence_xml"]
+
+[[rule]]
+kind = "protection"
+subject = "Shield SDK"
+category = "anti-tamper"
+confidence = "medium"
+regex = ["lib\\/(arm.*|x86.*)\\/libcashshieldabc-native-lib\\.so"]
+
+[[rule]]
+kind = "protection"
+subject = "BShield"
+category = "anti-tamper"
+confidence = "medium"
+strings = ["assets/bshield.dat"]
+
+[[rule]]
+kind = "protection"
+subject = "Denuvo"
+category = "anti-tamper"
+confidence = "medium"
+match = "all"
+strings = ["assets/tid", "libvmpc.so"]
+
+[[rule]]
+kind = "protection"
+subject = "Alibaba Security SDK"
+category = "anti-tamper"
+confidence = "medium"
+regex = ["lib\\/(arm.*|x86.*)\\/lib(alisecuritysdk|demolish(data)?|reverify1)\\.so"]
+
+[[rule]]
+kind = "protection"
+subject = "Alibaba Security SDK"
+category = "anti-tamper"
+confidence = "medium"
+strings = ["assets/ali_sec.dat"]
+
+[[rule]]
+kind = "protection"
+subject = "Bureau"
+category = "anti-tamper"
+confidence = "medium"
+regex = ["lib\\/(arm.*|x86.*)\\/libbureau\\-.*\\.so"]
+
+[[rule]]
+kind = "protection"
+subject = "OPPO Protect SDK"
+category = "anti-tamper"
+confidence = "medium"
+regex = ["lib\\/(arm.*|x86.*)\\/libOPPOProtect(2019)?\\.so", "lib\\/(arm.*|x86.*)\\/libomesStdSco\\.so"]
+
+[[rule]]
+kind = "protection"
+subject = "AppSuit"
+category = "obfuscator"
+confidence = "medium"
+match = "all"
+hex = ["006c6962417070537569742e736f00", "006c6962556e7061636b65722e736f00"]
+
+[[rule]]
+kind = "protection"
+subject = "Mobile Tencent Protect"
+category = "obfuscator"
+confidence = "medium"
+hex = ["00676574656E76006C69626C6F672E736F006C69627A2E736F006C6962646C2E736F006C6962632E736F006C69627368656C6C2E736F00"]
+
+[[rule]]
+kind = "protection"
+subject = "Tencent's Legu (VMP)"
+category = "obfuscator"
+confidence = "medium"
+hex = ["006c6962786756697053656375726974792e736f00"]
+
+[[rule]]
+kind = "protection"
+subject = "EasyProtector"
+category = "obfuscator"
+confidence = "medium"
+match = "all"
+strings = ["\u0000libantitrace.so\u0000", "\u0000I was be traced...trace pid:%d\u0000", "\u0000ptrace myself...\u0000"]
+
+[[rule]]
+kind = "protection"
+subject = "FreeRASP"
+category = "obfuscator"
+confidence = "medium"
+strings = ["\u0000package:freerasp/src/errors/talsec_exception.dart\u0000", "\u0000package:freerasp/src/models/talsec_config.dart\u0000", "\u0000package:freerasp/src/talsec.dart\u0000", "\u0000talsec-failure\u0000", "\u0000TalsecException\u0000", "\u0000TalsecController\u0000"]
+
+[[rule]]
+kind = "protection"
+subject = "Shield SDK"
+category = "obfuscator"
+confidence = "medium"
+match = "all"
+hex = ["006C696263617368736869656C646162632D6E61746976652D6C69622E736F00", "00636F6D2F736869656C642F616E64726F69642F696E7465726E616C2F4E61746976655574696C7300"]
+
+[[rule]]
+kind = "protection"
+subject = "BShield"
+category = "obfuscator"
+confidence = "medium"
+hex = ["004C696F2F62736869656C642F63616C6C6261636B2F536869656C644461746150726F74656374696F6E3B00", "00696F2F62736869656C642F63616C6C6261636B2F536869656C644461746150726F74656374696F6E00"]
+
+[[rule]]
+kind = "protection"
+subject = "Denuvo"
+category = "obfuscator"
+confidence = "medium"
+strings = ["\u0000libvmpc.so\u0000"]
+
+[[rule]]
+kind = "protection"
+subject = "Bureau"
+category = "obfuscator"
+confidence = "medium"
+regex = ["lib(bureau\\-.*|secure_keys|ndkdatacollector)\\.so"]
+
+[[rule]]
+kind = "protection"
+subject = "Bureau"
+category = "obfuscator"
+confidence = "medium"
+hex = ["004A6176615F636F6D5F6275726561755F636865636B526F6F745F566572696679526F6F744E61746976655F636865636B466F72526F6F7400", "004A6176615F636F6D5F6275726561755F64657669636566696E6765727072696E745F73656375726974795F5365637572654A4E495F6765744B657900", "004A6176615F636F6D5F6275726561755F64657669636566696E6765727072696E745F746F6F6C735F4E444B4D6170706572735F636865636B467269646100"]
+
+[[rule]]
+kind = "protection"
+subject = "MT Protector"
+category = "obfuscator"
+confidence = "medium"
+hex = ["00000c0c4d545f50726f746563746f7200"]
+
+[[rule]]
+kind = "protection"
+subject = "BugsMirror"
+category = "anti-tamper"
+confidence = "medium"
+hex = ["00????5365637572656420627920427567736D6972726F7200", "??736563757265645F62795F627567736D6972726F7200"]
