@@ -136,7 +136,8 @@ class Rule:
     A rule is a *path* rule (``globs`` over the extracted tree), a *content* rule
     (``strings``/``regex`` searched inside ``targets`` files), or a *manifest* rule
     (``manifest`` regexes tested against the parsed ``ManifestInfo``) — exactly one.
-    Rules may carry tracker metadata (``attributes``: category / owner / purpose).
+    Rules may carry tracker metadata (``attributes``: category / owner / purpose /
+    data_use, plus mediator / network on a mediation-adapter rule).
     """
     kind: str
     subject: str
@@ -251,9 +252,14 @@ def _parse_domains(raw: object, ctx: str) -> tuple[str, ...]:
 
 
 def _parse_attributes(table: dict[str, Any], ctx: str) -> dict[str, str]:
-    """Collect optional tracker metadata (category/owner/purpose) into a string map."""
+    """Collect optional tracker metadata into a string map.
+
+    `category`/`owner`/`purpose` describe a tracker; `data_use` is its likely data use
+    (the Phase 5 SDK data-use mapping); `mediator`/`network` are the endpoints of a
+    mediation-adapter edge (the Phase 5 ad-mediation graph).
+    """
     attrs: dict[str, str] = {}
-    for key in ("category", "owner", "purpose"):
+    for key in ("category", "owner", "purpose", "data_use", "mediator", "network"):
         value = table.get(key)
         if value is None:
             continue

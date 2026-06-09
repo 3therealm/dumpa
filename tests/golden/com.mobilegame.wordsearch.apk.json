@@ -28,6 +28,13 @@
     "version_name": "2.2.5"
   },
   "findings": {
+    "ad-id-attribution": [
+      [
+        "Advertising ID (AD_ID) source",
+        "medium",
+        "present"
+      ]
+    ],
     "capability": [
       [
         "Advertising ID (AD_ID)",
@@ -652,6 +659,23 @@
       [
         "install-referrer receiver: com.appsflyer.SingleInstallBroadcastReceiver",
         "medium",
+        "present"
+      ]
+    ],
+    "mediation-adapter": [
+      [
+        "Google AdMob -> AppLovin adapter",
+        "high",
+        "present"
+      ],
+      [
+        "Google AdMob -> Meta Audience Network adapter",
+        "high",
+        "present"
+      ],
+      [
+        "Google AdMob -> Unity Ads adapter",
+        "high",
         "present"
       ]
     ],

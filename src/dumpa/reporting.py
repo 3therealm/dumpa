@@ -20,7 +20,7 @@ from dumpa.core.config import (
 from dumpa.core.env import env_positive_int
 from dumpa.core.errors import ToolExecutionError, ToolNotFoundError
 from dumpa.core.manifest import load_manifest
-from dumpa.core.privacy import permission_findings
+from dumpa.core.privacy import attribute_ad_id, permission_findings
 from dumpa.core.privacy_compare import compare, resolve_disclosure
 from dumpa.core.report import AppFacts, Report
 from dumpa.core.tools import ToolRegistry
@@ -81,6 +81,9 @@ def build_report(registry: ToolRegistry, ws: Workspace, *, use_cache: bool = Tru
 
     findings = run_all(ws, use_cache=use_cache)
     findings.extend(permission_findings(permissions))
+    # AD_ID merge attribution needs the capability findings just appended plus the tracker
+    # findings from run_all, so it runs here rather than as a scanner.
+    findings.extend(attribute_ad_id(findings))
 
     # Data Safety comparison runs here (not as a scanner) because it reconciles the
     # observed categories — including the capability findings just appended above —

@@ -26,6 +26,13 @@
     "version_name": "5.9"
   },
   "findings": {
+    "ad-id-attribution": [
+      [
+        "Advertising ID (AD_ID) source",
+        "medium",
+        "present"
+      ]
+    ],
     "capability": [
       [
         "Advertising ID (AD_ID)",
@@ -460,6 +467,13 @@
       [
         "install-referrer receiver: com.appsflyer.SingleInstallBroadcastReceiver",
         "medium",
+        "present"
+      ]
+    ],
+    "mediation-adapter": [
+      [
+        "Google AdMob -> Meta Audience Network adapter",
+        "high",
         "present"
       ]
     ],
