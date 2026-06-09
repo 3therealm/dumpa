@@ -5,13 +5,17 @@ finding, then parses the full ELF (sections, symbols, PT_LOAD segments) to emit 
 per-library `native-symbol` finding. The full section/export/import lists are written to
 a sidecar under `dumps/native/` so the report stays compact (counts only); RVAs for
 offset-located findings are backfilled separately in `scanners.enrich_native_rvas`.
-Suspicious-region mapping and radare2-backed scanning remain future work.
+
+It also emits a per-library grouped printable-string dump (a `native-strings` finding +
+a sidecar under `dumps/native-strings/`), streamed so a hundreds-of-MB `.so` is never
+loaded whole. Suspicious-region mapping and radare2-backed scanning remain future work.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 import struct
 from pathlib import Path
 
@@ -23,7 +27,17 @@ logger = logging.getLogger("dumpa")
 
 const_native_kind = "native"
 const_native_symbol_kind = "native-symbol"
+const_native_strings_kind = "native-strings"
 _ELF_MAGIC = b"\x7fELF"
+
+# Printable-string extraction (streamed, like the endpoint scanner).
+_STR_MIN_LEN = 5
+_STR_CHUNK = 1 << 20
+_STR_OVERLAP = 1024                  # >= longest run we want intact across a chunk edge
+_STR_MAX_FILE_BYTES = 512 << 20
+_STR_MAX_COUNT = 50_000              # unique strings kept per library
+# A "string" = a run of printable ASCII (0x20-0x7e) or tab, >= _STR_MIN_LEN bytes.
+_STR_RE = re.compile(rb"[\x20-\x7e\x09]{%d,}" % _STR_MIN_LEN)
 # e_machine -> readable architecture.
 _MACHINES = {
     0x28: "ARM (32-bit)",
@@ -74,6 +88,68 @@ def _write_sidecar(ws: Workspace, abi: str, so: Path, elf: ElfFile) -> str | Non
     return sidecar.relative_to(ws.root).as_posix()
 
 
+def _extract_strings(path: Path) -> tuple[list[tuple[int, str]], bool]:
+    """Stream printable-ASCII runs (>= _STR_MIN_LEN) from a binary, deduped by text.
+
+    Returns (sorted [(first_offset, text)], truncated). Reads in bounded chunks with
+    overlap so a run spanning a chunk edge isn't split (deferred and re-caught in the
+    next window), mirroring the endpoint scanner's streaming idiom.
+    """
+    seen: dict[str, int] = {}
+    truncated = False
+
+    def record(raw: bytes, offset: int) -> None:
+        nonlocal truncated
+        text = raw.decode("latin-1")
+        if text in seen:
+            return
+        if len(seen) >= _STR_MAX_COUNT:
+            truncated = True
+            return
+        seen[text] = offset
+
+    with path.open("rb") as f:
+        tail = b""
+        base = 0
+        while True:
+            chunk = f.read(_STR_CHUNK)
+            if not chunk:
+                break
+            window = tail + chunk
+            window_start = base - len(tail)
+            for m in _STR_RE.finditer(window):
+                if m.end() == len(window):
+                    continue          # may continue into the next chunk; re-caught there
+                record(m.group(), window_start + m.start())
+            base += len(chunk)
+            tail = window[-_STR_OVERLAP:]
+        if tail:
+            window_start = base - len(tail)
+            for m in _STR_RE.finditer(tail):
+                record(m.group(), window_start + m.start())
+    return sorted((off, txt) for txt, off in seen.items()), truncated
+
+
+def _write_strings_sidecar(ws: Workspace, abi: str, so: Path, elf: ElfFile,
+                           strings: list[tuple[int, str]], truncated: bool) -> str | None:
+    """Write the grouped string dump to dumps/native-strings/; return its rel path."""
+    sidecar = ws.native_strings_dir / f"{abi}__{so.name}.strings.json"
+    payload = {
+        "abi": abi, "lib": so.name, "machine": elf.machine, "bitness": elf.bitness,
+        "count": len(strings), "truncated": truncated,
+        "strings": [{"offset": off, "text": txt} for off, txt in strings],
+    }
+    try:
+        ws.native_strings_dir.mkdir(parents=True, exist_ok=True)
+        with sidecar.open("w", encoding="UTF-8") as f:
+            json.dump(payload, f, indent=2, sort_keys=True)
+            f.write("\n")
+    except OSError:
+        logger.warning("could not write native strings sidecar for %s", so, exc_info=True)
+        return None
+    return sidecar.relative_to(ws.root).as_posix()
+
+
 def scan(ws: Workspace) -> list[Finding]:
     """Report ELF metadata + a symbol/section inventory for each lib/<abi>/*.so."""
     ex = ws.extracted_dir
@@ -118,4 +194,21 @@ def scan(ws: Workspace) -> list[Finding]:
                 snippet=rel, tool="elf")],
             locations=[Location(file_path=rel)],
         ))
+        if so.stat().st_size <= _STR_MAX_FILE_BYTES:
+            strings, truncated = _extract_strings(so)
+            str_attrs = {"abi": abi, "string_count": str(len(strings))}
+            str_sidecar = _write_strings_sidecar(ws, abi, so, elf, strings, truncated)
+            if str_sidecar is not None:
+                str_attrs["sidecar"] = str_sidecar
+            findings.append(Finding(
+                kind=const_native_strings_kind,
+                subject=f"{abi}/{so.name}",
+                confidence=Confidence.HIGH,
+                state=FindingState.PRESENT,
+                attributes=str_attrs,
+                evidence=[Evidence(
+                    description=f"{len(strings)} printable strings (>= {_STR_MIN_LEN} chars)",
+                    snippet=rel, tool="native-strings")],
+                locations=[Location(file_path=rel)],
+            ))
     return findings

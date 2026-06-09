@@ -239,6 +239,23 @@
         "present"
       ]
     ],
+    "native-strings": [
+      [
+        "armeabi-v7a/libdatastore_shared_counter.so",
+        "high",
+        "present"
+      ],
+      [
+        "armeabi-v7a/libgdx-freetype.so",
+        "high",
+        "present"
+      ],
+      [
+        "armeabi-v7a/libgdx.so",
+        "high",
+        "present"
+      ]
+    ],
     "native-symbol": [
       [
         "armeabi-v7a/libdatastore_shared_counter.so",

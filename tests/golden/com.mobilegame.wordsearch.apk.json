@@ -701,6 +701,28 @@
         "present"
       ]
     ],
+    "native-strings": [
+      [
+        "arm64-v8a/libapplovin-native-crash-reporter.so",
+        "high",
+        "present"
+      ],
+      [
+        "arm64-v8a/libgdx.so",
+        "high",
+        "present"
+      ],
+      [
+        "armeabi-v7a/libapplovin-native-crash-reporter.so",
+        "high",
+        "present"
+      ],
+      [
+        "armeabi-v7a/libgdx.so",
+        "high",
+        "present"
+      ]
+    ],
     "native-symbol": [
       [
         "arm64-v8a/libapplovin-native-crash-reporter.so",
