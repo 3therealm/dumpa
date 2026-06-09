@@ -44,6 +44,7 @@ const_dir_decompiled = "decompiled"
 const_dir_native = "native"
 const_dir_dex = "dex"
 const_dir_resources = "resources"
+const_dir_evidence = "evidence"
 const_dir_playstore = "playstore"
 const_dir_datasafety = "datasafety"
 const_file_app_apk = "app.apk"
@@ -143,6 +144,11 @@ class Workspace:
     def resources_dir(self) -> Path:
         """Per-package resource-table enumeration sidecars (dumps/resources/)."""
         return self.dumps_dir / const_dir_resources
+
+    @property
+    def evidence_dir(self) -> Path:
+        """Standalone, portable evidence bundle (evidence/), written by `dumpa evidence`."""
+        return self.root / const_dir_evidence
 
     @property
     def xref_sidecar(self) -> Path:

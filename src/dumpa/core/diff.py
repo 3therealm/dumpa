@@ -11,6 +11,7 @@ import json
 from dataclasses import dataclass, field
 
 from dumpa.core.dumpcs_methods import method_set
+from dumpa.core.hashing import sha256_file
 from dumpa.core.report import Report
 from dumpa.core.workspace import Workspace
 
@@ -195,6 +196,67 @@ def render_native_symbol_diff(deltas: list[NativeSymbolDelta]) -> str:
         lines.append(f"  imports +{len(d.imports_added)} / -{len(d.imports_removed)}")
         _render_capped(lines, "+", d.imports_added)
         _render_capped(lines, "-", d.imports_removed)
+    lines.append("")
+    return "\n".join(lines)
+
+
+# --- changed-files diff ------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FileDelta:
+    """Files added/removed/modified in the raw extraction between two workspaces."""
+    added: list[str] = field(default_factory=_str_list)
+    removed: list[str] = field(default_factory=_str_list)
+    modified: list[str] = field(default_factory=_str_list)
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.added or self.removed or self.modified)
+
+
+def _file_sizes(ws: Workspace) -> dict[str, int]:
+    """{ '<relpath>': size } over ws.extracted_dir; empty when the dir is absent."""
+    out: dict[str, int] = {}
+    root = ws.extracted_dir
+    if not root.is_dir():
+        return out
+    for path in root.rglob("*"):
+        if path.is_file():
+            out[path.relative_to(root).as_posix()] = path.stat().st_size
+    return out
+
+
+def diff_files(old_ws: Workspace, new_ws: Workspace) -> FileDelta:
+    """Diff the raw extraction (extracted/) of two workspaces by path + content.
+
+    A file is `modified` when its size differs, or — when sizes match — when its
+    SHA-256 differs. Hashing is bounded to same-size pairs so a 195 MB extraction
+    is not hashed wholesale.
+    """
+    old = _file_sizes(old_ws)
+    new = _file_sizes(new_ws)
+    added = sorted(set(new) - set(old))
+    removed = sorted(set(old) - set(new))
+    modified: list[str] = []
+    for rel in sorted(set(old) & set(new)):
+        # `or` short-circuits: the (whole-file) hash is only read when sizes match.
+        if (old[rel] != new[rel]
+                or sha256_file(old_ws.extracted_dir / rel)
+                != sha256_file(new_ws.extracted_dir / rel)):
+            modified.append(rel)
+    return FileDelta(added=added, removed=removed, modified=modified)
+
+
+def render_file_diff(delta: FileDelta) -> str:
+    """Render the changed-files section; empty string when nothing changed."""
+    if not delta.changed:
+        return ""
+    lines = ["## files",
+             f"  +{len(delta.added)} / -{len(delta.removed)} / ~{len(delta.modified)}"]
+    _render_capped(lines, "+", delta.added)
+    _render_capped(lines, "-", delta.removed)
+    _render_capped(lines, "~", delta.modified)
     lines.append("")
     return "\n".join(lines)
 

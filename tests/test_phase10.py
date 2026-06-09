@@ -11,10 +11,12 @@ import pytest
 from dumpa.commands.clean import clean
 from dumpa.core.diff import (
     MethodDelta,
+    diff_files,
     diff_native_symbols,
     diff_reports,
     diff_unity_methods,
     render_diff,
+    render_file_diff,
     render_native_symbol_diff,
     render_unity_method_diff,
 )
@@ -150,6 +152,61 @@ def test_native_symbol_diff_render(tmp_path: Path) -> None:
     assert "## native symbols" in text
     assert "arm64-v8a/lib.so" in text
     assert "+ DobbyHook" in text
+
+
+# --- changed-files diff ------------------------------------------------------
+
+def _extracted(ws: Workspace, files: dict[str, bytes]) -> None:
+    for rel, data in files.items():
+        path = ws.extracted_dir / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+
+def test_diff_files_added_removed_modified(tmp_path: Path) -> None:
+    old = Workspace(root=tmp_path / "old")
+    new = Workspace(root=tmp_path / "new")
+    _extracted(old, {"keep.txt": b"same", "gone.so": b"x", "lib/changed.so": b"aaaa"})
+    _extracted(new, {"keep.txt": b"same", "fresh.dex": b"y", "lib/changed.so": b"bbbb"})
+    delta = diff_files(old, new)
+    assert delta.added == ["fresh.dex"]
+    assert delta.removed == ["gone.so"]
+    assert delta.modified == ["lib/changed.so"]
+    assert delta.changed
+
+
+def test_diff_files_same_size_different_content(tmp_path: Path) -> None:
+    # equal sizes -> the hash path decides; "aaaa" vs "bbbb" are both 4 bytes.
+    old = Workspace(root=tmp_path / "old")
+    new = Workspace(root=tmp_path / "new")
+    _extracted(old, {"f.bin": b"aaaa"})
+    _extracted(new, {"f.bin": b"bbbb"})
+    assert diff_files(old, new).modified == ["f.bin"]
+
+
+def test_diff_files_unchanged_and_missing_dir(tmp_path: Path) -> None:
+    old = Workspace(root=tmp_path / "old")
+    new = Workspace(root=tmp_path / "new")
+    _extracted(old, {"f.bin": b"same"})
+    _extracted(new, {"f.bin": b"same"})
+    delta = diff_files(old, new)
+    assert not delta.changed
+    assert render_file_diff(delta) == ""
+    # a workspace with no extraction is treated as empty (fail-soft, no crash).
+    empty = Workspace(root=tmp_path / "empty")
+    only = diff_files(empty, new)
+    assert only.added == ["f.bin"]
+
+
+def test_diff_files_render(tmp_path: Path) -> None:
+    old = Workspace(root=tmp_path / "old")
+    new = Workspace(root=tmp_path / "new")
+    _extracted(old, {})
+    _extracted(new, {"new.dex": b"z"})
+    text = render_file_diff(diff_files(old, new))
+    assert "## files" in text
+    assert "~ " not in text  # nothing modified
+    assert "+ new.dex" in text
 
 
 # --- unity method diff -------------------------------------------------------

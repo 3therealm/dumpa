@@ -212,6 +212,21 @@ def export(
 
 
 @app.command()
+def evidence(
+    workspace: Path = typer.Argument(
+        ..., exists=True, file_okay=False, readable=True,
+        help="Workspace directory produced by `dumpa analyze`.",
+    ),
+    out: Path | None = typer.Option(
+        None, "--out", help="Output directory (default: <workspace>/evidence)."),
+    no_cache: bool = typer.Option(
+        False, "--no-cache", help="Rebuild from a fresh scan instead of cached findings/report.json."),
+) -> None:
+    """Write a portable evidence bundle (manifest + snippets + index) for a workspace."""
+    run_command(lambda: export_cmd.evidence(workspace, out=out, use_cache=not no_cache))
+
+
+@app.command()
 def diff(
     old: Path = typer.Argument(..., exists=True, readable=True, help="Old .apk/.xapk or workspace dir."),
     new: Path = typer.Argument(..., exists=True, readable=True, help="New .apk/.xapk or workspace dir."),

@@ -15,6 +15,7 @@ from pathlib import Path
 from dumpa.commands.analyze import const_file_report_json
 from dumpa.core.config import load_config
 from dumpa.core.errors import DumpaError
+from dumpa.core.evidence_bundle import write_evidence_bundle
 from dumpa.core.report import (
     Report,
     read_json,
@@ -99,3 +100,11 @@ def export(workspace: Path, *, fmt: str, out: Path | None = None, use_cache: boo
         logger.info("wrote %s report: %s", name, out)
     else:
         print(text, end="" if text.endswith("\n") else "\n")
+
+
+def evidence(workspace: Path, *, out: Path | None = None, use_cache: bool = True) -> None:
+    """Write a portable evidence bundle (manifest + snippets + index) for a workspace."""
+    report = _load_report(workspace, use_cache=use_cache)
+    dest = out if out is not None else Workspace(root=workspace.resolve()).evidence_dir
+    write_evidence_bundle(report, dest)
+    logger.info("wrote evidence bundle: %s", dest)
