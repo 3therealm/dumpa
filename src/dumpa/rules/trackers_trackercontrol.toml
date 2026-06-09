@@ -1,0 +1,178 @@
+# Imported TrackerControl tracker signatures (generated — do not edit by hand).
+# Regenerate with `dumpa update-signatures --db trackercontrol`. Curated
+# `trackers.toml` stays authoritative; on overlap the curated rule wins.
+
+[bundle]
+name = "trackers-trackercontrol"
+version = "trackercontrol.24.0f739fa4"
+source = "TrackerControl xray-blacklist (https://raw.githubusercontent.com/TrackerControl/tracker-control-android/master/app/src/main/assets/xray-blacklist.json)"
+updated = "2026-06-09"
+license = "TrackerControl tracker data — see https://trackercontrol.org (tracker-control-android, GPL-3.0 project)"
+
+[[rule]]
+kind = "tracker"
+subject = "Criteo"
+confidence = "medium"
+owner = "Criteo"
+regex = ["criteo\\.com", "criteo\\.net"]
+
+[[rule]]
+kind = "tracker"
+subject = "Tapjoy"
+confidence = "medium"
+owner = "Tapjoy"
+regex = ["tapjoyads\\.com", "tapjoy\\.com"]
+
+[[rule]]
+kind = "tracker"
+subject = "Vungle"
+confidence = "medium"
+owner = "Blackstone"
+regex = ["vungle\\.com"]
+
+[[rule]]
+kind = "tracker"
+subject = "Unity Technologies"
+confidence = "medium"
+owner = "Unity Technologies"
+regex = ["unity3d\\.com", "applifier\\.com", "unitychina\\.cn"]
+
+[[rule]]
+kind = "tracker"
+subject = "Flurry"
+confidence = "medium"
+owner = "Verizon Communications"
+regex = ["flurry\\.com", "flurry\\.cachefly\\.net"]
+
+[[rule]]
+kind = "tracker"
+subject = "AppLovin"
+confidence = "medium"
+owner = "AppLovin"
+regex = ["applovin\\.com", "applvn\\.com"]
+
+[[rule]]
+kind = "tracker"
+subject = "Kochava"
+confidence = "medium"
+owner = "Kochava"
+regex = ["kochava\\.com"]
+
+[[rule]]
+kind = "tracker"
+subject = "Chartboost"
+confidence = "medium"
+owner = "Chartboost"
+regex = ["chartboost\\.com", "chartboo\\.st"]
+
+[[rule]]
+kind = "tracker"
+subject = "Smaato"
+confidence = "medium"
+owner = "Spearhead Integrated Marketing Communication"
+regex = ["smaato\\.net"]
+
+[[rule]]
+kind = "tracker"
+subject = "Braze"
+confidence = "medium"
+owner = "Braze"
+regex = ["appboy\\.com", "braze\\.com"]
+
+[[rule]]
+kind = "tracker"
+subject = "AppsFlyer"
+confidence = "medium"
+owner = "AppsFlyer"
+regex = ["appsflyer\\.com"]
+
+[[rule]]
+kind = "tracker"
+subject = "Segment"
+confidence = "medium"
+owner = "Segment"
+regex = ["segment\\.com", "segment\\.io"]
+
+[[rule]]
+kind = "tracker"
+subject = "Adjust"
+confidence = "medium"
+owner = "Adjust"
+regex = ["adjust\\.io", "adjust\\.com"]
+
+[[rule]]
+kind = "tracker"
+subject = "Liftoff"
+confidence = "medium"
+owner = "Liftoff"
+regex = ["liftoff\\.io"]
+
+[[rule]]
+kind = "tracker"
+subject = "Branch"
+confidence = "medium"
+owner = "Branch"
+regex = ["bnc\\.lt", "branch\\.io", "branch\\.app\\.link"]
+
+[[rule]]
+kind = "tracker"
+subject = "InMobi"
+confidence = "medium"
+owner = "InMobi"
+regex = ["inmobicdn\\.net", "inmobi\\.com", "inmobi\\.cn", "inmobi\\.net", "appsdt\\.com"]
+
+[[rule]]
+kind = "tracker"
+subject = "Amplitude"
+confidence = "medium"
+owner = "Amplitude"
+regex = ["amplitude\\.com"]
+
+[[rule]]
+kind = "tracker"
+subject = "Mixpanel"
+confidence = "medium"
+owner = "Mixpanel"
+regex = ["mixpanel\\.com", "mxpnl\\.com"]
+
+[[rule]]
+kind = "tracker"
+subject = "ironSource"
+confidence = "medium"
+owner = "ironSource"
+regex = ["ironbeast\\.io", "atom\\-data\\.io", "ironsrc\\.com", "mobilecore\\.com", "ironsrc\\.mobi"]
+
+[[rule]]
+kind = "tracker"
+subject = "AdColony"
+confidence = "medium"
+owner = "AdColony"
+regex = ["adtilt\\.com", "adcolony\\.com", "adc3\\-launch\\-server\\-staging\\.herokuapp\\.com"]
+
+[[rule]]
+kind = "tracker"
+subject = "OneSignal"
+confidence = "medium"
+owner = "OneSignal"
+regex = ["onesignal\\.com"]
+
+[[rule]]
+kind = "tracker"
+subject = "ByteDance"
+confidence = "medium"
+owner = "ByteDance"
+regex = ["amemv\\.com", "bdurl\\.net", "bytecdn\\.cn", "byted\\.org", "bytedance\\.com", "bytedance\\.net", "bytedanceapi\\.com", "bytednsdoc\\.com", "byteimg\\.com", "byteoversea\\.com", "byteoversea\\.net", "bytesfield\\.com", "bytexservice\\.com", "changdunovel\\.com", "ctobsnssdk\\.com", "dcdapp\\.com", "direct\\.ly", "directly\\.im", "douyin\\.com", "douyinact\\.com", "douyinact\\.net", "douyincdn\\.com", "douyinclips\\.com", "douyinmusicclips\\.com", "douyinmusicvideo\\.com", "douyinpic\\.com", "douyinshortvideo\\.com", "douyinstatic\\.com", "douyinvideo\\.net", "dymusictape\\.com", "dymusicvideo\\.com", "dyshortvideo\\.com", "dyvideotape\\.com", "faceu\\.mobi", "honeypomelo\\.in", "ibytedtos\\.com", "ibyteimg\\.com", "iesdouyin\\.com", "iesdouyin\\.net", "ipstatp\\.com", "isnssdk\\.com", "ixigua\\.com", "jinritemai\\.com", "livelycdn\\.com", "miumiu\\.io", "miumiu\\.lol", "musapi\\.cc", "muscdn\\.com", "muscdn\\.net", "muscdn\\.org", "musemuse\\.cn", "muser\\.me", "musical\\.ly", "musicallycdn\\.com", "musinc\\.io", "mymuse\\.com\\.cn", "oceanengine\\.com", "pangle\\.io", "pangleglobal\\.com", "pangolin\\-sdk\\-toutiao\\.com", "pglstatp\\-toutiao\\.com", "pingpong\\.ly", "pomelo\\.im", "pstatp\\.com", "sgsnssdk\\.com", "snssdk\\.com", "squadapp\\.im", "tiktok\\.com", "tiktokcdn\\.com", "tiktokv\\.com", "tobsnssdk\\.com", "toutiao\\.com", "toutiaoimg\\.com", "ulikecam\\.com", "zhiliaoapp\\.com"]
+
+[[rule]]
+kind = "tracker"
+subject = "RevenueCat"
+confidence = "medium"
+owner = "RevenueCat"
+regex = ["revenuecat\\.com"]
+
+[[rule]]
+kind = "tracker"
+subject = "Pendo"
+confidence = "medium"
+owner = "Pendo"
+regex = ["pendo\\.io"]

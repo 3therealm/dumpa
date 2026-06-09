@@ -263,15 +263,17 @@ def clean(
 
 @app.command(name="update-signatures")
 def update_signatures(
+    db: str = typer.Option(
+        "exodus", "--db", help="Signature database: exodus | trackercontrol."),
     source: str | None = typer.Option(
-        None, "--source", help="Exodus trackers API URL (default: the official endpoint)."),
+        None, "--source", help="Override the database URL (default: the DB's official endpoint)."),
     out: Path | None = typer.Option(
         None, "--out", dir_okay=False,
         help="Write the bundle here (default: the user rules dir; point at the in-repo "
              "bundle to regenerate the vendored snapshot)."),
 ) -> None:
-    """Refresh imported tracker signatures from Exodus Privacy (explicit, networked)."""
-    run_command(lambda: update_signatures_cmd.update_signatures(source=source, out=out))
+    """Refresh imported tracker signatures from an upstream DB (explicit, networked)."""
+    run_command(lambda: update_signatures_cmd.update_signatures(db=db, source=source, out=out))
 
 
 rules_app = typer.Typer(
