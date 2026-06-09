@@ -99,6 +99,8 @@ def rules_explain(subject: str, *, bundle_path: Path | None = None, builtin: str
             label, patterns = "strings", rule.strings
         elif rule.regex:
             label, patterns = "regex", rule.regex
+        elif rule.bytes_hex:
+            label, patterns = "hex", rule.bytes_hex
         else:
             label, patterns = "globs", rule.globs
         print(f"  {label}:")

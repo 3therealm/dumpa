@@ -5,11 +5,12 @@ Each rule fires into the shared `Finding` model, so detection logic is data, not
 code, and every bundle is reproducible (name + version + source + updated date are
 recorded). Parsing reuses stdlib `tomllib` — the same stack as `core.config`.
 
-Phase 3 implements **path-glob** matchers: a rule matches when files in the
-workspace's `extracted/` tree match its globs. That is enough for data-driven game
-engine detection (libraries, assets, file layout). String / native-symbol / byte /
-`dump.cs` matcher kinds are intentionally not implemented yet — they need the
-scanners that arrive in later phases.
+Matcher kinds: **path-glob** (`globs` over the extracted tree), **content**
+(`strings`/`regex`/`hex` searched inside `targets` files), **manifest** (`manifest`
+regexes over the parsed `ManifestInfo`), and **domains**. `hex` is a YARA-style byte
+signature (two-hex-digit bytes + `??` wildcards) lowered to a bytes-regex and run
+through the same streaming/prefilter engine as `regex`. The native-symbol-table
+matcher is still deferred (the ELF parser already inventories symbols separately).
 
 Bundle TOML shape::
 
@@ -64,10 +65,68 @@ const_regex_overlap = 1024                  # chunk overlap for regex matches ne
 const_max_match_text = 200                  # cap a captured match (e.g. a secret) in evidence
 const_min_anchor_len = 3                    # shortest literal run usable as a regex prefilter anchor
 const_rewrite_encoding = "latin-1"          # byte-exact smali rewrite matching/replacement
+const_min_byte_anchor = 4                   # shortest fixed-byte run usable as a hex prefilter anchor
+const_max_hex_pattern_bytes = const_regex_overlap   # a sig must fit within the chunk overlap
 
 
 def _empty_attrs() -> dict[str, str]:
     return {}
+
+
+def compile_hex(pattern: str) -> tuple[re.Pattern[bytes], list[bytes] | None]:
+    """Lower a hex byte-pattern to (compiled bytes-regex, prefilter anchors).
+
+    Grammar: whitespace-separated or contiguous 2-char tokens — a two-hex-digit byte
+    or ``??`` (any byte). A fixed byte lowers to its escaped literal; ``??`` lowers to
+    ``[\\x00-\\xff]``. Compiled with re.DOTALL so a wildcard also matches 0x0A.
+
+    The anchor is the single longest run of consecutive fixed bytes (a hex pattern has
+    no top-level alternation, so one suffices), returned as a one-element list to match
+    ``_branch_anchors``' shape — or None when that run is shorter than
+    ``const_min_byte_anchor`` (the pattern then always-runs: sound, just unfiltered).
+    Any match must contain the fixed run verbatim, so the prefilter never skips a hit.
+
+    Raises ConfigError on an empty, odd-length, non-hex, all-wildcard, or over-long
+    pattern (one longer than ``const_max_hex_pattern_bytes`` could straddle the overlap).
+    """
+    compact = "".join(pattern.split())
+    if not compact:
+        raise ConfigError(f"hex pattern {pattern!r}: empty")
+    if len(compact) % 2 != 0:
+        raise ConfigError(f"hex pattern {pattern!r}: odd number of hex digits")
+    tokens: list[int | None] = []
+    for i in range(0, len(compact), 2):
+        unit = compact[i:i + 2]
+        if unit == "??":
+            tokens.append(None)
+            continue
+        try:
+            tokens.append(int(unit, 16))
+        except ValueError as e:
+            raise ConfigError(f"hex pattern {pattern!r}: invalid byte {unit!r}") from e
+    if len(tokens) > const_max_hex_pattern_bytes:
+        raise ConfigError(
+            f"hex pattern {pattern!r}: {len(tokens)} bytes exceeds the "
+            f"{const_max_hex_pattern_bytes}-byte limit")
+    if all(t is None for t in tokens):
+        raise ConfigError(f"hex pattern {pattern!r}: needs at least one fixed byte")
+
+    parts = [re.escape(bytes([t])) if t is not None else b"[\x00-\xff]" for t in tokens]
+    compiled = re.compile(b"".join(parts), re.DOTALL)
+
+    best: list[int] = []
+    cur: list[int] = []
+    for t in tokens:
+        if t is None:
+            if len(cur) > len(best):
+                best = cur
+            cur = []
+        else:
+            cur.append(t)
+    if len(cur) > len(best):
+        best = cur
+    anchors = [bytes(best)] if len(best) >= const_min_byte_anchor else None
+    return compiled, anchors
 
 
 @dataclass(frozen=True)
@@ -85,6 +144,7 @@ class Rule:
     globs: tuple[str, ...] = ()
     strings: tuple[str, ...] = ()
     regex: tuple[str, ...] = ()
+    bytes_hex: tuple[str, ...] = ()
     manifest: tuple[str, ...] = ()
     domains: tuple[str, ...] = ()
     domain_search: bool = False
@@ -99,7 +159,8 @@ class Rule:
 
     @property
     def is_content(self) -> bool:
-        return bool(self.strings or self.regex or (self.domains and self.domain_search))
+        return bool(self.strings or self.regex or self.bytes_hex
+                    or (self.domains and self.domain_search))
 
     @property
     def is_manifest(self) -> bool:
@@ -110,7 +171,7 @@ class Rule:
         """The pattern keys (literal strings, regex sources, or domain literals) matched on."""
         if self.domain_search:
             return self.domains
-        return self.strings or self.regex
+        return self.strings or self.regex or self.bytes_hex
 
 
 @dataclass(frozen=True)
@@ -228,16 +289,18 @@ def _parse_rule(raw: object, index: int) -> Rule:
     except ValueError as e:
         raise ConfigError(f"{ctx}: invalid confidence {conf_raw!r}") from e
 
-    present = [k for k in ("globs", "strings", "regex", "manifest", "domains") if k in table]
+    present = [k for k in ("globs", "strings", "regex", "hex", "manifest", "domains") if k in table]
     if len(present) != 1:
         raise ConfigError(
-            f"{ctx}: a rule needs exactly one of 'globs', 'strings', 'regex', 'manifest', or 'domains'")
+            f"{ctx}: a rule needs exactly one of "
+            f"'globs', 'strings', 'regex', 'hex', 'manifest', or 'domains'")
     if "domain_search" in table and "domains" not in table:
         raise ConfigError(f"{ctx}: 'domain_search' is only valid on a 'domains' rule")
 
     globs: tuple[str, ...] = ()
     strings: tuple[str, ...] = ()
     regex: tuple[str, ...] = ()
+    bytes_hex: tuple[str, ...] = ()
     manifest: tuple[str, ...] = ()
     domains: tuple[str, ...] = ()
     domain_search = False
@@ -246,6 +309,14 @@ def _parse_rule(raw: object, index: int) -> Rule:
     compiled_regex: list[re.Pattern[bytes]] = []
     if "globs" in table:
         globs = _parse_globs(table.get("globs"), ctx)
+    elif "hex" in table:
+        bytes_hex = _parse_str_list(table.get("hex"), "hex", ctx)
+        for pattern in bytes_hex:
+            compile_hex(pattern)        # validate (fail closed); recompiled at scan time
+        if "targets" in table:
+            targets = tuple(
+                _validate_glob(g, ctx)
+                for g in _parse_str_list(table.get("targets"), "targets", ctx))
     elif "domains" in table:
         domains = _parse_domains(table.get("domains"), ctx)
         ds = table.get("domain_search", False)
@@ -296,6 +367,8 @@ def _parse_rule(raw: object, index: int) -> Rule:
     ci = table.get("case_insensitive", False)
     if not isinstance(ci, bool):
         raise ConfigError(f"{ctx}: 'case_insensitive' must be a boolean")
+    if ci and bytes_hex:
+        raise ConfigError(f"{ctx}: 'case_insensitive' is meaningless on a 'hex' rule")
     game_types = (_parse_str_list(table.get("game_types"), "game_types", ctx)
                   if "game_types" in table else ())
 
@@ -314,7 +387,7 @@ def _parse_rule(raw: object, index: int) -> Rule:
 
     return Rule(
         kind=kind, subject=subject, confidence=confidence,
-        globs=globs, strings=strings, regex=regex, manifest=manifest,
+        globs=globs, strings=strings, regex=regex, bytes_hex=bytes_hex, manifest=manifest,
         domains=domains, domain_search=domain_search,
         manifest_field=manifest_field, targets=targets, match=match,
         state=state, attributes=_parse_attributes(table, ctx),
@@ -572,27 +645,25 @@ class _RegexSet:
 
     Reports first-hit ``(source, match)``; ``discard`` marks a source found so it is skipped and
     drops out of ``pending`` (which drives the streaming early-exit).
+
+    ``precompiled`` carries already-lowered byte patterns (hex rules): raw bytes can't
+    round-trip through ``src.encode()``, so the caller supplies the compiled pattern and
+    its raw-byte anchors (case-sensitive). They share ``scan()`` with regex sources —
+    everything is keyed by the ``src`` identity string (a regex source or a hex string).
     """
 
-    def __init__(self, flagged: list[tuple[str, bool]]) -> None:
+    def __init__(self, flagged: list[tuple[str, bool]],
+                 precompiled: list[tuple[str, re.Pattern[bytes], list[bytes] | None]] = ()) -> None:
         self._all: set[str] = set()
         self._found: set[str] = set()
         self._real: dict[str, re.Pattern[bytes]] = {}            # anchor-gated
         self._standalone: dict[str, re.Pattern[bytes]] = {}      # always-run
         anchor_src: dict[bool, dict[bytes, set[str]]] = {True: {}, False: {}}
         for src, ci in flagged:
-            if src in self._all:
-                continue
-            self._all.add(src)
-            compiled = re.compile(src.encode(), re.IGNORECASE if ci else 0)
-            anchors = _branch_anchors(src)
-            if anchors is None:
-                self._standalone[src] = compiled
-                continue
-            self._real[src] = compiled
-            for anchor in anchors:
-                key = anchor.lower() if ci else anchor
-                anchor_src[ci].setdefault(key, set()).add(src)
+            self._register(src, re.compile(src.encode(), re.IGNORECASE if ci else 0),
+                           _branch_anchors(src), ci, anchor_src)
+        for src, compiled, anchors in precompiled:
+            self._register(src, compiled, anchors, False, anchor_src)
         self._prefilters: list[tuple[re.Pattern[bytes], bool, dict[bytes, set[str]]]] = []
         for ci, table in anchor_src.items():
             if not table:
@@ -601,6 +672,20 @@ class _RegexSet:
             ordered = sorted(table, key=len, reverse=True)
             pattern = b"|".join(re.escape(a) for a in ordered)
             self._prefilters.append((re.compile(pattern, re.IGNORECASE if ci else 0), ci, table))
+
+    def _register(self, src: str, compiled: re.Pattern[bytes], anchors: list[bytes] | None,
+                  ci: bool, anchor_src: dict[bool, dict[bytes, set[str]]]) -> None:
+        """Index one source: anchor-gated when it has mandatory literals, else always-run."""
+        if src in self._all:
+            return
+        self._all.add(src)
+        if anchors is None:
+            self._standalone[src] = compiled
+            return
+        self._real[src] = compiled
+        for anchor in anchors:
+            key = anchor.lower() if ci else anchor
+            anchor_src[ci].setdefault(key, set()).add(src)
 
     @property
     def pending(self) -> set[str]:
@@ -704,14 +789,22 @@ def _content_finding(rule: Rule, bundle: RuleBundle, hits: dict[str, _Hit]) -> F
     evidence: list[Evidence] = []
     locations: list[Location] = []
     is_regex = bool(rule.regex)
+    is_bytes = bool(rule.bytes_hex)
     for key in rule.keys:
         if key not in hits:
             continue
         rel, offset, text = hits[key]
-        description = (f"pattern /{key}/ matched {text!r} in {rel}" if is_regex
-                      else f"string '{key}' found in {rel}")
+        if is_bytes:
+            shown = text.encode("latin-1").hex(" ")
+            description = f"byte pattern [{key}] matched {shown} in {rel}"
+        elif is_regex:
+            shown = text
+            description = f"pattern /{key}/ matched {text!r} in {rel}"
+        else:
+            shown = text
+            description = f"string '{key}' found in {rel}"
         evidence.append(Evidence(
-            description=description, snippet=text, tool="rules", rule_version=bundle.version,
+            description=description, snippet=shown, tool="rules", rule_version=bundle.version,
         ))
         if len(locations) < const_max_locations_per_rule:
             # For a domain-search rule the matched key IS the host; stamp it so the
@@ -747,13 +840,17 @@ def _apply_content_rules(rules: list[Rule], bundle: RuleBundle,
 
     findings: list[Finding] = []
     for targets, group in by_targets.items():
-        # Literal keys come from `strings` and, for domain-search rules, their `domains`.
-        literals = {k: k.encode() for rule in group for k in rule.keys if not rule.regex}
+        # Literal keys come from `strings` and, for domain-search rules, their `domains`
+        # (never from regex/hex rules — those go through the _RegexSet).
+        literals = {k: k.encode() for rule in group for k in rule.keys
+                    if not rule.regex and not rule.bytes_hex}
         # Regex sources carry a per-rule case flag (IGNORECASE for ported dumpcs rules);
         # _RegexSet combines them into few alternation passes and keys hits by source so
         # _content_finding can look them up via rule.keys.
         flagged = [(p, rule.case_insensitive) for rule in group for p in rule.regex]
-        rset = _RegexSet(flagged) if flagged else None
+        # Hex rules lower to precompiled byte patterns (keyed by the hex string).
+        byte_specs = [(h, *compile_hex(h)) for rule in group for h in rule.bytes_hex]
+        rset = _RegexSet(flagged, byte_specs) if (flagged or byte_specs) else None
         hits = _scan_content(_content_targets(root, targets), literals, rset, root)
         for rule in group:
             rule_hits = {k: hits[k] for k in rule.keys if k in hits}

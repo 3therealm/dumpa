@@ -1,15 +1,17 @@
 # Protection / packer / hardening detection rules.
 #
-# Two matcher kinds are used: `globs` for telltale native library *filenames* (a very
-# strong signal) and `strings` for loader package paths / runtime markers inside the
-# dex or native code. `category` groups the kind of protection. Detection is
-# inventory only — dumpa reports protections, it does not remove or bypass them.
+# Matcher kinds: `globs` for telltale native library *filenames* (a very strong
+# signal), `strings` for loader package paths / runtime markers inside the dex or
+# native code, and `hex` for raw byte signatures (`"55 50 58 21"`, `??` = any byte)
+# in native code where a filename/string is renamed or absent. `category` groups the
+# kind of protection. Detection is inventory only — dumpa reports protections, it
+# does not remove or bypass them.
 
 [bundle]
 name = "protections"
-version = "2026.06.1"
+version = "2026.06.2"
 source = "dumpa built-in (curated)"
-updated = "2026-06-06"
+updated = "2026-06-08"
 
 # --- commercial packers ------------------------------------------------------
 
@@ -107,3 +109,15 @@ subject = "Emulator detection"
 category = "anti-analysis"
 confidence = "medium"
 strings = ["ro.kernel.qemu", "goldfish", "genymotion"]
+
+# --- byte signatures (native) -----------------------------------------------
+# `hex` byte patterns for native code where a name/string signal is absent. Scoped
+# to lib/**/*.so to limit incidental matches. Keep these specific + conservative.
+
+[[rule]]
+kind = "protection"
+subject = "UPX packer"
+category = "packer"
+confidence = "medium"
+targets = ["lib/**/*.so"]
+hex = ["55 50 58 21"]            # "UPX!" magic embedded in UPX-packed binaries
