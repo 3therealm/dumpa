@@ -26,6 +26,7 @@ from dumpa.commands import rewrite as rewrite_cmd
 from dumpa.commands import rules as rules_cmd
 from dumpa.commands import unpack as unpack_cmd
 from dumpa.commands import update_signatures as update_signatures_cmd
+from dumpa.commands import xref as xref_cmd
 from dumpa.commands.base import run_command
 from dumpa.core.logging import configure_logging
 
@@ -144,12 +145,14 @@ def analyze(
         False, "--no-network", help="Disable the networked Play store genre lookup."),
     jadx: bool = typer.Option(
         False, "--jadx", help="Also run a full JADX decompile into <workspace>/decompiled (heavy; opt-in)."),
+    xref: bool = typer.Option(
+        False, "--xref", help="Also build the cross-reference index into <workspace>/dumps/xref.json."),
     signing: str | None = typer.Option(None, "--signing", help=_SIGNING_HELP),
 ) -> None:
     """Extract an APK/XAPK once into a reproducible workspace."""
     run_command(lambda: analyze_cmd.analyze(
         input_file, workspace=workspace, force=force, signing=signing,
-        use_cache=not no_cache, no_dump=no_dump, no_network=no_network, jadx=jadx))
+        use_cache=not no_cache, no_dump=no_dump, no_network=no_network, jadx=jadx, xref=xref))
 
 
 @app.command()
@@ -215,6 +218,27 @@ def diff(
 ) -> None:
     """Show what changed between two apps (trackers, protections, engine, ...)."""
     run_command(lambda: diff_cmd.diff(old, new))
+
+
+@app.command()
+def xref(
+    workspace: Path = typer.Argument(
+        ..., exists=True, readable=True, help="Workspace dir or .apk/.xapk."),
+    entity: str | None = typer.Argument(
+        None, help="Trace one entity (domain/class/string/symbol); omit to list correlations."),
+    min_layers: int = typer.Option(
+        2, "--min-layers", help="List entities spanning at least this many layers."),
+    case_insensitive: bool = typer.Option(
+        False, "--case-insensitive", help="Fold case when matching the queried entity."),
+    json_: bool = typer.Option(False, "--json", help="Emit JSON instead of text."),
+    out: Path | None = typer.Option(None, "--out", help="Write output to a file."),
+    no_cache: bool = typer.Option(
+        False, "--no-cache", help="Rebuild the index instead of reusing dumps/xref.json."),
+) -> None:
+    """Cross-reference an entity across manifest, smali, native, dump.cs, resources, assets."""
+    run_command(lambda: xref_cmd.xref(
+        workspace, entity=entity, min_layers=min_layers,
+        case_insensitive=case_insensitive, json_=json_, out=out, use_cache=not no_cache))
 
 
 @app.command(name="load")

@@ -133,9 +133,30 @@ def _maybe_decompile(ws_path: Path, *, enabled: bool) -> None:
     run_decompile(None, all_classes=True, workspace=ws_path)
 
 
+def _maybe_xref(ws: Workspace, *, enabled: bool) -> None:
+    """Build dumps/xref.json from the just-written report and log the correlation count."""
+    if not enabled:
+        return
+    import datetime
+
+    from dumpa.core.report import read_json
+    from dumpa.core.xref import build_xref, write_xref
+    report = read_json(ws.reports_dir / const_file_report_json)
+    if report is None:
+        return
+    meta = ws.read_meta()
+    sha = meta.input_sha256 if meta is not None else ""
+    built = datetime.datetime.now(datetime.UTC).isoformat()
+    index = build_xref(ws, list(report.findings), input_sha256=sha, built=built)
+    write_xref(index, ws.xref_sidecar)
+    multi = sum(1 for e in index.entities if len(e.layers) >= 2)
+    logger.info("  xref:      %d cross-layer correlations (%s)", multi, ws.xref_sidecar)
+
+
 def analyze(input_file: Path, *, workspace: Path | None = None, force: bool = False,
             signing: str | None = None, use_cache: bool = True,
-            no_dump: bool = False, no_network: bool = False, jadx: bool = False) -> None:
+            no_dump: bool = False, no_network: bool = False, jadx: bool = False,
+            xref: bool = False) -> None:
     """Extract input_file into a reproducible workspace, reusing it when unchanged."""
     if no_network:
         os.environ[const_env_play_lookup] = "0"  # scanners read play_lookup from config/env
@@ -168,6 +189,7 @@ def analyze(input_file: Path, *, workspace: Path | None = None, force: bool = Fa
             _maybe_autodump(registry, ws, config, enabled=autodump_enabled)
             _report_workspace(registry, ws, signed_expected=signed_expected,
                               input_size=input_abs.stat().st_size, use_cache=use_cache)
+        _maybe_xref(ws, enabled=xref)
         decompile_ws = ws.root
 
     _maybe_decompile(decompile_ws, enabled=jadx)
