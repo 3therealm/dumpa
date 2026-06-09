@@ -33,6 +33,7 @@ import importlib.resources
 import logging
 import re
 import tomllib
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
@@ -853,3 +854,46 @@ def _lazy_manifest(extracted_dir: Path) -> ManifestInfo | None:
     except (OSError, AxmlError):
         logger.debug("manifest rule: cannot parse %s", extracted_dir, exc_info=True)
         return None
+
+
+_ENGINE_CONFIDENCE_RANK = {Confidence.HIGH: 3, Confidence.MEDIUM: 2, Confidence.LOW: 1}
+
+
+def _globs_match_names(rule: Rule, names: list[PurePosixPath]) -> bool:
+    """True when the rule's globs fire against a flat list of archive entry names.
+
+    Mirrors `_rule_matches` semantics (`match=any` -> any glob hits; `match=all` -> all
+    do) but tests `PurePosixPath.full_match` over names instead of walking a tree.
+    """
+    matched = 0
+    for glob in rule.globs:
+        if any(name.full_match(glob) for name in names):
+            matched += 1
+            if rule.match != const_match_all:
+                return True
+    return rule.match == const_match_all and matched == len(rule.globs)
+
+
+def probe_engine_from_names(names: Iterable[str]) -> str | None:
+    """Highest-confidence engine whose path globs match any archive entry name.
+
+    A glob-only subset of the `engines` bundle for callers (`dumpa info`) that hold a zip
+    namelist but have no extracted tree, so the full `apply_bundle` path/manifest matchers
+    cannot run. Manifest-component rules are ignored; the native-library and asset globs
+    still identify the deep-helper engines. For an .xapk only the base apk's names are
+    visible here, so an engine whose native lib is split into an arch apk with no base-apk
+    asset residue may be missed — acceptable for fast triage; full detection lives in
+    `analyze` via `scanners.engine`.
+    """
+    name_list = [PurePosixPath(n) for n in names]
+    bundle = load_builtin("engines")
+    best_rank = 0
+    best_subject: str | None = None
+    for rule in bundle.rules:
+        if not rule.globs or not _globs_match_names(rule, name_list):
+            continue
+        rank = _ENGINE_CONFIDENCE_RANK[rule.confidence]
+        if rank > best_rank:           # first rule at the top rank wins (bundle order)
+            best_rank = rank
+            best_subject = rule.subject
+    return best_subject

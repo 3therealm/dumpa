@@ -177,6 +177,7 @@ class AppFacts:
     permissions: list[str] = field(default_factory=_str_list)
     signer_cert_sha256: str | None = None
     signing_schemes: list[str] = field(default_factory=_str_list)
+    signer_is_debug: bool | None = None             # signed with the Android debug cert
     debuggable: bool | None = None                  # from the parsed manifest
     allow_backup: bool | None = None
     exported_component_count: int | None = None
@@ -191,6 +192,7 @@ class AppFacts:
             "abis": list(self.abis), "permissions": list(self.permissions),
             "signer_cert_sha256": self.signer_cert_sha256,
             "signing_schemes": list(self.signing_schemes),
+            "signer_is_debug": self.signer_is_debug,
             "debuggable": self.debuggable, "allow_backup": self.allow_backup,
             "exported_component_count": self.exported_component_count,
         }
@@ -207,6 +209,7 @@ class AppFacts:
             permissions=[str(p) for p in data.get("permissions", [])],
             signer_cert_sha256=data.get("signer_cert_sha256"),
             signing_schemes=[str(s) for s in data.get("signing_schemes", [])],
+            signer_is_debug=data.get("signer_is_debug"),
             debuggable=data.get("debuggable"), allow_backup=data.get("allow_backup"),
             exported_component_count=data.get("exported_component_count"),
         )
@@ -573,6 +576,7 @@ def render_markdown(report: Report) -> str:
         ("allowBackup", _flag_label(f.allow_backup)),
         ("signer cert", f.signer_cert_sha256 or "unsigned/unknown"),
         ("schemes", "+".join(f.signing_schemes) if f.signing_schemes else "none"),
+        ("debug cert", _flag_label(f.signer_is_debug)),
     ]
     for key, value in rows:
         lines.append(f"- {key}: {value}")
@@ -772,6 +776,7 @@ def render_html(report: Report) -> str:
         ("allowBackup", _flag_label(f.allow_backup)),
         ("signer cert", f.signer_cert_sha256 or "unsigned/unknown"),
         ("schemes", "+".join(f.signing_schemes) if f.signing_schemes else "none"),
+        ("debug cert", _flag_label(f.signer_is_debug)),
     ]
     out.append("<h2>App</h2><table>")
     out += [f"<tr><th>{_h(k)}</th><td>{_h(v)}</td></tr>" for k, v in app_rows]

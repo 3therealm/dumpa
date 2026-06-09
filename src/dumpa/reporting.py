@@ -91,6 +91,7 @@ def build_report(registry: ToolRegistry, ws: Workspace, *, use_cache: bool = Tru
         permissions=permissions,
         signer_cert_sha256=signer.cert_sha256 if signer else None,
         signing_schemes=schemes,
+        signer_is_debug=signer.is_debug if signer else None,
         debuggable=manifest.debuggable if manifest else None,
         allow_backup=manifest.allow_backup if manifest else None,
         exported_component_count=len(manifest.exported_components) if manifest else None,

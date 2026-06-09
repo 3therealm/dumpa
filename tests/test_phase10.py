@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
 import pytest
 
 from dumpa.commands.clean import clean
-from dumpa.core.diff import diff_reports, render_diff
+from dumpa.core.diff import (
+    MethodDelta,
+    diff_native_symbols,
+    diff_reports,
+    diff_unity_methods,
+    render_diff,
+    render_native_symbol_diff,
+    render_unity_method_diff,
+)
 from dumpa.core.errors import DumpaError
 from dumpa.core.report import (
     AppFacts,
@@ -91,6 +100,87 @@ def test_render_diff_companies_block() -> None:
     assert "  + Meta" in text
     assert "  - Google" in text
     assert "no finding changes" not in text
+
+
+# --- native symbol diff ------------------------------------------------------
+
+def _sidecar(ws: Workspace, abi: str, lib: str,
+             exports: list[str], imports: list[str]) -> None:
+    """Mirror scanners.native: file '<abi>__<lib>.json', JSON 'lib' is the bare so name."""
+    ws.native_dir.mkdir(parents=True, exist_ok=True)
+    (ws.native_dir / f"{abi}__{lib}.json").write_text(json.dumps({
+        "abi": abi, "lib": lib,
+        "exports": [{"name": n} for n in exports],
+        "imports": [{"name": n} for n in imports],
+    }))
+
+
+def test_native_symbol_diff(tmp_path: Path) -> None:
+    old = Workspace(root=tmp_path / "old")
+    new = Workspace(root=tmp_path / "new")
+    _sidecar(old, "arm64-v8a", "libgame.so", ["common", "gone"], ["dlopen"])
+    _sidecar(new, "arm64-v8a", "libgame.so", ["common", "fresh"], ["dlopen", "malloc"])
+    _sidecar(new, "arm64-v8a", "libinjected.so", ["DobbyHook"], [])
+
+    deltas = {d.lib: d for d in diff_native_symbols(old, new)}
+    game = deltas["arm64-v8a/libgame.so"]
+    assert game.exports_added == ["fresh"]
+    assert game.exports_removed == ["gone"]
+    assert game.imports_added == ["malloc"]
+    assert game.imports_removed == []
+    injected = deltas["arm64-v8a/libinjected.so"]
+    assert injected.exports_added == ["DobbyHook"]
+
+
+def test_native_symbol_diff_no_change(tmp_path: Path) -> None:
+    old = Workspace(root=tmp_path / "old")
+    new = Workspace(root=tmp_path / "new")
+    _sidecar(old, "arm64-v8a", "lib.so", ["a"], ["b"])
+    _sidecar(new, "arm64-v8a", "lib.so", ["a"], ["b"])
+    assert diff_native_symbols(old, new) == []
+    assert render_native_symbol_diff([]) == ""
+
+
+def test_native_symbol_diff_render(tmp_path: Path) -> None:
+    old = Workspace(root=tmp_path / "old")
+    new = Workspace(root=tmp_path / "new")
+    _sidecar(old, "arm64-v8a", "lib.so", [], [])
+    _sidecar(new, "arm64-v8a", "lib.so", ["DobbyHook"], [])
+    text = render_native_symbol_diff(diff_native_symbols(old, new))
+    assert "## native symbols" in text
+    assert "arm64-v8a/lib.so" in text
+    assert "+ DobbyHook" in text
+
+
+# --- unity method diff -------------------------------------------------------
+
+def _dumpcs(ws: Workspace, body: str) -> None:
+    ws.dumps_dir.mkdir(parents=True, exist_ok=True)
+    (ws.dumps_dir / "dump.cs").write_text(body, encoding="utf-8")
+
+
+def test_unity_method_diff_missing_dumpcs(tmp_path: Path) -> None:
+    old = Workspace(root=tmp_path / "old")
+    new = Workspace(root=tmp_path / "new")
+    _dumpcs(new, "public class C\n{\n\tpublic void M() { }\n}\n")
+    # old has no dump.cs -> None, and the renderer shows the skip note.
+    assert diff_unity_methods(old, new) is None
+    assert "run analyze first" in render_unity_method_diff(None)
+
+
+def test_unity_method_diff_changes(tmp_path: Path) -> None:
+    old = Workspace(root=tmp_path / "old")
+    new = Workspace(root=tmp_path / "new")
+    _dumpcs(old, "public class C\n{\n\tpublic void Old() { }\n}\n")
+    _dumpcs(new, "public class C\n{\n\tpublic void New() { }\n}\n")
+    delta = diff_unity_methods(old, new)
+    assert delta is not None
+    assert delta.added == ["C::public void New()"]
+    assert delta.removed == ["C::public void Old()"]
+
+
+def test_unity_method_render_unchanged_is_empty() -> None:
+    assert render_unity_method_diff(MethodDelta()) == ""
 
 
 # --- blocklist ---------------------------------------------------------------
