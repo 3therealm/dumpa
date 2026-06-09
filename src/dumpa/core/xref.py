@@ -12,9 +12,10 @@ emits an `Xref`. The persisted artifact (`dumps/xref.json`) holds only entities 
 native symbol) is never stored. `query_xref` answers about one specific entity, including
 single-layer ones, with a streaming pass that materializes nothing.
 
-Resources and assets contribute only via existing findings' file paths (finding-derived);
-full resource-table enumeration is deferred to a later parser and recorded in provenance,
-alongside the deferred C++ symbol demangling.
+Resources are enumerated from the `dumps/resources/` sidecars (the `resources` scanner's
+parse of `resources.arsc`): every resource name and string value joins the RESOURCE layer.
+Assets still contribute only via existing findings' file paths (finding-derived). C++
+symbol demangling remains deferred and recorded in provenance.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ from dumpa.core.report import Finding, Location
 from dumpa.core.workspace import Workspace
 
 const_xref_schema_version = 1
-const_deferred = ("cpp-demangle", "resource-enumeration")
+const_deferred = ("cpp-demangle",)
 
 _GENERIC_ARITY = re.compile(r"`\d+")
 
@@ -55,7 +56,7 @@ class Layer(enum.StrEnum):
     JAVA = "java"          # decompiled/ (index-if-present)
     NATIVE = "native"      # lib/<abi>/*.so
     DUMPCS = "dumpcs"      # dumps/dump.cs
-    RESOURCE = "resource"  # res/, resources.arsc (finding-derived)
+    RESOURCE = "resource"  # res/, resources.arsc (enumerated from dumps/resources/)
     ASSET = "asset"        # assets/, dumps/{cocos,godot}/ (finding-derived)
 
 
@@ -294,12 +295,32 @@ def _from_dumpcs(ws: Workspace) -> Iterator[_Yield]:
             yield (EntityType.CLASS, declaring, Layer.DUMPCS, loc)
 
 
+def _from_resources(ws: Workspace) -> Iterator[_Yield]:
+    """STRING entities (resource names + string values) from dumps/resources/*.json."""
+    if not ws.resources_dir.is_dir():
+        return
+    loc = Location(file_path="resources.arsc")
+    for sidecar in sorted(ws.resources_dir.glob("*.json")):
+        try:
+            data = json.loads(sidecar.read_text(encoding="UTF-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        for entry in data.get("strings", []):
+            name = str(entry.get("name", ""))
+            value = str(entry.get("value", ""))
+            if name:
+                yield (EntityType.STRING, name, Layer.RESOURCE, loc)
+            if value:
+                yield (EntityType.STRING, value, Layer.RESOURCE, loc)
+
+
 def _iter_sources(ws: Workspace, findings: list[Finding]) -> Iterator[_Yield]:
     yield from _from_findings(findings)
     yield from _from_native(ws)
     yield from _from_dex(ws)
     yield from _from_manifest(ws)
     yield from _from_dumpcs(ws)
+    yield from _from_resources(ws)
 
 
 def _layers_present(ws: Workspace, findings: list[Finding]) -> tuple[Layer, ...]:
@@ -312,6 +333,8 @@ def _layers_present(ws: Workspace, findings: list[Finding]) -> tuple[Layer, ...]
         present.add(Layer.NATIVE)
     if _dumpcs_path(ws).is_file():
         present.add(Layer.DUMPCS)
+    if ws.resources_dir.is_dir() and any(ws.resources_dir.glob("*.json")):
+        present.add(Layer.RESOURCE)
     if ws.decompiled_dir.is_dir():
         present.add(Layer.JAVA)
     for f in findings:

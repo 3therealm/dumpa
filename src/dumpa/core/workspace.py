@@ -43,6 +43,7 @@ const_dir_smali = "smali"
 const_dir_decompiled = "decompiled"
 const_dir_native = "native"
 const_dir_dex = "dex"
+const_dir_resources = "resources"
 const_dir_playstore = "playstore"
 const_file_app_apk = "app.apk"
 const_file_gametype = "gametype.json"
@@ -135,6 +136,11 @@ class Workspace:
     def dex_dir(self) -> Path:
         """Per-dex class/method/field inventory sidecars (dumps/dex/)."""
         return self.dumps_dir / const_dir_dex
+
+    @property
+    def resources_dir(self) -> Path:
+        """Per-package resource-table enumeration sidecars (dumps/resources/)."""
+        return self.dumps_dir / const_dir_resources
 
     @property
     def xref_sidecar(self) -> Path:

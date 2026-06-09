@@ -35,8 +35,20 @@ class ManifestError(DumpaError):
     """Raised when a manifest is missing or malformed."""
 
 
+class ResChunkError(DumpaError):
+    """Raised when a shared AOSP resource-chunk primitive (string pool, scalar read) is malformed.
+
+    Format-neutral: both the AXML and ARSC parsers translate it at their boundary into
+    their own `AxmlError` / `ArscError` so each keeps a single public failure type.
+    """
+
+
 class AxmlError(DumpaError):
     """Raised when binary AndroidManifest.xml (AXML) is malformed or truncated."""
+
+
+class ArscError(DumpaError):
+    """Raised when the binary resource table (`resources.arsc`) is malformed or truncated."""
 
 
 class ElfError(DumpaError):
