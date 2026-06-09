@@ -586,12 +586,15 @@ def render_markdown(report: Report) -> str:
     protections = [x for x in report.findings if x.kind == "protection"]
     secrets = [x for x in report.findings if x.kind == "secret"]
     data_access = [x for x in report.findings if x.kind in ("capability", "data-access")]
+    data_safety = [x for x in report.findings if x.kind == "data-safety"]
+    data_safety_gaps = [x for x in report.findings if x.kind == "data-safety-gap"]
     endpoints = [x for x in report.findings if x.kind == "endpoint"]
     native_libs = [x for x in report.findings if x.kind == "native"]
     native_symbols = [x for x in report.findings if x.kind == "native-symbol"]
     dexes = [x for x in report.findings if x.kind == "dex"]
     _sectioned = ("tracker", "protection", "secret", "capability", "data-access",
-                  "endpoint", "native", "native-symbol", "dex")
+                  "data-safety", "data-safety-gap", "endpoint", "native",
+                  "native-symbol", "dex")
     others = [x for x in report.findings if x.kind not in _sectioned]
 
     lines.append("## Trackers")
@@ -653,6 +656,23 @@ def render_markdown(report: Report) -> str:
             for x in sorted(by_cat[category], key=lambda i: i.subject):
                 lines.append(f"- {x.subject} ({x.state.value}, confidence: {x.confidence.value})")
             lines.append("")
+
+    lines.append("## Data Safety")
+    if not data_safety and not data_safety_gaps:
+        lines.append("_not listed / lookup disabled_")
+        lines.append("")
+    else:
+        for ds in data_safety:
+            lines.append(f"- declared collected: {ds.attributes.get('collected') or 'none'}")
+            lines.append(f"- declared shared: {ds.attributes.get('shared') or 'none'}")
+        if data_safety_gaps:
+            lines.append("")
+            lines.append("### Undisclosed (observed but not declared)")
+            for g in sorted(data_safety_gaps, key=lambda i: i.subject):
+                observed = g.attributes.get("observed_in", "")
+                suffix = f" — {observed}" if observed else ""
+                lines.append(f"- {g.subject}{suffix} (confidence: {g.confidence.value})")
+        lines.append("")
 
     lines.append("## Endpoints")
     if not endpoints:
@@ -786,12 +806,15 @@ def render_html(report: Report) -> str:
     protections = [x for x in report.findings if x.kind == "protection"]
     secrets = [x for x in report.findings if x.kind == "secret"]
     data_access = [x for x in report.findings if x.kind in ("capability", "data-access")]
+    data_safety = [x for x in report.findings if x.kind == "data-safety"]
+    data_safety_gaps = [x for x in report.findings if x.kind == "data-safety-gap"]
     endpoints = [x for x in report.findings if x.kind == "endpoint"]
     native_libs = [x for x in report.findings if x.kind == "native"]
     native_symbols = [x for x in report.findings if x.kind == "native-symbol"]
     dexes = [x for x in report.findings if x.kind == "dex"]
     _sectioned = ("tracker", "protection", "secret", "capability", "data-access",
-                  "endpoint", "native", "native-symbol", "dex")
+                  "data-safety", "data-safety-gap", "endpoint", "native",
+                  "native-symbol", "dex")
     others = [x for x in report.findings if x.kind not in _sectioned]
 
     out.append("<h2>Trackers</h2>")
@@ -834,6 +857,23 @@ def render_html(report: Report) -> str:
             for x in sorted(by_cat[category], key=lambda i: i.subject):
                 out.append(f"<tr><td>{_h(x.subject)}</td><td>{_h(x.state.value)}</td>"
                            f"<td>{_h(x.confidence.value)}</td></tr>")
+            out.append("</table>")
+
+    out.append("<h2>Data Safety</h2>")
+    if not data_safety and not data_safety_gaps:
+        out.append('<p class="none">not listed / lookup disabled</p>')
+    else:
+        for ds in data_safety:
+            out.append('<table>'
+                       f"<tr><th>declared collected</th><td>{_h(ds.attributes.get('collected') or 'none')}</td></tr>"
+                       f"<tr><th>declared shared</th><td>{_h(ds.attributes.get('shared') or 'none')}</td></tr>"
+                       "</table>")
+        if data_safety_gaps:
+            out.append("<h3>Undisclosed (observed but not declared)</h3><table>")
+            for g in sorted(data_safety_gaps, key=lambda i: i.subject):
+                out.append(f"<tr><td>{_h(g.subject)}</td>"
+                           f"<td>{_h(g.attributes.get('observed_in', ''))}</td>"
+                           f"<td>{_h(g.confidence.value)}</td></tr>")
             out.append("</table>")
 
     out.append("<h2>Endpoints</h2>")

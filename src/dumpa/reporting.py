@@ -12,11 +12,16 @@ import datetime
 import logging
 
 from dumpa import __version__
-from dumpa.core.config import const_default_validation_timeout, const_env_validation_timeout
+from dumpa.core.config import (
+    const_default_validation_timeout,
+    const_env_validation_timeout,
+    load_config,
+)
 from dumpa.core.env import env_positive_int
 from dumpa.core.errors import ToolExecutionError, ToolNotFoundError
 from dumpa.core.manifest import load_manifest
 from dumpa.core.privacy import permission_findings
+from dumpa.core.privacy_compare import compare, resolve_disclosure
 from dumpa.core.report import AppFacts, Report
 from dumpa.core.tools import ToolRegistry
 from dumpa.core.workspace import Workspace
@@ -77,6 +82,16 @@ def build_report(registry: ToolRegistry, ws: Workspace, *, use_cache: bool = Tru
     findings = run_all(ws, use_cache=use_cache)
     findings.extend(permission_findings(permissions))
 
+    # Data Safety comparison runs here (not as a scanner) because it reconciles the
+    # observed categories — including the capability findings just appended above —
+    # against the developer's Play disclosure. Opt-in via the same play_lookup flag.
+    analysis = load_config().analysis
+    disclosure = resolve_disclosure(ws, allow_network=analysis.play_lookup,
+                                    timeout=analysis.play_timeout,
+                                    ttl_days=analysis.play_cache_ttl_days)
+    if disclosure is not None:
+        findings.extend(compare(disclosure, findings))
+
     facts = AppFacts(
         input_sha256=meta.input_sha256,
         input_size=meta.input_size,
@@ -102,6 +117,9 @@ def build_report(registry: ToolRegistry, ws: Workspace, *, use_cache: bool = Tru
         warnings.append("manifest parse failed; facts fell back to aapt badging")
     if not schemes:
         warnings.append("apk is unsigned")
+    if analysis.play_lookup and disclosure is None:
+        warnings.append("Data Safety lookup enabled but no disclosure resolved "
+                        "(app not listed or fetch failed)")
 
     return Report(
         dumpa_version=__version__,
