@@ -3,17 +3,22 @@
 Reads the DEX header and the string / type / field / method / class_def pools straight
 from the binary with the stdlib alone (`struct`) — same no-extra-deps ethos as `core.elf`
 and `core.axml`. It is *almost* structural-only: it reads `code_item` headers to size each
-method's byte span, and decodes exactly two Dalvik instructions — `const-string` (0x1a)
-and `const-string/jumbo` (0x1b) — to build a string-constant cross-reference. Every other
-opcode is advanced past by width alone; their operands are never interpreted.
+method's byte span; decodes the two `const-string` instructions (0x1a / 0x1b) to build a
+string-constant cross-reference; decodes each class's `static_values` encoded_array to tie
+a string constant to the static field it initializes; and, on demand, walks a single
+method's bytecode to name the instruction (and accessed field) covering a given offset.
+Every other opcode is advanced past by width alone; their operands are never interpreted.
 
-It powers three things: a per-file class/method/field inventory (the `dex` scanner); a
+It powers these: a per-file class/method/field inventory (the `dex` scanner); a
 file-offset -> (class, method) map (`DexFile.locate`), so a finding located by byte offset
 inside a `.dex` — e.g. a tracker class-path string a content scanner matched — can report
-the owning class (and method, when the offset lands in bytecode); and a string-constant
-xref (`DexFile.locate_string_xref`), so an offset inside an *arbitrary* string constant —
-a hardcoded secret, endpoint URL, or tracker domain — resolves to the method(s) whose
-`const-string` loads it.
+the owning class (and method, when the offset lands in bytecode); a string-constant xref
+(`DexFile.locate_string_xref`), so an offset inside an *arbitrary* string constant — a
+hardcoded secret, endpoint URL, or tracker domain — resolves to the method(s) whose
+`const-string` loads it; a static-field xref (`DexFile.locate_field_init`), resolving the
+same string offset to the static field(s) it initializes; and instruction-level refinement
+(`DexFile.locate_instruction`), mapping a code-item offset to its instruction's bytecode
+offset, opcode, and accessed field (for `iget*`/`iput*`/`sget*`/`sput*`).
 
 What `locate` resolves:
   * offset inside a `code_item`     -> (owning class, method)        — exact
@@ -21,6 +26,12 @@ What `locate` resolves:
 
 What `locate_string_xref` adds:
   * offset inside any string_data range -> the methods that `const-string`-load it
+
+What `locate_field_init` adds:
+  * offset inside any string_data range -> the static field(s) it initializes
+
+What `locate_instruction` adds:
+  * offset inside a `code_item` -> (bytecode unit offset, opcode, accessed field|None)
 
 The const-string walker advances by an opcode-width table and skips the three inline
 payload pseudo-instructions whole (so payload bytes are never misread as a `const-string`);
@@ -72,6 +83,14 @@ class DexClass:
 
 
 @dataclass(frozen=True)
+class InstructionHit:
+    """One instruction located inside a method's bytecode by `DexFile.locate_instruction`."""
+    bytecode_offset: int             # instruction offset from method start, in 16-bit units
+    opcode: int                      # the Dalvik opcode byte (-1 for an inline payload)
+    field: str | None                # "Class.name" for a field-access op, else None
+
+
+@dataclass(frozen=True)
 class DexFile:
     """Parsed structural metadata for one .dex."""
     version: int                     # 35..41 from "dex\n0NN\0"
@@ -81,6 +100,19 @@ class DexFile:
     desc_spans: tuple[tuple[int, int, str], ...]        # (start, end, dotted class)
     # Sorted spans over string_data of const-string-referenced strings.
     xref_spans: tuple[tuple[int, int, tuple[tuple[str, str], ...]], ...] = ()
+    # Sorted spans over string_data of strings that initialize a static field.
+    field_init_spans: tuple[tuple[int, int, tuple[str, ...]], ...] = ()
+    # field_idx -> "DefiningClass.name", for resolving field-access instruction operands.
+    field_descriptors: tuple[str, ...] = ()
+
+    def _code_span_at(self, offset: int) -> tuple[int, int, str, str] | None:
+        starts = [s[0] for s in self.code_spans]
+        i = bisect.bisect_right(starts, offset) - 1
+        if 0 <= i < len(self.code_spans):
+            span = self.code_spans[i]
+            if span[0] <= offset < span[1]:
+                return span
+        return None
 
     def locate(self, offset: int) -> tuple[str, str | None] | None:
         """Map a file byte offset to (dotted_class, method_name|None), or None.
@@ -88,12 +120,9 @@ class DexFile:
         A code-item hit yields class + method; a class-descriptor-string hit yields the
         class the string names (method None). Anything else is None.
         """
-        starts = [s[0] for s in self.code_spans]
-        i = bisect.bisect_right(starts, offset) - 1
-        if 0 <= i < len(self.code_spans):
-            start, end, cls, meth = self.code_spans[i]
-            if start <= offset < end:
-                return (cls, meth)
+        span = self._code_span_at(offset)
+        if span is not None:
+            return (span[2], span[3])
         dstarts = [s[0] for s in self.desc_spans]
         j = bisect.bisect_right(dstarts, offset) - 1
         if 0 <= j < len(self.desc_spans):
@@ -114,6 +143,47 @@ class DexFile:
             if start <= offset < end:
                 return refs
         return ()
+
+    def locate_field_init(self, offset: int) -> tuple[str, ...]:
+        """Static field(s) whose `static_values` initializer is the string whose
+        string_data range covers `offset`. Empty when the offset initializes no static
+        field. Each entry is a "DefiningClass.name" descriptor; multiple entries mean the
+        same string constant initializes more than one static field."""
+        starts = [s[0] for s in self.field_init_spans]
+        i = bisect.bisect_right(starts, offset) - 1
+        if 0 <= i < len(self.field_init_spans):
+            start, end, fields = self.field_init_spans[i]
+            if start <= offset < end:
+                return fields
+        return ()
+
+    def locate_instruction(self, path: Path, offset: int) -> InstructionHit | None:
+        """Refine a code-item `offset` to the instruction covering it. Reads only the one
+        covering method's bytecode from `path`. Returns the instruction's bytecode offset
+        (in 16-bit units from method start), its opcode, and — for a field-access op
+        (`iget*`/`iput*`/`sget*`/`sput*`) — the accessed field. None when `offset` is in no
+        code item, lands in a code_item header, or the method can't be read."""
+        span = self._code_span_at(offset)
+        if span is None:
+            return None
+        start, end, _cls, _meth = span
+        insns_start = start + _CODE_ITEM_HEADER
+        if offset < insns_start:
+            return None                  # inside the code_item header, not the bytecode
+        try:
+            with path.open("rb") as f:
+                f.seek(insns_start)
+                insns = f.read(end - insns_start)
+        except OSError:
+            return None
+        hit = _instruction_at(insns, offset - insns_start)
+        if hit is None:
+            return None
+        unit_off, opcode, field_idx = hit
+        field = (self.field_descriptors[field_idx]
+                 if field_idx is not None and 0 <= field_idx < len(self.field_descriptors)
+                 else None)
+        return InstructionHit(bytecode_offset=unit_off, opcode=opcode, field=field)
 
 
 def parse_dex(path: Path) -> DexFile | None:
@@ -172,6 +242,20 @@ _CONST_STRING_JUMBO = 0x1B      # 31c, 3 units: string idx = u32 at +1
 _PACKED_SWITCH_PAYLOAD = 0x0100
 _SPARSE_SWITCH_PAYLOAD = 0x0200
 _FILL_ARRAY_DATA_PAYLOAD = 0x0300
+
+# Field-access opcodes: iget*/iput* (0x52..0x5F, format 22c) and sget*/sput*
+# (0x60..0x6D, format 21c). All carry field_idx as the u16 at code-unit +1.
+_FIELD_OP_LO = 0x52
+_FIELD_OP_HI = 0x6D
+
+# encoded_value types we must distinguish to walk a static_values encoded_array: a string
+# initializer (the one we record), the two zero-payload values, and the two nested
+# aggregates we cannot size cheaply (bail there). Every other scalar is (value_arg+1) bytes.
+_VALUE_STRING = 0x17
+_VALUE_ARRAY = 0x1C
+_VALUE_ANNOTATION = 0x1D
+_VALUE_NULL = 0x1E
+_VALUE_BOOLEAN = 0x1F
 
 
 def _build_opcode_widths() -> bytes:
@@ -281,6 +365,52 @@ def _scan_const_strings(insns: bytes, nstrings: int) -> list[int]:
     return out
 
 
+def _instruction_at(insns: bytes, rel_byte: int) -> tuple[int, int, int | None] | None:
+    """Walk insns[] and return (unit_offset, opcode, field_idx|None) of the instruction
+    whose byte span covers `rel_byte` (a byte offset from the start of insns[]), or None.
+
+    Same width-table / payload-sizing / bail rules as `_scan_const_strings`: a lost cursor
+    (truncation, unused opcode, overrunning payload) stops the walk and yields None rather
+    than a misaligned guess. An inline payload reports opcode -1 and no field."""
+    n = len(insns) // 2
+    if rel_byte < 0:
+        return None
+    i = 0
+    while i < n:
+        unit = _u16(insns, i)
+        opcode: int | None = None
+        if unit == _PACKED_SWITCH_PAYLOAD:
+            if i + 2 > n:
+                break
+            width = _u16(insns, i + 1) * 2 + 4
+        elif unit == _SPARSE_SWITCH_PAYLOAD:
+            if i + 2 > n:
+                break
+            width = _u16(insns, i + 1) * 4 + 2
+        elif unit == _FILL_ARRAY_DATA_PAYLOAD:
+            if i + 4 > n:
+                break
+            element_width = _u16(insns, i + 1)
+            size = _u16(insns, i + 2) | (_u16(insns, i + 3) << 16)
+            width = (size * element_width + 1) // 2 + 4
+        else:
+            opcode = unit & 0xFF
+            width = _OPCODE_WIDTHS[opcode]
+            if width == 0:
+                break
+        if i + width > n:
+            break
+        if i * 2 <= rel_byte < (i + width) * 2:
+            if opcode is None:
+                return (i, -1, None)        # inside an inline payload
+            field_idx = None
+            if _FIELD_OP_LO <= opcode <= _FIELD_OP_HI and i + 2 <= n:
+                field_idx = _u16(insns, i + 1)
+            return (i, opcode, field_idx)
+        i += width
+    return None
+
+
 def _build_xref_spans(
     f: BinaryIO,
     code_spans: list[tuple[int, int, str, str]],
@@ -315,6 +445,93 @@ def _build_xref_spans(
     return tuple(spans)
 
 
+def _decode_static_value_strings(f: BinaryIO, off: int, file_size: int,
+                                 count: int) -> list[tuple[int, int]]:
+    """Decode a class's `static_values` encoded_array, returning (element_index, string_idx)
+    for each VALUE_STRING in the first `count` elements (element k initializes static field
+    k). Scalars are skipped by their (value_arg+1) payload; a nested VALUE_ARRAY /
+    VALUE_ANNOTATION can't be sized cheaply, so the walk stops there (keeping earlier
+    strings) rather than misaligning later elements onto the wrong fields."""
+    window = min(_MAX_CLASS_DATA, max(file_size - off, 0))
+    if window <= 0:
+        return []
+    f.seek(off)
+    buf = f.read(window)
+    try:
+        size, pos = _uleb128(buf, 0)
+    except DexError:
+        return []
+    out: list[tuple[int, int]] = []
+    for k in range(min(size, count)):
+        if pos >= len(buf):
+            break
+        header = buf[pos]
+        pos += 1
+        vtype = header & 0x1F
+        varg = header >> 5
+        if vtype == _VALUE_STRING:
+            nbytes = varg + 1
+            if pos + nbytes > len(buf):
+                break
+            out.append((k, int.from_bytes(buf[pos:pos + nbytes], "little")))
+            pos += nbytes
+        elif vtype in (_VALUE_NULL, _VALUE_BOOLEAN):
+            pass                              # value carried in value_arg; no payload
+        elif vtype in (_VALUE_ARRAY, _VALUE_ANNOTATION):
+            break                             # nested aggregate: stop before misaligning
+        else:
+            pos += varg + 1                   # every other scalar: (value_arg + 1) bytes
+    return out
+
+
+def _build_field_init_spans(
+    f: BinaryIO,
+    classes_static: list[tuple[list[int], int]],
+    field_descriptors: tuple[str, ...],
+    str_content: list[tuple[int, int]],
+    file_size: int,
+) -> tuple[tuple[int, int, tuple[str, ...]], ...]:
+    """Map each string constant that initializes a static field to its string_data range and
+    the field descriptor(s) it initializes. `classes_static` is (ordered static field_idxs,
+    static_values_off) per class with an initializer array."""
+    refs: dict[int, set[str]] = {}
+    for static_idxs, sv_off in classes_static:
+        for k, str_idx in _decode_static_value_strings(f, sv_off, file_size, len(static_idxs)):
+            fidx = static_idxs[k]
+            if 0 <= fidx < len(field_descriptors):
+                refs.setdefault(str_idx, set()).add(field_descriptors[fidx])
+
+    spans: list[tuple[int, int, tuple[str, ...]]] = []
+    for idx, fields in refs.items():
+        if not (0 <= idx < len(str_content)):
+            continue
+        cstart, cend = str_content[idx]
+        if cend > cstart:
+            spans.append((cstart, cend, tuple(sorted(fields))))
+    spans.sort(key=lambda s: s[0])
+    return tuple(spans)
+
+
+def _read_field_descriptors(f: BinaryIO, en: str, off: int, size: int,
+                            type_desc: list[int], strings: list[str]) -> tuple[str, ...]:
+    """field_idx -> "DefiningClass.name". field_id_item is 8 bytes: class_idx (u16),
+    type_idx (u16), name_idx (u32)."""
+    if size == 0:
+        return ()
+    table = _read_at(f, off, size * 8)
+    out: list[str] = []
+    for i in range(size):
+        class_idx, _type_idx, name_idx = struct.unpack_from(en + "HHI", table, i * 8)
+        cls = ""
+        if 0 <= class_idx < len(type_desc):
+            s = type_desc[class_idx]
+            if 0 <= s < len(strings):
+                cls = _descriptor_to_dotted(strings[s])
+        name = strings[name_idx] if 0 <= name_idx < len(strings) else ""
+        out.append(f"{cls}.{name}" if cls else name)
+    return tuple(out)
+
+
 def _parse(f: BinaryIO) -> DexFile:
     head = f.read(_HEADER_SIZE)
     if len(head) < _HEADER_SIZE or head[:4] != _DEX_MAGIC:
@@ -340,21 +557,30 @@ def _parse(f: BinaryIO) -> DexFile:
     strings, str_content = _read_strings(f, en, string_ids_off, string_ids_size, file_size)
     type_desc = _read_type_ids(f, en, type_ids_off, type_ids_size)
     field_names = _read_member_names(f, en, field_ids_off, field_ids_size, strings)
+    field_descriptors = _read_field_descriptors(f, en, field_ids_off, field_ids_size,
+                                                type_desc, strings)
     method_names = _read_member_names(f, en, method_ids_off, method_ids_size, strings)
 
-    classes, code_spans = _read_classes(
+    classes, code_spans, classes_static = _read_classes(
         f, en, class_defs_off, class_defs_size, file_size,
         strings, type_desc, field_names, method_names,
     )
     desc_spans = _build_desc_spans(type_desc, strings, str_content)
     code_spans.sort(key=lambda s: s[0])
-    # const-string operands are little-endian code units; skip the xref on the (essentially
-    # theoretical) reverse-endian dex rather than misread them into bogus attributions.
-    xref_spans = (_build_xref_spans(f, code_spans, str_content, len(strings))
-                  if en == "<" else ())
+    # const-string operands and encoded_value string indices are little-endian; skip the
+    # xrefs on the (essentially theoretical) reverse-endian dex rather than misread them
+    # into bogus attributions.
+    if en == "<":
+        xref_spans = _build_xref_spans(f, code_spans, str_content, len(strings))
+        field_init_spans = _build_field_init_spans(
+            f, classes_static, field_descriptors, str_content, file_size)
+    else:
+        xref_spans = ()
+        field_init_spans = ()
     return DexFile(version=version, classes=tuple(classes),
                    code_spans=tuple(code_spans), desc_spans=tuple(desc_spans),
-                   xref_spans=xref_spans)
+                   xref_spans=xref_spans, field_init_spans=field_init_spans,
+                   field_descriptors=field_descriptors)
 
 
 def _parse_version(raw: bytes) -> int:
@@ -449,9 +675,10 @@ def _build_desc_spans(type_desc: list[int], strings: list[str],
 def _read_classes(f: BinaryIO, en: str, off: int, size: int, file_size: int,
                   strings: list[str], type_desc: list[int],
                   field_names: list[str], method_names: list[str],
-                  ) -> tuple[list[DexClass], list[tuple[int, int, str, str]]]:
+                  ) -> tuple[list[DexClass], list[tuple[int, int, str, str]],
+                             list[tuple[list[int], int]]]:
     if size == 0:
-        return [], []
+        return [], [], []
     if size > _MAX_CLASSES:
         raise DexError(f"absurd class_defs_size {size}")
     table = _read_at(f, off, size * 32)
@@ -465,38 +692,43 @@ def _read_classes(f: BinaryIO, en: str, off: int, size: int, file_size: int,
 
     classes: list[DexClass] = []
     code_spans: list[tuple[int, int, str, str]] = []
+    classes_static: list[tuple[list[int], int]] = []
     for i in range(size):
         (class_idx, _access, super_idx, _ifaces, _src, _ann,
-         class_data_off, _statics) = struct.unpack_from(en + "IIIIIIII", table, i * 32)
+         class_data_off, static_values_off) = struct.unpack_from(en + "IIIIIIII", table, i * 32)
         descriptor = descriptor_for(class_idx)
         dotted = _descriptor_to_dotted(descriptor)
         superclass = (_descriptor_to_dotted(descriptor_for(super_idx))
                       if super_idx != _NO_INDEX else None) or None
         methods: tuple[str, ...] = ()
         fields: tuple[str, ...] = ()
+        static_idxs: list[int] = []
         if class_data_off:
-            methods, fields = _read_class_data(
+            methods, fields, static_idxs = _read_class_data(
                 f, class_data_off, file_size, dotted,
                 field_names, method_names, en, code_spans,
             )
         classes.append(DexClass(descriptor=descriptor, name=dotted,
                                 superclass=superclass,
                                 method_names=methods, field_names=fields))
-    return classes, code_spans
+        if static_values_off and static_idxs:
+            classes_static.append((static_idxs, static_values_off))
+    return classes, code_spans, classes_static
 
 
 def _read_class_data(f: BinaryIO, off: int, file_size: int, class_name: str,
                      field_names: list[str], method_names: list[str], en: str,
                      code_spans: list[tuple[int, int, str, str]],
-                     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Parse one class_data_item: collect member names and append method code-spans.
+                     ) -> tuple[tuple[str, ...], tuple[str, ...], list[int]]:
+    """Parse one class_data_item: collect member names, append method code-spans, and return
+    the ordered static field indices (so a `static_values` array can be aligned to them).
 
     Read a bounded window (class_data_items are small uleb streams); a class too large to
     fit the window degrades to the names that did fit rather than raising.
     """
     window = min(_MAX_CLASS_DATA, max(file_size - off, 0))
     if window <= 0:
-        return (), ()
+        return (), (), []
     f.seek(off)
     buf = f.read(window)
 
@@ -508,8 +740,9 @@ def _read_class_data(f: BinaryIO, off: int, file_size: int, class_name: str,
 
     fields: list[str] = []
     methods: list[str] = []
+    static_idxs: list[int] = []
     try:
-        pos = _read_encoded_fields(buf, pos, static_n, field_names, fields)
+        pos = _read_encoded_fields(buf, pos, static_n, field_names, fields, static_idxs)
         pos = _read_encoded_fields(buf, pos, instance_n, field_names, fields)
         pos = _read_encoded_methods(f, buf, pos, direct_n, file_size, class_name,
                                     method_names, en, code_spans, methods)
@@ -517,16 +750,19 @@ def _read_class_data(f: BinaryIO, off: int, file_size: int, class_name: str,
                               method_names, en, code_spans, methods)
     except DexError:
         pass    # truncated window for an oversized class: keep what parsed
-    return tuple(methods), tuple(fields)
+    return tuple(methods), tuple(fields), static_idxs
 
 
 def _read_encoded_fields(buf: bytes, pos: int, count: int,
-                         field_names: list[str], out: list[str]) -> int:
+                         field_names: list[str], out: list[str],
+                         idx_out: list[int] | None = None) -> int:
     idx = 0
     for n in range(count):
         diff, pos = _uleb128(buf, pos)
         _access, pos = _uleb128(buf, pos)
         idx = diff if n == 0 else idx + diff
+        if idx_out is not None:
+            idx_out.append(idx)         # every static field, in order, for static_values
         if 0 <= idx < len(field_names):
             out.append(field_names[idx])
     return pos

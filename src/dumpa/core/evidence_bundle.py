@@ -58,6 +58,10 @@ def _location_bits(finding: Finding) -> list[str]:
             bits.append(f"rva={loc.rva}")
         if loc.dex_class:
             bits.append(loc.dex_class + (f".{loc.dex_method}" if loc.dex_method else ""))
+        if loc.dex_field:
+            bits.append(f"field={loc.dex_field}")
+        if loc.dex_bytecode_offset is not None:
+            bits.append(f"bytecode=+0x{loc.dex_bytecode_offset:x}")
         if loc.domain:
             bits.append(loc.domain)
     return bits

@@ -113,6 +113,57 @@ def test_enrich_multi_referencer_adds_evidence(tmp_path: Path, monkeypatch) -> N
     assert ev[0].snippet == "a.B#m1, c.D#m2"
 
 
+def test_enrich_field_from_static_init(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    url = "https://k.example.com/cfg"
+    data, info = build_dex(static_string=url)
+    (ws.extracted_dir / "classes.dex").write_bytes(data)
+    start, _ = info["str_content"][url]
+    finding = Finding(kind="endpoint", subject=url, confidence=Confidence.LOW,
+                      locations=[Location(file_path="classes.dex", file_offset=start)])
+    out = enrich_dex_locations([finding], ws)
+    loc = out[0].locations[0]
+    assert loc.dex_field == "com.x.A.KEY"
+    assert loc.dex_class == "com.x.A"          # derived from the field descriptor
+
+
+def test_enrich_instruction_field_access(tmp_path: Path) -> None:
+    import struct
+    ws = _ws(tmp_path)
+    insns = struct.pack("<HH", 0x0060, 0)      # sget v0, field@0 (com.x.A.bar)
+    data, info = build_dex(insns=insns)
+    (ws.extracted_dir / "classes.dex").write_bytes(data)
+    finding = Finding(kind="protection", subject="p", confidence=Confidence.MEDIUM,
+                      locations=[Location(file_path="classes.dex",
+                                          file_offset=info["code_off"] + 16 + 1)])
+    out = enrich_dex_locations([finding], ws)
+    loc = out[0].locations[0]
+    assert loc.dex_class == "com.x.A"
+    assert loc.dex_method == "foo"
+    assert loc.dex_field == "com.x.A.bar"
+    assert loc.dex_bytecode_offset == 0
+    ev = [e for e in out[0].evidence if e.tool == scanners.dex_instruction_tool]
+    assert len(ev) == 1
+    assert "0x60" in ev[0].description
+
+
+def test_enrich_multi_field_init_adds_evidence(tmp_path: Path, monkeypatch) -> None:
+    crafted = DexFile(version=35, classes=(), code_spans=(), desc_spans=(),
+                      field_init_spans=((100, 110, ("a.B.X", "c.D.Y")),))
+    ws = _ws(tmp_path)
+    (ws.extracted_dir / "classes.dex").write_bytes(b"placeholder")
+    monkeypatch.setattr(scanners, "parse_dex", lambda _p: crafted)
+
+    finding = Finding(kind="secret", subject="k", confidence=Confidence.LOW,
+                      locations=[Location(file_path="classes.dex", file_offset=105)])
+    out = enrich_dex_locations([finding], ws)
+    assert out[0].locations[0].dex_field is None        # no single owner asserted
+    ev = [e for e in out[0].evidence if e.tool == scanners.dex_field_xref_tool]
+    assert len(ev) == 1
+    assert "2 static fields" in ev[0].description
+    assert ev[0].snippet == "a.B.X, c.D.Y"
+
+
 def test_enrich_leaves_plain_string_unresolved(tmp_path: Path) -> None:
     ws = _ws(tmp_path)
     data, info = build_dex()
