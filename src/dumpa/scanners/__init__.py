@@ -17,6 +17,7 @@ from dumpa.core.arsc import ArscTable, parse_arsc_file
 from dumpa.core.dex import DexFile, parse_dex
 from dumpa.core.domains import DomainOwner, build_domain_table
 from dumpa.core.elf import ElfFile, parse_elf
+from dumpa.core.endpoints import load_endpoint_rules
 from dumpa.core.report import Confidence, Evidence, Finding, Location
 from dumpa.core.rules import load_builtin
 from dumpa.core.workspace import Workspace, WorkspaceMeta
@@ -381,6 +382,42 @@ def enrich_domain_attribution(findings: list[Finding], ws: Workspace) -> list[Fi
     return out
 
 
+def enrich_endpoint_purpose(findings: list[Finding], ws: Workspace) -> list[Finding]:
+    """Tag each `endpoint` finding with a functional `purpose` and dedupe by host. Idempotent.
+
+    Two jobs, both additive/order-preserving:
+    - classify (host + the `paths` attribute) -> a `purpose` attribute via the endpoints
+      bundle, set only when matched and absent;
+    - dedupe endpoint findings by subject (first wins). The endpoint scanner runs before the
+      engine deep helpers, so the loose-tree finding wins over a Godot-emitted duplicate; a
+      host seen only inside a PCK keeps its single finding. `ws` is unused (table is built from
+      in-repo bundles), kept for signature parity with the sibling enrich passes.
+    """
+    table = load_endpoint_rules()
+    out: list[Finding] = []
+    seen: set[str] = set()
+    for f in findings:
+        if f.kind != "endpoint":
+            out.append(f)
+            continue
+        subject = f.subject.lower()
+        if subject in seen:
+            continue                     # dedupe: first endpoint finding per host wins
+        seen.add(subject)
+        if "purpose" in f.attributes or len(table) == 0:
+            out.append(f)
+            continue
+        paths = tuple(p for p in f.attributes.get("paths", "").split("; ") if p)
+        purpose = table.classify(f.subject, paths)
+        if purpose is None:
+            out.append(f)
+            continue
+        attrs = dict(f.attributes)
+        attrs["purpose"] = purpose
+        out.append(dataclasses.replace(f, attributes=attrs))
+    return out
+
+
 def _run_spec(ws: Workspace, spec: ScannerSpec, meta: WorkspaceMeta | None) -> list[Finding]:
     """Run one scanner, serving from / writing to the content-hash cache when possible.
 
@@ -405,9 +442,10 @@ def run_all(ws: Workspace, *, use_cache: bool = True) -> list[Finding]:
 
     Per-scanner findings are memoized under a content-hash key (input + dumpa + rule-bundle
     versions); pass use_cache=False to force a fresh scan. `enrich_native_rvas`,
-    `enrich_dex_locations`, `enrich_resource_names`, and `enrich_domain_attribution` run on
-    the assembled list every time — cheap deterministic post-passes, so they stay uncached.
-    Domain attribution runs last so it sees every endpoint/tracker finding.
+    `enrich_dex_locations`, `enrich_resource_names`, `enrich_domain_attribution`, and
+    `enrich_endpoint_purpose` run on the assembled list every time — cheap deterministic
+    post-passes, so they stay uncached. Domain attribution then endpoint-purpose run last so
+    they see every endpoint/tracker finding (including engine-helper-emitted endpoints).
     """
     meta = ws.read_meta() if use_cache else None
     findings: list[Finding] = []
@@ -425,7 +463,8 @@ def run_all(ws: Workspace, *, use_cache: bool = True) -> list[Finding]:
     findings = enrich_native_rvas(findings, ws)
     findings = enrich_dex_locations(findings, ws)
     findings = enrich_resource_names(findings, ws)
-    return enrich_domain_attribution(findings, ws)
+    findings = enrich_domain_attribution(findings, ws)
+    return enrich_endpoint_purpose(findings, ws)
 
 
 def primary_engine(findings: list[Finding]) -> str | None:

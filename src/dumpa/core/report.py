@@ -847,10 +847,12 @@ def render_markdown(report: Report) -> str:
         lines.append("_none_")
     else:
         for x in sorted(endpoints, key=lambda i: i.subject):
+            purpose = x.attributes.get("purpose")
             country = x.attributes.get("country")
             asn = x.attributes.get("asn")
+            tag = f" [{purpose}]" if purpose else ""
             geo = " — " + ", ".join(p for p in (country, asn) if p) if (country or asn) else ""
-            lines.append(f"- {x.subject}{geo}")
+            lines.append(f"- {x.subject}{tag}{geo}")
     lines.append("")
 
     lines.append("## IP endpoints")
@@ -1094,10 +1096,12 @@ def render_html(report: Report) -> str:
     else:
         out.append("<table>")
         for x in sorted(endpoints, key=lambda i: i.subject):
+            purpose = x.attributes.get("purpose", "")
             country = x.attributes.get("country", "")
             asn = x.attributes.get("asn", "")
             geo = ", ".join(p for p in (country, asn) if p)
-            out.append(f"<tr><td><code>{_h(x.subject)}</code></td><td>{_h(geo)}</td></tr>")
+            out.append(f"<tr><td><code>{_h(x.subject)}</code></td>"
+                       f"<td>{_h(purpose)}</td><td>{_h(geo)}</td></tr>")
         out.append("</table>")
 
     out.append("<h2>IP endpoints</h2>")

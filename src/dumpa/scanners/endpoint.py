@@ -42,6 +42,7 @@ const_max_file_bytes = 512 << 20
 const_max_hosts = 100
 const_max_ips = 100
 const_max_samples_per_host = 5
+const_max_paths_per_host = 6
 
 # scheme://...  (the char class is the set of URL-legal bytes; trailing junk trimmed later)
 _URL_RE = re.compile(rb"(?:https?|wss?)://[A-Za-z0-9._~:/?#@!$&'()*+,;=%\[\]-]+")
@@ -134,11 +135,48 @@ def _record_ip(ips: dict[str, _IpHit], window: bytes, start: int, end: int,
     ips[ip] = _IpHit(file=rel, offset=abs_offset, scope=scope)
 
 
-def _host_of(url: str) -> str | None:
+def host_of(url: str) -> str | None:
     rest = url.split("://", 1)[1] if "://" in url else ""
     host = re.split(r"[/?#]", rest, maxsplit=1)[0]
     host = host.split("@")[-1].split(":")[0]
     return host.lower() or None
+
+
+def path_of(url: str) -> str:
+    """The path+query of a URL (everything from the first '/', '?' or '#'), or '' if none."""
+    rest = url.split("://", 1)[1] if "://" in url else url
+    m = re.search(r"[/?#]", rest)
+    return rest[m.start():] if m else ""
+
+
+def _distinct_paths(urls: list[str]) -> list[str]:
+    """Distinct, non-empty URL paths (split out from the host), capped and order-preserving."""
+    out: list[str] = []
+    for url in urls:
+        p = path_of(url)
+        if p and p not in out:
+            out.append(p)
+            if len(out) >= const_max_paths_per_host:
+                break
+    return out
+
+
+def harvest_urls(data: bytes) -> list[tuple[str, str]]:
+    """Extract deduped (host, url) pairs from a blob. Shared with engine helpers (Godot)
+    that read small config files whole, so URL parsing lives in one place."""
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for m in _URL_RE.finditer(data):
+        url = m.group().decode("latin-1").rstrip(_TRIM)
+        host = host_of(url)
+        if host is None:
+            continue
+        key = (host, url)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
 
 
 def _targets(extracted_dir: Path) -> list[Path]:
@@ -155,7 +193,7 @@ def _targets(extracted_dir: Path) -> list[Path]:
 
 def _record(hosts: dict[str, _HostHits], raw: bytes, abs_offset: int, rel: str) -> None:
     url = raw.decode("latin-1").rstrip(_TRIM)
-    host = _host_of(url)
+    host = host_of(url)
     if host is None:
         return
     hit = hosts.get(host)
@@ -216,9 +254,13 @@ def scan(ws: Workspace) -> list[Finding]:
     findings: list[Finding] = []
     for host, hit in sorted(hosts.items()):
         evidence = [Evidence(description=f"URL {url}", snippet=url, tool="endpoint") for url in hit.samples]
+        attributes: dict[str, str] = {}
+        paths = _distinct_paths(hit.samples)
+        if paths:
+            attributes["paths"] = "; ".join(paths)
         findings.append(Finding(
             kind="endpoint", subject=host, confidence=Confidence.LOW,
-            state=FindingState.PRESENT, attributes={},
+            state=FindingState.PRESENT, attributes=attributes,
             evidence=evidence,
             locations=[Location(file_path=hit.file, file_offset=hit.offset, domain=host)],
         ))

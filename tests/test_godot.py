@@ -79,6 +79,21 @@ def test_config_and_gdc_reported(tmp_path: Path) -> None:
     assert any(s.startswith("Godot GDScript bytecode (1") for s in subjects)
 
 
+def test_config_endpoints_harvested_from_pck(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    files = {
+        "res://project.godot": b'[network]\nserver="https://api.mygame.example/v1/login"\n',
+        "res://scenes/main.tscn": b"[gd_scene]\n",
+    }
+    _touch(ws.extracted_dir, "assets/game.pck", build_pck(files, version=(3, 5, 2)))
+    findings = godot.scan(ws)
+    ep = next((f for f in findings if f.kind == "endpoint"), None)
+    assert ep is not None
+    assert ep.subject == "api.mygame.example"
+    assert ep.locations[0].domain == "api.mygame.example"
+    assert ep.locations[0].file_path.startswith("dumps/godot/pck/")
+
+
 def test_non_godot_app_is_noop(tmp_path: Path) -> None:
     ws = _ws(tmp_path)
     _touch(ws.extracted_dir, "lib/arm64-v8a/libunity.so", b"\x00")

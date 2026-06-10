@@ -33,6 +33,21 @@ def test_dedupes_by_host(tmp_path: Path) -> None:
     assert hosts == ["x.com", "y.com"]
 
 
+def test_paths_attribute_split_out(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    (ws.extracted_dir / "a.txt").write_bytes(
+        b"https://api.example.com/v1/track https://api.example.com/v2/log?x=1")
+    f = next(x for x in endpoint.scan(ws) if x.subject == "api.example.com")
+    paths = f.attributes["paths"].split("; ")
+    assert "/v1/track" in paths
+    assert "/v2/log?x=1" in paths
+
+
+def test_harvest_urls_dedupes_pairs() -> None:
+    pairs = endpoint.harvest_urls(b"see https://a.com/x and https://a.com/x and https://b.io/")
+    assert (sorted(pairs)) == [("a.com", "https://a.com/x"), ("b.io", "https://b.io/")]
+
+
 def test_url_spanning_chunk_boundary(tmp_path: Path) -> None:
     ws = _ws(tmp_path)
     url = b"https://boundary.example.org/path/seg"
