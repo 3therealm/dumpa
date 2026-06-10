@@ -14,8 +14,9 @@ single-layer ones, with a streaming pass that materializes nothing.
 
 Resources are enumerated from the `dumps/resources/` sidecars (the `resources` scanner's
 parse of `resources.arsc`): every resource name and string value joins the RESOURCE layer.
-Assets still contribute only via existing findings' file paths (finding-derived). C++
-symbol demangling remains deferred and recorded in provenance.
+Assets still contribute only via existing findings' file paths (finding-derived). Native
+C++ symbols are demangled (`core/cppname.py`) so they read legibly and surface their
+qualified class as a join alias.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from dumpa.core.cppname import demangle_cpp
 from dumpa.core.dex import _descriptor_to_dotted
 from dumpa.core.dumpcs_methods import iter_method_sigs
 from dumpa.core.jni import decode_jni
@@ -36,7 +38,7 @@ from dumpa.core.report import Finding, Location
 from dumpa.core.workspace import Workspace
 
 const_xref_schema_version = 1
-const_deferred = ("cpp-demangle",)
+const_deferred: tuple[str, ...] = ()
 
 _GENERIC_ARITY = re.compile(r"`\d+")
 
@@ -243,6 +245,10 @@ def _from_native(ws: Workspace) -> Iterator[_Yield]:
             decoded = decode_jni(name)
             if decoded is not None:
                 yield (EntityType.CLASS, decoded[0], Layer.NATIVE, loc)
+            else:
+                cpp = demangle_cpp(name)
+                if cpp is not None and cpp.cls:
+                    yield (EntityType.CLASS, cpp.cls.replace("::", "."), Layer.NATIVE, loc)
         for imp in data.get("imports", []):
             name = str(imp.get("name", ""))
             if name:
@@ -373,6 +379,12 @@ def build_xref(ws: Workspace, findings: list[Finding], *, input_sha256: str,
             decoded = decode_jni(raw)
             if decoded is not None:
                 aliases.setdefault(key, set()).add(decoded[0])
+            else:
+                cpp = demangle_cpp(raw)
+                if cpp is not None:
+                    display[key] = cpp.qualified        # legible name; key stays the raw symbol
+                    if cpp.cls:
+                        aliases.setdefault(key, set()).add(cpp.cls.replace("::", "."))
 
     entities = tuple(
         XrefEntity(
@@ -394,7 +406,8 @@ def query_xref(ws: Workspace, findings: list[Finding], entity: str, *,
     """Find every appearance of one entity, including single-layer ones (streaming)."""
     target = entity.lower() if case_insensitive else entity
     matches: dict[EntityType, list[Appearance]] = {}
-    display: dict[EntityType, str] = {}
+    keysrc: dict[EntityType, str] = {}      # raw spelling that defines the join key
+    display: dict[EntityType, str] = {}     # human spelling (demangled for C++ symbols)
     aliases: dict[EntityType, set[str]] = {}
     for etype, raw, layer, loc in _iter_sources(ws, findings):
         norm = normalize(etype, raw)
@@ -402,17 +415,24 @@ def query_xref(ws: Workspace, findings: list[Finding], entity: str, *,
         if cmp != target:
             continue
         matches.setdefault(etype, []).append(Appearance(layer=layer, location=loc))
+        keysrc.setdefault(etype, raw)
         display.setdefault(etype, raw)
         if etype is EntityType.SYMBOL:
             decoded = decode_jni(raw)
             if decoded is not None:
                 aliases.setdefault(etype, set()).add(decoded[0])
+            else:
+                cpp = demangle_cpp(raw)
+                if cpp is not None:
+                    display[etype] = cpp.qualified
+                    if cpp.cls:
+                        aliases.setdefault(etype, set()).add(cpp.cls.replace("::", "."))
     if not matches:
         return None
     # If several types match the same string, prefer the one with the most appearances.
     etype = max(matches, key=lambda t: len(matches[t]))
     return XrefEntity(
-        type=etype, key=normalize(etype, display[etype]), display=display[etype],
+        type=etype, key=normalize(etype, keysrc[etype]), display=display[etype],
         appearances=tuple(matches[etype]), aliases=tuple(sorted(aliases.get(etype, ()))),
     )
 

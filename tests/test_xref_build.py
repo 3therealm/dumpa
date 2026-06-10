@@ -97,4 +97,30 @@ def test_layers_present_reflects_sources(tmp_path: Path) -> None:
     xref = build_xref(ws, [], input_sha256="abc", built="t")
     assert Layer.NATIVE in xref.provenance.layers_present
     assert Layer.SMALI in xref.provenance.layers_present
-    assert "cpp-demangle" in xref.provenance.deferred
+    assert "cpp-demangle" not in xref.provenance.deferred
+
+
+def test_cpp_symbol_demangled_display_and_alias(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    _native_sidecar(ws, exports=[{"name": "_ZN7cocos2d6Sprite4initEv", "rva": 8192}])
+    # symbol is single-layer, so query it (build_xref drops single-layer entities)
+    found = query_xref(ws, [], "_ZN7cocos2d6Sprite4initEv")
+    assert found is not None
+    assert found.type is EntityType.SYMBOL
+    assert found.key == "_ZN7cocos2d6Sprite4initEv"      # raw symbol stays the join key
+    assert found.display == "cocos2d::Sprite::init"      # demangled, legible
+    assert "cocos2d.Sprite" in found.aliases             # qualified class, ::->.
+
+
+def test_cpp_class_joins_dumpcs(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    ws.dumps_dir.mkdir(parents=True, exist_ok=True)
+    _native_sidecar(ws, exports=[{"name": "_ZN3Foo3Bar3bazEv", "rva": 4096}])
+    (ws.dumps_dir / "dump.cs").write_text(
+        "// Namespace: Foo\nclass Bar\n{\n    public void baz() { }\n}\n",
+        encoding="UTF-8")
+    xref = build_xref(ws, [], input_sha256="abc", built="t")
+    cls = next((e for e in xref.entities
+                if e.type is EntityType.CLASS and e.key == "Foo.Bar"), None)
+    assert cls is not None
+    assert Layer.NATIVE in cls.layers and Layer.DUMPCS in cls.layers
