@@ -127,10 +127,15 @@ def _is_lib_so(rel: str) -> bool:
 
 
 def enrich_native_rvas(findings: list[Finding], ws: Workspace) -> list[Finding]:
-    """Backfill Location.rva on any finding located by file offset inside a lib/*.so.
+    """Backfill native ELF context on any finding located by file offset in a lib/*.so.
 
     Cross-cutting pass: protection/tracker/secret findings carry a file offset but no
-    RVA; map each through the covering PT_LOAD segment. Each library is parsed once.
+    ELF context. Map each offset through the parsed library to:
+      * its virtual address (via the covering PT_LOAD segment);
+      * the covering ELF section (`section_at`);
+      * the containing defined symbol (`symbol_at_rva`, demangled), when one covers it.
+    Each library is parsed once. A location already carrying an rva, or one that resolves
+    to nothing, passes through unchanged.
     """
     cache: dict[str, ElfFile | None] = {}
 
@@ -151,11 +156,14 @@ def enrich_native_rvas(findings: list[Finding], ws: Workspace) -> list[Finding]:
             if elf is None:
                 continue
             rva = elf.offset_to_rva(loc.file_offset)
-            if rva is None:
+            section = elf.section_at(loc.file_offset)
+            symbol = elf.symbol_at_rva(rva) if rva is not None else None
+            if rva is None and section is None and symbol is None:
                 continue
             if new_locs is None:
                 new_locs = list(finding.locations)
-            new_locs[i] = dataclasses.replace(loc, rva=rva)
+            new_locs[i] = dataclasses.replace(
+                loc, rva=rva, native_section=section, native_symbol=symbol)
         out.append(dataclasses.replace(finding, locations=new_locs)
                    if new_locs is not None else finding)
     return out

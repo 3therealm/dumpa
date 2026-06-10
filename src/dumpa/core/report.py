@@ -7,8 +7,9 @@ external-tool imports, so it sits at the bottom of the dependency graph. The bui
 that fills a report from a real apk lives in `dumpa.reporting`.
 
 A `Finding` carries a kind, a subject, a confidence, an evidence list, and
-zero-or-more locations (a native RVA, a file offset, a DEX class/method, a manifest
-entry, an asset path, or a domain) — whichever apply to that kind of finding.
+zero-or-more locations (a native RVA, a file offset, a DEX class/method, an ELF
+section/symbol, a manifest entry, an asset path, or a domain) — whichever apply to that
+kind of finding.
 """
 
 from __future__ import annotations
@@ -76,6 +77,8 @@ class Location:
     dex_method: str | None = None
     dex_field: str | None = None        # "DefiningClass.name" — accessed/initialized field
     dex_bytecode_offset: int | None = None   # instruction offset in 16-bit code units
+    native_section: str | None = None        # covering ELF section, e.g. ".text"/".rodata"
+    native_symbol: str | None = None         # containing symbol (demangled) in a lib/*.so
     manifest_entry: str | None = None
     domain: str | None = None
 
@@ -85,6 +88,7 @@ class Location:
             "rva": self.rva, "file_offset": self.file_offset, "file_path": self.file_path,
             "dex_class": self.dex_class, "dex_method": self.dex_method,
             "dex_field": self.dex_field, "dex_bytecode_offset": self.dex_bytecode_offset,
+            "native_section": self.native_section, "native_symbol": self.native_symbol,
             "manifest_entry": self.manifest_entry, "domain": self.domain,
         }.items():
             if value is not None:
@@ -98,6 +102,7 @@ class Location:
             file_path=data.get("file_path"), dex_class=data.get("dex_class"),
             dex_method=data.get("dex_method"), dex_field=data.get("dex_field"),
             dex_bytecode_offset=data.get("dex_bytecode_offset"),
+            native_section=data.get("native_section"), native_symbol=data.get("native_symbol"),
             manifest_entry=data.get("manifest_entry"), domain=data.get("domain"),
         )
 
