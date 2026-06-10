@@ -72,7 +72,7 @@ def convert(
 def unpack(
     input_file: Path = typer.Argument(
         ..., exists=True, dir_okay=False, readable=True,
-        help="Path to the .apk or .xapk to unpack.",
+        help="Path to the .apk, .xapk, or .apks to unpack.",
     ),
     workspace: Path | None = typer.Option(
         None, "--workspace", help="Workspace directory (default: ./<stem>-workspace)."),
@@ -133,7 +133,7 @@ def rewrite(
 def analyze(
     input_file: Path = typer.Argument(
         ..., exists=True, dir_okay=False, readable=True,
-        help="Path to the .apk or .xapk to analyze.",
+        help="Path to the .apk, .xapk, or .apks to analyze.",
     ),
     workspace: Path | None = typer.Option(
         None, "--workspace", help="Workspace directory (default: ./<stem>-workspace)."),
@@ -185,7 +185,7 @@ def decompile(
 def scan_native(
     target: Path = typer.Argument(
         ..., exists=True, readable=True,
-        help="Workspace directory or an .apk/.xapk to scan.",
+        help="Workspace directory or an .apk/.xapk/.apks to scan.",
     ),
     tool: str | None = typer.Option(
         None, "--tool",
@@ -199,7 +199,7 @@ def scan_native(
 def scan_trackers(
     target: Path = typer.Argument(
         ..., exists=True, readable=True,
-        help="Workspace directory or an .apk/.xapk to scan.",
+        help="Workspace directory or an .apk/.xapk/.apks to scan.",
     ),
 ) -> None:
     """Scan for trackers/SDKs (analysis-only; no report persisted)."""
@@ -210,7 +210,7 @@ def scan_trackers(
 def scan_protections(
     target: Path = typer.Argument(
         ..., exists=True, readable=True,
-        help="Workspace directory or an .apk/.xapk to scan.",
+        help="Workspace directory or an .apk/.xapk/.apks to scan.",
     ),
 ) -> None:
     """Scan for protections/packers (analysis-only; no report persisted)."""
@@ -221,7 +221,7 @@ def scan_protections(
 def info(
     input_file: Path = typer.Argument(
         ..., exists=True, dir_okay=False, readable=True,
-        help="Path to the .apk or .xapk to inspect.",
+        help="Path to the .apk, .xapk, or .apks to inspect.",
     ),
 ) -> None:
     """Print fast triage facts (package, version, ABIs, signer) without deep analysis."""
@@ -269,8 +269,8 @@ def evidence(
 
 @app.command()
 def diff(
-    old: Path = typer.Argument(..., exists=True, readable=True, help="Old .apk/.xapk or workspace dir."),
-    new: Path = typer.Argument(..., exists=True, readable=True, help="New .apk/.xapk or workspace dir."),
+    old: Path = typer.Argument(..., exists=True, readable=True, help="Old .apk/.xapk/.apks or workspace dir."),
+    new: Path = typer.Argument(..., exists=True, readable=True, help="New .apk/.xapk/.apks or workspace dir."),
 ) -> None:
     """Show what changed between two apps (trackers, protections, engine, ...)."""
     run_command(lambda: diff_cmd.diff(old, new))
@@ -301,7 +301,7 @@ def xref(
 def load(
     directory: Path = typer.Argument(
         ..., exists=True, file_okay=False, readable=True,
-        help="Directory of .apk/.xapk files to summarize.",
+        help="Directory of .apk/.xapk/.apks files to summarize.",
     ),
 ) -> None:
     """Analyze a directory of APK/XAPK files into one combined summary."""

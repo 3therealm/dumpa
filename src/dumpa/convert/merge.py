@@ -68,37 +68,61 @@ def _existing_rel_files(target_dir: Path) -> set[Path]:
     return out
 
 
-def merge_apk_resources(dir_apk_main: Path, dir_apk_with_resources: Path) -> None:
-    """Merge a resource split's res/ tree into the main APK dir; preserve existing files."""
+def _is_size_conflict(src: Path, dst: Path) -> bool:
+    """True if a kept file and an incoming same-path file differ in size.
+
+    A cheap proxy for a real cross-split content conflict (vs. a benign byte-identical
+    duplicate). First-wins still applies; this only surfaces that something was dropped.
+    """
+    try:
+        return dst.is_file() and src.stat().st_size != dst.stat().st_size
+    except OSError:
+        return False
+
+
+def merge_apk_resources(dir_apk_main: Path, dir_apk_with_resources: Path) -> int:
+    """Merge a resource split's res/ tree into the main APK dir; preserve existing files.
+
+    Returns the count of dropped files whose size differed from the kept one (a likely
+    real conflict, not a byte-identical duplicate).
+    """
     target_res_dir = dir_apk_main / 'res'
     res_dir = dir_apk_with_resources / 'res'
     if not res_dir.exists():
-        return
+        return 0
     target_res_dir.mkdir(parents=True, exist_ok=True)
 
     existing = _existing_rel_files(target_res_dir)
+    conflicts = 0
     for src, rel in iter_resource_files(res_dir, ('values', 'public.xml')):
         if rel in existing:
+            if _is_size_conflict(src, target_res_dir / rel):
+                conflicts += 1
             continue
         copy_resource_file(src, target_res_dir / rel)
         existing.add(rel)
+    return conflicts
 
 
-def merge_apk_assets(dir_apk_main: Path, dir_apk_with_asset_pack: Path) -> None:
+def merge_apk_assets(dir_apk_main: Path, dir_apk_with_asset_pack: Path) -> int:
     """Merge any assets/ tree from a split into the main APK; preserve existing files.
 
     Handles both classic Play Asset Delivery layouts (assets/assetpack/...) and
     Unity-style asset packs (assets/<PackName>/...) by walking the entire assets/ tree.
+    Returns the count of dropped same-path files whose size differed from the kept one.
     """
     src_assets = dir_apk_with_asset_pack / 'assets'
     if not src_assets.exists():
-        return
+        return 0
     target_assets = dir_apk_main / 'assets'
     target_assets.mkdir(parents=True, exist_ok=True)
 
     existing = _existing_rel_files(target_assets)
+    conflicts = 0
     for src, rel in iter_resource_files(src_assets, None):
         if rel in existing:
+            if _is_size_conflict(src, target_assets / rel):
+                conflicts += 1
             continue
         copy_resource_file(src, target_assets / rel)
         existing.add(rel)
@@ -108,6 +132,7 @@ def merge_apk_assets(dir_apk_main: Path, dir_apk_with_asset_pack: Path) -> None:
         cfg_src = parse_apktool_config(cfg_path)
         insert_new_lines_do_not_compress(dir_apk_main / const_apk_file_apktool_config,
                                          cfg_src.lines_do_not_compress)
+    return conflicts
 
 
 def prioritize_dpi_apk_list_rev_sort(apks_dpi: Iterable[ApkPart]) -> list[ApkPart]:

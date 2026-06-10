@@ -57,12 +57,12 @@ def open_target(registry: ToolRegistry, target: Path) -> Iterator[Workspace]:
         ws = Workspace(root=target_abs)
         if ws.read_meta() is None:
             raise DumpaError(f"{target_abs} is not a dumpa workspace; "
-                             f"pass an .apk/.xapk or run analyze first")
+                             f"pass an .apk/.xapk/.apks or run analyze first")
         yield ws
         return
 
     in_type = input_type(target_abs)
-    if in_type == "xapk":
+    if in_type in ("xapk", "apks"):
         prepare_convert(registry, None)
     with open_workspace(None) as ws:
         build_workspace(registry, ws, target_abs, in_type, sha256_file(target_abs), None)

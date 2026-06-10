@@ -38,18 +38,25 @@ logger = logging.getLogger("dumpa")
 
 const_ext_apk = ".apk"
 const_ext_xapk = ".xapk"
+const_ext_apks = ".apks"
 const_file_report_json = "report.json"
 const_optional_native_r2 = "native_r2"
 
+# Input types whose canonical app.apk is produced by the merge/build pipeline
+# (vs. an .apk, which is copied in directly).
+const_build_input_types = ("xapk", "apks")
+
 
 def input_type(path: Path) -> str:
-    """Classify an input path as 'apk' or 'xapk' by suffix; raise otherwise."""
+    """Classify an input path as 'apk', 'xapk', or 'apks' by suffix; raise otherwise."""
     suffix = path.suffix.lower()
     if suffix == const_ext_xapk:
         return "xapk"
+    if suffix == const_ext_apks:
+        return "apks"
     if suffix == const_ext_apk:
         return "apk"
-    raise DumpaError(f"unsupported input {path.name}: expected a .apk or .xapk file")
+    raise DumpaError(f"unsupported input {path.name}: expected a .apk, .xapk, or .apks file")
 
 
 def _validation_timeout() -> int:
@@ -96,12 +103,12 @@ def open_for_diff(input_path: Path) -> Iterator[tuple[Workspace, Report]]:
     if input_abs.is_dir():
         ws = Workspace(root=input_abs)
         if ws.read_meta() is None:
-            raise DumpaError(f"{input_abs} is not a dumpa workspace; pass an .apk/.xapk or run analyze first")
+            raise DumpaError(f"{input_abs} is not a dumpa workspace; pass an .apk/.xapk/.apks or run analyze first")
         yield ws, build_report(registry, ws)
         return
 
     in_type = input_type(input_abs)
-    if in_type == "xapk":
+    if in_type in const_build_input_types:
         prepare_convert(registry, None)
     with open_workspace(None) as ws:
         build_workspace(registry, ws, input_abs, in_type, sha256_file(input_abs), None)
@@ -183,13 +190,13 @@ def analyze(input_file: Path, *, workspace: Path | None = None, force: bool = Fa
 
     input_abs = input_file.resolve()
     in_type = input_type(input_abs)
-    if in_type == "xapk":
+    if in_type in const_build_input_types:
         prepare_convert(registry, sign_config)
 
     requested_optional = (const_optional_native_r2,) if r2 else ()
     input_sha = sha256_file(input_abs)
     build_options = workspace_build_options(in_type, sign_config)
-    signed_expected = in_type == "xapk" and sign_config is not None
+    signed_expected = in_type in const_build_input_types and sign_config is not None
     ws_path = workspace.resolve() if workspace else Path.cwd() / f'{input_abs.stem}-workspace'
 
     with open_workspace(ws_path) as ws:

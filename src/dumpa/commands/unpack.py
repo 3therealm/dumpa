@@ -30,7 +30,7 @@ def unpack(input_file: Path, *, workspace: Path | None = None, force: bool = Fal
 
     input_abs = input_file.resolve()
     in_type = input_type(input_abs)
-    if in_type == "xapk":
+    if in_type in ("xapk", "apks"):
         prepare_convert(registry, None)  # unpack never signs
 
     input_sha = sha256_file(input_abs)
