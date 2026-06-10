@@ -7,10 +7,12 @@ recorded). Parsing reuses stdlib `tomllib` — the same stack as `core.config`.
 
 Matcher kinds: **path-glob** (`globs` over the extracted tree), **content**
 (`strings`/`regex`/`hex` searched inside `targets` files), **manifest** (`manifest`
-regexes over the parsed `ManifestInfo`), and **domains**. `hex` is a YARA-style byte
-signature (two-hex-digit bytes + `??` wildcards) lowered to a bytes-regex and run
-through the same streaming/prefilter engine as `regex`. The native-symbol-table
-matcher is still deferred (the ELF parser already inventories symbols separately).
+regexes over the parsed `ManifestInfo`), **domains**, and **symbols** (`symbols`
+regexes over the parsed ELF symbol table, scoped by `symbol_scope`). `hex` is a
+YARA-style byte signature (two-hex-digit bytes + `??` wildcards) lowered to a
+bytes-regex and run through the same streaming/prefilter engine as `regex`. Symbol
+rules are matched by the `native_symbols` scanner (which has the parsed symbols), not
+by `apply_bundle`.
 
 Bundle TOML shape::
 
@@ -54,6 +56,9 @@ _MATCH_MODES = (const_match_any, const_match_all)
 # Manifest matcher: which structured field a rule's patterns are tested against.
 const_manifest_field_any = "any"
 _MANIFEST_FIELDS = ("package", "permission", "component", "action", "category", const_manifest_field_any)
+# Symbol matcher: which parsed-ELF symbol set a rule's patterns are tested against.
+const_symbol_scope_any = "any"
+_SYMBOL_SCOPES = ("exports", "imports", const_symbol_scope_any)
 # Cap locations per rule so a glob over a huge asset tree can't bloat the report.
 const_max_locations_per_rule = 10
 # Files a content rule scans when it does not name its own targets: dex (class
@@ -148,8 +153,10 @@ class Rule:
     bytes_hex: tuple[str, ...] = ()
     manifest: tuple[str, ...] = ()
     domains: tuple[str, ...] = ()
+    symbols: tuple[str, ...] = ()               # regexes tested against parsed ELF symbol names
     domain_search: bool = False
     manifest_field: str = const_manifest_field_any
+    symbol_scope: str = const_symbol_scope_any  # any | exports | imports (symbols rule only)
     targets: tuple[str, ...] = ()
     match: str = const_match_any
     state: FindingState = FindingState.PRESENT
@@ -168,11 +175,15 @@ class Rule:
         return bool(self.manifest)
 
     @property
+    def is_symbol(self) -> bool:
+        return bool(self.symbols)
+
+    @property
     def keys(self) -> tuple[str, ...]:
         """The pattern keys (literal strings, regex sources, or domain literals) matched on."""
         if self.domain_search:
             return self.domains
-        return self.strings or self.regex or self.bytes_hex
+        return self.strings or self.regex or self.bytes_hex or self.symbols
 
 
 @dataclass(frozen=True)
@@ -297,13 +308,16 @@ def _parse_rule(raw: object, index: int) -> Rule:
     except ValueError as e:
         raise ConfigError(f"{ctx}: invalid confidence {conf_raw!r}") from e
 
-    present = [k for k in ("globs", "strings", "regex", "hex", "manifest", "domains") if k in table]
+    present = [k for k in ("globs", "strings", "regex", "hex", "manifest", "domains", "symbols")
+               if k in table]
     if len(present) != 1:
         raise ConfigError(
             f"{ctx}: a rule needs exactly one of "
-            f"'globs', 'strings', 'regex', 'hex', 'manifest', or 'domains'")
+            f"'globs', 'strings', 'regex', 'hex', 'manifest', 'domains', or 'symbols'")
     if "domain_search" in table and "domains" not in table:
         raise ConfigError(f"{ctx}: 'domain_search' is only valid on a 'domains' rule")
+    if "symbol_scope" in table and "symbols" not in table:
+        raise ConfigError(f"{ctx}: 'symbol_scope' is only valid on a 'symbols' rule")
 
     globs: tuple[str, ...] = ()
     strings: tuple[str, ...] = ()
@@ -311,8 +325,10 @@ def _parse_rule(raw: object, index: int) -> Rule:
     bytes_hex: tuple[str, ...] = ()
     manifest: tuple[str, ...] = ()
     domains: tuple[str, ...] = ()
+    symbols: tuple[str, ...] = ()
     domain_search = False
     manifest_field = const_manifest_field_any
+    symbol_scope = const_symbol_scope_any
     targets: tuple[str, ...] = ()
     compiled_regex: list[re.Pattern[bytes]] = []
     if "globs" in table:
@@ -345,6 +361,16 @@ def _parse_rule(raw: object, index: int) -> Rule:
         manifest_field = table.get("manifest_field", const_manifest_field_any)
         if manifest_field not in _MANIFEST_FIELDS:
             raise ConfigError(f"{ctx}: 'manifest_field' must be one of {_MANIFEST_FIELDS}")
+    elif "symbols" in table:
+        symbols = _parse_str_list(table.get("symbols"), "symbols", ctx)
+        for pattern in symbols:
+            try:
+                re.compile(pattern)
+            except re.error as e:
+                raise ConfigError(f"{ctx}: invalid symbol regex {pattern!r}: {e}") from e
+        symbol_scope = table.get("symbol_scope", const_symbol_scope_any)
+        if symbol_scope not in _SYMBOL_SCOPES:
+            raise ConfigError(f"{ctx}: 'symbol_scope' must be one of {_SYMBOL_SCOPES}")
     else:
         if "strings" in table:
             strings = _parse_str_list(table.get("strings"), "strings", ctx)
@@ -396,8 +422,8 @@ def _parse_rule(raw: object, index: int) -> Rule:
     return Rule(
         kind=kind, subject=subject, confidence=confidence,
         globs=globs, strings=strings, regex=regex, bytes_hex=bytes_hex, manifest=manifest,
-        domains=domains, domain_search=domain_search,
-        manifest_field=manifest_field, targets=targets, match=match,
+        domains=domains, symbols=symbols, domain_search=domain_search,
+        manifest_field=manifest_field, symbol_scope=symbol_scope, targets=targets, match=match,
         state=state, attributes=_parse_attributes(table, ctx),
         case_insensitive=ci, game_types=game_types, replace=replace,
     )
@@ -919,6 +945,73 @@ def _apply_manifest_rules(rules: list[Rule], bundle: RuleBundle,
     return findings
 
 
+@dataclass(frozen=True)
+class NativeSymbols:
+    """Parsed symbol table for one lib, as fed to `match_symbol_rules`.
+
+    `exports` carries each defined symbol's name + RVA (st_value); `imports` are
+    undefined-symbol names (no address). Decoded from a `dumps/native/*.json` sidecar
+    or straight from `core.elf.parse_elf`.
+    """
+    rel_path: str
+    abi: str
+    exports: tuple[tuple[str, int], ...]
+    imports: tuple[str, ...]
+
+
+def _scoped_symbols(lib: NativeSymbols, scope: str) -> list[tuple[str, int | None]]:
+    """The (name, rva|None) pairs a symbol rule tests against, per its scope."""
+    exports: list[tuple[str, int | None]] = [(n, r) for n, r in lib.exports]
+    imports: list[tuple[str, int | None]] = [(n, None) for n in lib.imports]
+    if scope == "exports":
+        return exports
+    if scope == "imports":
+        return imports
+    return exports + imports
+
+
+def match_symbol_rules(rules: list[Rule], bundle: RuleBundle,
+                       libs: Iterable[NativeSymbols]) -> list[Finding]:
+    """Match symbol rules against parsed ELF symbol names; assemble findings.
+
+    Each rule's `symbols` regexes are tested against the scoped symbol-name set of every
+    lib. A regex that matches yields one Location per lib (capped), carrying the matched
+    export's RVA when scope includes exports. `match="all"` requires every regex to hit
+    within a single lib; the default `any` fires on the first lib with any hit.
+    """
+    lib_list = list(libs)
+    findings: list[Finding] = []
+    for rule in rules:
+        compiled = [re.compile(p) for p in rule.symbols]
+        evidence: list[Evidence] = []
+        locations: list[Location] = []
+        for lib in lib_list:
+            scoped = _scoped_symbols(lib, rule.symbol_scope)
+            matched: list[tuple[str, str, int | None]] = []     # (pattern_src, symbol, rva)
+            for pat_src, pat in zip(rule.symbols, compiled):
+                hit = next(((name, rva) for name, rva in scoped if pat.search(name)), None)
+                if hit is not None:
+                    matched.append((pat_src, hit[0], hit[1]))
+            fired = (len(matched) == len(rule.symbols)) if rule.match == const_match_all else bool(matched)
+            if not fired:
+                continue
+            for pat_src, symbol, rva in matched:
+                evidence.append(Evidence(
+                    description=f"symbol /{pat_src}/ matched {symbol!r} ({rule.symbol_scope}) in {lib.rel_path}",
+                    snippet=symbol, tool="native-symbol", rule_version=bundle.version,
+                ))
+                if len(locations) < const_max_locations_per_rule:
+                    locations.append(Location(file_path=lib.rel_path, rva=rva))
+        if not evidence:
+            continue
+        findings.append(Finding(
+            kind=rule.kind, subject=rule.subject, confidence=rule.confidence,
+            state=rule.state, attributes=dict(rule.attributes),
+            evidence=evidence, locations=locations,
+        ))
+    return findings
+
+
 def apply_bundle(bundle: RuleBundle, extracted_dir: Path,
                  manifest: ManifestInfo | None = None) -> list[Finding]:
     """Run every rule in a bundle against an extracted apk tree; return the Findings.
@@ -931,6 +1024,8 @@ def apply_bundle(bundle: RuleBundle, extracted_dir: Path,
     content_rules: list[Rule] = []
     manifest_rules: list[Rule] = []
     for rule in bundle.rules:
+        if rule.is_symbol:
+            continue        # symbol rules need parsed ELF symbols -> the native_symbols scanner
         if rule.is_manifest:
             manifest_rules.append(rule)
             continue

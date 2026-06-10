@@ -100,6 +100,7 @@ def test_density_score() -> None:
     assert d["companies"] == 2
     assert d["ad_sdks"] == 1
     assert d["per_mb"] == 1.0
+    assert d["per_engine_ad_sdks"] == {"unknown": 1}
 
 
 def test_location_omits_none() -> None:
@@ -122,7 +123,13 @@ def test_evidence_omits_none() -> None:
 
 
 def test_schema_version_default() -> None:
-    assert _sample().to_dict()["schema_version"] == 1
+    assert _sample().to_dict()["schema_version"] == 2
+
+
+def test_to_dict_persists_density() -> None:
+    d = _sample().to_dict()["density"]
+    assert "per_engine_ad_sdks" in d
+    assert "per_mb" in d
 
 
 def test_markdown_renders_key_fields() -> None:

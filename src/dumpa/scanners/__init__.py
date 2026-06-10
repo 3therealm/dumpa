@@ -36,6 +36,7 @@ from dumpa.scanners import (
     mediation,
     native,
     native_r2,
+    native_symbols,
     privacy,
     protection,
     resources,
@@ -71,6 +72,8 @@ SCANNERS: tuple[ScannerSpec, ...] = (
     ScannerSpec("protection", protection.scan, ("protections", "protections_apkid")),
     ScannerSpec("secret", secret.scan, ("secrets",)),
     ScannerSpec("native", native.scan),
+    # native_symbols runs after native so the dumps/native/ sidecars it consumes exist.
+    ScannerSpec("native_symbols", native_symbols.scan, ("native_symbols",)),
     ScannerSpec("dex", dex.scan),
     ScannerSpec("resources", resources.scan),
     ScannerSpec("endpoint", endpoint.scan),
