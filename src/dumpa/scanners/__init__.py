@@ -40,6 +40,7 @@ from dumpa.scanners import (
     native_symbols,
     privacy,
     protection,
+    protobuf,
     resources,
     secret,
     tracker,
@@ -79,6 +80,9 @@ SCANNERS: tuple[ScannerSpec, ...] = (
     ScannerSpec("dex", dex.scan),
     ScannerSpec("resources", resources.scan),
     ScannerSpec("endpoint", endpoint.scan),
+    # protobuf decodes .pb-like blobs (code-only, keyed on the dumpa version) and reuses the
+    # secrets bundle, so its cache key folds in that bundle's version.
+    ScannerSpec("protobuf", protobuf.scan, ("secrets",)),
     # gametype resolves a networked, TTL-bound Play genre -> never cached (the
     # dumps/gametype.json sidecar already memoizes the fetch within a workspace).
     ScannerSpec("gametype", gametype.scan, cacheable=False),

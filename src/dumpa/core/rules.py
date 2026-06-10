@@ -894,6 +894,42 @@ def _apply_content_rules(rules: list[Rule], bundle: RuleBundle,
     return findings
 
 
+def match_content_strings(rules: list[Rule], bundle: RuleBundle,
+                          strings: list[tuple[int, str]], rel: str) -> list[Finding]:
+    """Apply content rules to already-extracted (offset, text) strings, not a file stream.
+
+    A scanner that decodes a binary itself (e.g. the protobuf wire walker) has candidate
+    strings in hand; this runs the same `regex`/`strings` content rules over them so it reuses
+    the bundle and the shared `_content_finding` assembly instead of re-streaming a file. Each
+    rule's keys are searched against every string; the first hit per key records
+    `(rel, offset, matched-text)`. `match="all"` requires every key to hit. Domain-search and
+    hex/byte rules are out of scope here (they belong to the file-streaming path).
+    """
+    findings: list[Finding] = []
+    for rule in rules:
+        if rule.domain_search or rule.bytes_hex or not (rule.regex or rule.strings):
+            continue
+        compiled = ([(k, re.compile(k, re.IGNORECASE if rule.case_insensitive else 0))
+                     for k in rule.regex] if rule.regex else [])
+        hits: dict[str, _Hit] = {}
+        for offset, text in strings:
+            if rule.regex:
+                for key, pat in compiled:
+                    if key in hits:
+                        continue
+                    m = pat.search(text)
+                    if m is not None:
+                        hits[key] = (rel, offset, m.group()[:const_max_match_text])
+            else:
+                for key in rule.strings:
+                    if key not in hits and key in text:
+                        hits[key] = (rel, offset, key)
+        fired = (len(hits) == len(rule.keys)) if rule.match == const_match_all else bool(hits)
+        if fired:
+            findings.append(_content_finding(rule, bundle, hits))
+    return findings
+
+
 def _manifest_candidates(manifest: ManifestInfo, field_name: str) -> list[str]:
     """Strings a manifest rule's patterns are tested against, for the selected field."""
     package = [manifest.package] if manifest.package else []
