@@ -2,9 +2,10 @@
 
 The value-add the zero-dep ELF parser (`scanners/native.py`) cannot give: per-section
 Shannon entropy (to flag packed/encrypted regions), a radare2 function inventory, and
-disasm-level suspicious-region signals. Runs against the **primary ABI only** (multi-ABI
-apks ship the same code per arch) and is fail-soft: radare2 absent, oversized
-libraries, or analysis timeouts produce a warning and no findings, never an error.
+disasm-level suspicious-region signals. Runs against the **primary ABI only** by default
+(multi-ABI apks ship the same code per arch); opt into every ABI with `--all-abis`
+(`DUMPA_NATIVE_R2_ALL_ABIS` / `[analysis] native_r2_all_abis`). Fail-soft: radare2 absent,
+oversized libraries, or analysis timeouts produce a warning and no findings, never an error.
 
 Opt-in: registered in `OPTIONAL_SPECS`, not the always-run pipeline (radare2 is optional
 and analysis is slow). Reached via `dumpa scan-native --tool radare2` or `analyze --r2`.
@@ -138,7 +139,8 @@ def _summary_finding(abi: str, rel: str, lib: str, analysis: R2Analysis,
 
 
 def scan(ws: Workspace) -> list[Finding]:
-    """radare2 entropy/region + function inventory over the primary ABI's libraries."""
+    """radare2 entropy/region + function inventory over the primary ABI (or every ABI
+    when native_r2_all_abis is set)."""
     ex = ws.extracted_dir
     if not ex.is_dir():
         return []
@@ -146,7 +148,8 @@ def scan(ws: Workspace) -> list[Finding]:
     if not libs:
         return []
 
-    registry = build_default_registry(load_config().tool_paths)
+    cfg = load_config()
+    registry = build_default_registry(cfg.tool_paths)
     try:
         tool = registry.resolve(const_radare2_tool)
     except ToolNotFoundError:
@@ -154,6 +157,7 @@ def scan(ws: Workspace) -> list[Finding]:
                        "(install radare2 to enable --tool radare2)")
         return []
 
+    all_abis = cfg.analysis.native_r2_all_abis
     abis = sorted({so.parent.name for so in libs})
     primary = select_primary_abi(abis)
     if primary is None:
@@ -162,7 +166,7 @@ def scan(ws: Workspace) -> list[Finding]:
     findings: list[Finding] = []
     for so in libs:
         abi = so.parent.name
-        if abi != primary:
+        if not all_abis and abi != primary:
             continue
         rel = so.relative_to(ex).as_posix()
         analysis = r2.analyze(so, argv_prefix=tool.argv_prefix, version=tool.version)

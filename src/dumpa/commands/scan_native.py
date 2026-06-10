@@ -14,12 +14,13 @@ owns the report). Reuses the convert pipeline for extraction.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 import typer
 
 from dumpa.commands.base import open_target
-from dumpa.core.config import load_config
+from dumpa.core.config import const_env_native_r2_all_abis, load_config
 from dumpa.core.errors import DumpaError
 from dumpa.core.report import Finding
 from dumpa.core.tools import build_default_registry
@@ -57,10 +58,12 @@ def _print(findings: list[Finding]) -> None:
         typer.echo(f"{subject.ljust(subj_w)}  {kind.ljust(kind_w)}  {detail}")
 
 
-def scan_native(target: Path, *, tool: str | None = None) -> None:
+def scan_native(target: Path, *, tool: str | None = None, all_abis: bool = False) -> None:
     """Scan a workspace/apk's native libraries; `--tool radare2` adds region analysis."""
     if tool is not None and tool != const_tool_radare2:
         raise DumpaError(f"unsupported --tool {tool!r}: only 'radare2' is supported")
+    if all_abis:
+        os.environ[const_env_native_r2_all_abis] = "1"  # native_r2 reads this from config/env
 
     config = load_config()
     registry = build_default_registry(config.tool_paths)

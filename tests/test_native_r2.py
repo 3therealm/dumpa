@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from dumpa.core.config import AnalysisConfig
 from dumpa.core.errors import ToolNotFoundError
 from dumpa.core.r2 import R2Analysis, R2Function, R2Section
 from dumpa.core.workspace import Workspace
@@ -46,9 +47,11 @@ def _section(name: str, entropy: float | None, perm: str = "-r-x") -> R2Section:
                      perm=perm, entropy=entropy)
 
 
-def _patch(monkeypatch, registry, analysis_for) -> None:
+def _patch(monkeypatch, registry, analysis_for, *, all_abis: bool = False) -> None:
+    cfg = type("C", (), {"tool_paths": {},
+                         "analysis": AnalysisConfig(native_r2_all_abis=all_abis)})()
     monkeypatch.setattr(native_r2, "build_default_registry", lambda _paths: registry)
-    monkeypatch.setattr(native_r2, "load_config", lambda: type("C", (), {"tool_paths": {}})())
+    monkeypatch.setattr(native_r2, "load_config", lambda: cfg)
     monkeypatch.setattr(native_r2.r2, "analyze", analysis_for)
 
 
@@ -195,6 +198,21 @@ def test_only_primary_abi_analyzed(tmp_path: Path, monkeypatch) -> None:
     _patch(monkeypatch, _Registry(), fake)
     native_r2.scan(ws)
     assert seen == ["arm64-v8a"]            # x86 skipped (preference picks arm64)
+
+
+def test_all_abis_analyzes_every_abi(tmp_path: Path, monkeypatch) -> None:
+    ws = _ws(tmp_path)
+    _lib(ws, "x86")
+    _lib(ws, "arm64-v8a")
+    seen: list[str] = []
+
+    def fake(path: Path, argv_prefix=("radare2",), version=None) -> R2Analysis:
+        seen.append(path.parent.name)
+        return _one(sections=[_section(".text", 7.91)])
+
+    _patch(monkeypatch, _Registry(), fake, all_abis=True)
+    native_r2.scan(ws)
+    assert sorted(seen) == ["arm64-v8a", "x86"]   # every ABI analyzed with --all-abis
 
 
 def test_no_libs_returns_empty(tmp_path: Path, monkeypatch) -> None:

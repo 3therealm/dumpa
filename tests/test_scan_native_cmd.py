@@ -8,6 +8,7 @@ import pytest
 from _elf_build import build_elf
 
 from dumpa.commands import scan_native as cmd
+from dumpa.core.config import AnalysisConfig
 from dumpa.core.errors import DumpaError, ToolNotFoundError
 from dumpa.core.r2 import R2Analysis, R2Function, R2Section
 from dumpa.core.workspace import Workspace, make_meta
@@ -43,7 +44,7 @@ class _Reg:
 def _patch_r2(monkeypatch, *, absent: bool = False) -> None:
     monkeypatch.setattr(cmd.native_r2, "build_default_registry", lambda _p: _Reg(absent=absent))
     monkeypatch.setattr(cmd.native_r2, "load_config",
-                        lambda: type("C", (), {"tool_paths": {}})())
+                        lambda: type("C", (), {"tool_paths": {}, "analysis": AnalysisConfig()})())
     monkeypatch.setattr(cmd.native_r2.r2, "analyze", lambda _p, argv_prefix=("radare2",), version=None: R2Analysis(
         version="radare2 5.9.0", functions=[R2Function("f", 0x10, 8, 1)],
         sections=[R2Section(".text", 0x1000, 0x400, 2048, "-r-x", 7.95)]))

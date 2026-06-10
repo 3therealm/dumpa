@@ -151,13 +151,15 @@ def analyze(
         False, "--xref", help="Also build the cross-reference index into <workspace>/dumps/xref.json."),
     r2: bool = typer.Option(
         False, "--r2", help="Also run the radare2 native region scan (entropy + functions; opt-in, slow)."),
+    all_abis: bool = typer.Option(
+        False, "--all-abis", help="With --r2, scan every ABI's native libs (default: primary ABI only)."),
     signing: str | None = typer.Option(None, "--signing", help=_SIGNING_HELP),
 ) -> None:
     """Extract an APK/XAPK once into a reproducible workspace."""
     run_command(lambda: analyze_cmd.analyze(
         input_file, workspace=workspace, force=force, signing=signing,
         use_cache=not no_cache, no_dump=no_dump, no_network=no_network, jadx=jadx,
-        xref=xref, r2=r2))
+        xref=xref, r2=r2, all_abis=all_abis))
 
 
 @app.command()
@@ -190,9 +192,12 @@ def scan_native(
     tool: str | None = typer.Option(
         None, "--tool",
         help="Deep native analyzer: 'radare2' adds entropy regions + function inventory."),
+    all_abis: bool = typer.Option(
+        False, "--all-abis",
+        help="With --tool radare2, scan every ABI (default: primary ABI only)."),
 ) -> None:
     """Scan native libraries (ELF metadata; --tool radare2 adds region analysis)."""
-    run_command(lambda: scan_native_cmd.scan_native(target, tool=tool))
+    run_command(lambda: scan_native_cmd.scan_native(target, tool=tool, all_abis=all_abis))
 
 
 @app.command(name="scan-trackers")

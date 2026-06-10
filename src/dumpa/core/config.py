@@ -37,6 +37,8 @@ const_env_play_timeout = 'DUMPA_PLAY_TIMEOUT_SECONDS'
 const_env_play_cache_ttl_days = 'DUMPA_PLAY_CACHE_TTL_DAYS'
 # ASN/country host enrichment: separate opt-in (per-host, rate-limited), default off.
 const_env_asn_lookup = 'DUMPA_ASN_LOOKUP'
+# radare2 native region scan: opt-in to cover every ABI instead of only the primary one.
+const_env_native_r2_all_abis = 'DUMPA_NATIVE_R2_ALL_ABIS'
 # Caller-provided Cocos2d-x decryption key (tried before heuristic recovery from the lib).
 const_env_cocos_key = 'DUMPA_COCOS_KEY'
 # Caller-provided Unreal pak/IoStore AES key. Recorded for provenance; decryption itself
@@ -85,6 +87,9 @@ class AnalysisConfig:
     # Per-host ASN/country enrichment is a separate, default-off opt-in (rate-limited,
     # networked); it reuses play_timeout/play_cache logic only loosely, so it gets its flag.
     asn_lookup: bool = False
+    # radare2 region scan over every ABI (vs primary only). Opt-in: r2 is slow and
+    # multi-ABI apks usually ship the same code per arch. Default off.
+    native_r2_all_abis: bool = False
 
 
 @dataclass(frozen=True)
@@ -228,6 +233,8 @@ def _load_analysis(sec: dict[str, Any]) -> AnalysisConfig:
         play_timeout=timeout if timeout is not None else const_default_validation_timeout,
         play_cache_ttl_days=ttl if ttl is not None else const_default_play_cache_ttl_days,
         asn_lookup=_bool_setting(const_env_asn_lookup, sec, 'asn_lookup', False, 'asn_lookup'),
+        native_r2_all_abis=_bool_setting(
+            const_env_native_r2_all_abis, sec, 'native_r2_all_abis', False, 'native_r2_all_abis'),
     )
 
 

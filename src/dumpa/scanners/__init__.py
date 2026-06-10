@@ -12,6 +12,7 @@ import dataclasses
 from collections.abc import Callable
 from pathlib import PurePosixPath
 
+from dumpa import __version__
 from dumpa.core import cache
 from dumpa.core.arsc import ArscTable, parse_arsc_file
 from dumpa.core.config import load_config
@@ -538,6 +539,23 @@ def _apply_enrichments(findings: list[Finding], ws: Workspace) -> list[Finding]:
     findings = enrich_resource_names(findings, ws)
     findings = enrich_domain_attribution(findings, ws)
     return enrich_endpoint_purpose(findings, ws)
+
+
+def stamp_provenance(findings: list[Finding]) -> list[Finding]:
+    """Backfill a provenance version onto every Evidence that lacks one.
+
+    Rule-driven findings already record their bundle version in Evidence.rule_version;
+    code-generated scanners and enrichment passes do not. Stamp the dumpa core version on
+    those so every Evidence carries a reproducible "version of the producing logic", without
+    touching the ~30 individual call sites. Evidence/Finding are frozen, so rebuild via
+    dataclasses.replace; an evidence list with no gaps is returned unchanged.
+    """
+    out: list[Finding] = []
+    for f in findings:
+        ev = [e if e.rule_version else dataclasses.replace(e, rule_version=__version__)
+              for e in f.evidence]
+        out.append(f if ev == f.evidence else dataclasses.replace(f, evidence=ev))
+    return out
 
 
 def run_all(ws: Workspace, *, use_cache: bool = True, extra: tuple[str, ...] = (),

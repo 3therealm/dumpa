@@ -20,6 +20,7 @@ from dumpa.convert.validate import report_output_apk
 from dumpa.core.config import (
     Config,
     const_default_validation_timeout,
+    const_env_native_r2_all_abis,
     const_env_play_lookup,
     const_env_validation_timeout,
     load_config,
@@ -179,10 +180,12 @@ def _merge_optional_scanners(ws: Workspace, requested: tuple[str, ...]) -> None:
 def analyze(input_file: Path, *, workspace: Path | None = None, force: bool = False,
             signing: str | None = None, use_cache: bool = True,
             no_dump: bool = False, no_network: bool = False, jadx: bool = False,
-            xref: bool = False, r2: bool = False) -> None:
+            xref: bool = False, r2: bool = False, all_abis: bool = False) -> None:
     """Extract input_file into a reproducible workspace, reusing it when unchanged."""
     if no_network:
         os.environ[const_env_play_lookup] = "0"  # scanners read play_lookup from config/env
+    if all_abis:
+        os.environ[const_env_native_r2_all_abis] = "1"  # native_r2 reads this from config/env
     config = load_config()
     registry = build_default_registry(config.tool_paths)
     sign_config = resolve_signing(signing, config, registry)
