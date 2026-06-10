@@ -15,6 +15,9 @@ Plus **`dumpa doctor`** to check that the external tools it shells out to are in
 
 - **Python ≥ 3.14**.
 - One third-party Python dependency: [`typer`](https://typer.tiangolo.com/) (installed automatically).
+- Optional extra: `pip install dumpa[unity]` adds [`UnityPy`](https://github.com/K0lb3/UnityPy)
+  for parsing Unity serialized assets (`.assets` / AssetBundles) — without it, Unity asset
+  parsing is skipped (everything else still works).
 - External command-line tools on your `$PATH` (see below). Run `dumpa doctor` to check them.
 
 ### External tools

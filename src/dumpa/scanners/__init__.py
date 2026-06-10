@@ -85,12 +85,13 @@ SCANNERS: tuple[ScannerSpec, ...] = (
     ScannerSpec("dumpcs", dumpcs.scan, dumpcs.const_dumpcs_bundles, cacheable=False),
 )
 # Unity deep helpers run only when the engine scanner flagged Unity. unity_rules consumes
-# the `unity` bundle (cache-keyed on its version); unity.scan and unity_assets.scan are
-# code-only (keyed on the dumpa version).
+# the `unity` bundle (cache-keyed on its version); unity.scan is code-only (keyed on the
+# dumpa version). unity_assets writes TextAsset dump artifacts to dumps/unity/, so it is
+# uncached for the same reason as cocos/godot (partial output must not poison a workspace).
 UNITY_SPECS: tuple[ScannerSpec, ...] = (
     ScannerSpec("unity", unity.scan),
     ScannerSpec("unity_rules", unity_rules.scan, ("unity",)),
-    ScannerSpec("unity_assets", unity_assets.scan),
+    ScannerSpec("unity_assets", unity_assets.scan, cacheable=False),
 )
 # Cocos2d-x deep helper runs only when the engine scanner flagged Cocos2d-x. It writes
 # decrypted bundle artifacts, so keep it uncached until those sidecars are part of the key.
