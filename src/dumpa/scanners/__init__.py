@@ -45,6 +45,7 @@ from dumpa.scanners import (
     unity,
     unity_assets,
     unity_rules,
+    unreal,
 )
 
 Scanner = Callable[[Workspace], list[Finding]]
@@ -102,6 +103,11 @@ COCOS_SPECS: tuple[ScannerSpec, ...] = (
 # resources, so keep it uncached until those sidecars are part of the key.
 GODOT_SPECS: tuple[ScannerSpec, ...] = (
     ScannerSpec("godot", godot.scan, cacheable=False),
+)
+# Unreal deep helper runs only when the engine scanner flagged Unreal Engine. It extracts
+# pak resources, so keep it uncached until those sidecars are part of the key.
+UNREAL_SPECS: tuple[ScannerSpec, ...] = (
+    ScannerSpec("unreal", unreal.scan, cacheable=False),
 )
 # Opt-in scanners: not in the always-run pipeline. native_r2 invokes radare2 (slow,
 # optional), so it runs only when requested via `analyze --r2` / `scan-native --tool
@@ -549,6 +555,9 @@ def run_all(ws: Workspace, *, use_cache: bool = True, extra: tuple[str, ...] = (
             findings.extend(_run_spec(ws, spec, meta, registry))
     if any(f.kind == "engine" and f.subject == "Godot" for f in findings):
         for spec in GODOT_SPECS:
+            findings.extend(_run_spec(ws, spec, meta, registry))
+    if any(f.kind == "engine" and f.subject == "Unreal Engine" for f in findings):
+        for spec in UNREAL_SPECS:
             findings.extend(_run_spec(ws, spec, meta, registry))
     for name in extra:
         optional_spec = OPTIONAL_SPECS.get(name)
