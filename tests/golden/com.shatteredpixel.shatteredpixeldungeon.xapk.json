@@ -289,6 +289,11 @@
     ],
     "secret": [
       [
+        "Firebase / Google mobile app ID",
+        "medium",
+        "present"
+      ],
+      [
         "Firebase Realtime Database URL",
         "medium",
         "present"

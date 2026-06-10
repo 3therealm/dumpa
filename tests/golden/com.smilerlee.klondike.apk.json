@@ -529,12 +529,27 @@
     ],
     "secret": [
       [
+        "AdMob ad-unit ID",
+        "high",
+        "present"
+      ],
+      [
+        "Firebase / Google mobile app ID",
+        "medium",
+        "present"
+      ],
+      [
         "Google API key",
         "high",
         "present"
       ],
       [
         "Google OAuth client ID",
+        "medium",
+        "present"
+      ],
+      [
+        "Google Universal Analytics ID",
         "medium",
         "present"
       ]

@@ -123,3 +123,42 @@ def test_secret_scanner_clean(tmp_path: Path) -> None:
     ws = _ws(tmp_path)
     (ws.extracted_dir / "classes.dex").write_bytes(b"no secrets present")
     assert secret_scanner.scan(ws) == []
+
+
+@pytest.mark.parametrize(
+    ("value", "subject", "category"),
+    [
+        (b"UA-123456-1", "Google Universal Analytics ID", "analytics-id"),
+        (b"G-ABC1234567", "Google Analytics 4 measurement ID", "analytics-id"),
+        (b"GTM-ABCD12", "Google Tag Manager ID", "analytics-id"),
+        (b"1:1234567890:android:abcdef0123456789",
+         "Firebase / Google mobile app ID", "analytics-id"),
+        (b"ca-app-pub-3940256099942544~3347511713",
+         "AdMob application ID", "ad-network-id"),
+        (b"ca-app-pub-3940256099942544/1033173712",
+         "AdMob ad-unit ID", "ad-network-id"),
+    ],
+)
+def test_secret_scanner_finds_id(
+    tmp_path: Path, value: bytes, subject: str, category: str
+) -> None:
+    ws = _ws(tmp_path)
+    (ws.extracted_dir / "classes.dex").write_bytes(b'id "' + value + b'" end')
+    findings = secret_scanner.scan(ws)
+    f = next(f for f in findings if f.subject == subject)
+    assert f.attributes["category"] == category
+    assert f.evidence[0].snippet == value.decode()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [b"ca-app-pub-123/4", b"UA--", b"GTM-AB", b"1:12:ios:abcdef01"],
+)
+def test_secret_scanner_id_no_false_positive(tmp_path: Path, value: bytes) -> None:
+    ws = _ws(tmp_path)
+    (ws.extracted_dir / "classes.dex").write_bytes(b"x " + value + b" x")
+    subjects = {f.subject for f in secret_scanner.scan(ws)}
+    assert subjects.isdisjoint({
+        "Google Universal Analytics ID", "Google Tag Manager ID",
+        "Firebase / Google mobile app ID", "AdMob application ID", "AdMob ad-unit ID",
+    })
