@@ -64,12 +64,13 @@ def _package_of(registry: ToolRegistry, apk: Path) -> str | None:
 
 
 def _report_workspace(registry: ToolRegistry, ws: Workspace, *,
-                      signed_expected: bool, input_size: int, use_cache: bool = True) -> None:
+                      signed_expected: bool, input_size: int, use_cache: bool = True,
+                      extra: tuple[str, ...] = ()) -> None:
     """Log a one-line apk sanity report, write the JSON report, and point at the layout."""
     package = _package_of(registry, ws.app_apk) or '?'
     report_output_apk(registry, ws.app_apk, package, signed_expected, input_size)
     report_path = ws.reports_dir / const_file_report_json
-    write_json(build_report(registry, ws, use_cache=use_cache), report_path)
+    write_json(build_report(registry, ws, use_cache=use_cache, extra=extra), report_path)
     logger.info("workspace: %s", ws.root)
     logger.info("  extracted: %s", ws.extracted_dir)
     logger.info("  dumps:     %s", ws.dumps_dir)
@@ -156,7 +157,7 @@ def _maybe_xref(ws: Workspace, *, enabled: bool) -> None:
 def analyze(input_file: Path, *, workspace: Path | None = None, force: bool = False,
             signing: str | None = None, use_cache: bool = True,
             no_dump: bool = False, no_network: bool = False, jadx: bool = False,
-            xref: bool = False) -> None:
+            xref: bool = False, r2: bool = False) -> None:
     """Extract input_file into a reproducible workspace, reusing it when unchanged."""
     if no_network:
         os.environ[const_env_play_lookup] = "0"  # scanners read play_lookup from config/env
@@ -170,6 +171,7 @@ def analyze(input_file: Path, *, workspace: Path | None = None, force: bool = Fa
     if in_type == "xapk":
         prepare_convert(registry, sign_config)
 
+    extra = ("native_r2",) if r2 else ()
     input_sha = sha256_file(input_abs)
     build_options = workspace_build_options(in_type, sign_config)
     signed_expected = in_type == "xapk" and sign_config is not None
@@ -182,13 +184,14 @@ def analyze(input_file: Path, *, workspace: Path | None = None, force: bool = Fa
             size = meta.input_size if meta else input_abs.stat().st_size
             _maybe_autodump(registry, ws, config, enabled=autodump_enabled)
             _report_workspace(registry, ws, signed_expected=signed_expected, input_size=size,
-                              use_cache=use_cache)
+                              use_cache=use_cache, extra=extra)
         else:
             build_workspace(registry, ws, input_abs, in_type, input_sha, sign_config, build_options)
             logger.info("workspace ready")
             _maybe_autodump(registry, ws, config, enabled=autodump_enabled)
             _report_workspace(registry, ws, signed_expected=signed_expected,
-                              input_size=input_abs.stat().st_size, use_cache=use_cache)
+                              input_size=input_abs.stat().st_size, use_cache=use_cache,
+                              extra=extra)
         _maybe_xref(ws, enabled=xref)
         decompile_ws = ws.root
 

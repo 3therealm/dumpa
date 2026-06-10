@@ -61,6 +61,23 @@ def test_key_changes_with_bundle_version() -> None:
         cache.compute_scanner_key(_SHA, {"trackers": "2.0"})
 
 
+def test_tool_versions_none_matches_omitted() -> None:
+    assert cache.compute_scanner_key(_SHA, {"a": "1"}, None) == \
+        cache.compute_scanner_key(_SHA, {"a": "1"})
+    assert cache.compute_scanner_key(_SHA, {"a": "1"}, {}) == \
+        cache.compute_scanner_key(_SHA, {"a": "1"})
+
+
+def test_key_changes_with_tool_version() -> None:
+    assert cache.compute_scanner_key(_SHA, {}, {"radare2": "5.9.0"}) != \
+        cache.compute_scanner_key(_SHA, {}, {"radare2": "6.0.0"})
+
+
+def test_key_independent_of_tool_dict_order() -> None:
+    assert cache.compute_scanner_key(_SHA, {}, {"x": "1", "y": "2"}) == \
+        cache.compute_scanner_key(_SHA, {}, {"y": "2", "x": "1"})
+
+
 # --- read / write round-trip -------------------------------------------------
 
 def test_round_trip_preserves_findings(tmp_path: Path) -> None:

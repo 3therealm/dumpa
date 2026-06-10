@@ -24,6 +24,7 @@ from dumpa.commands import load as load_cmd
 from dumpa.commands import repack as repack_cmd
 from dumpa.commands import rewrite as rewrite_cmd
 from dumpa.commands import rules as rules_cmd
+from dumpa.commands import scan_native as scan_native_cmd
 from dumpa.commands import unpack as unpack_cmd
 from dumpa.commands import update_signatures as update_signatures_cmd
 from dumpa.commands import xref as xref_cmd
@@ -147,12 +148,15 @@ def analyze(
         False, "--jadx", help="Also run a full JADX decompile into <workspace>/decompiled (heavy; opt-in)."),
     xref: bool = typer.Option(
         False, "--xref", help="Also build the cross-reference index into <workspace>/dumps/xref.json."),
+    r2: bool = typer.Option(
+        False, "--r2", help="Also run the radare2 native region scan (entropy + functions; opt-in, slow)."),
     signing: str | None = typer.Option(None, "--signing", help=_SIGNING_HELP),
 ) -> None:
     """Extract an APK/XAPK once into a reproducible workspace."""
     run_command(lambda: analyze_cmd.analyze(
         input_file, workspace=workspace, force=force, signing=signing,
-        use_cache=not no_cache, no_dump=no_dump, no_network=no_network, jadx=jadx, xref=xref))
+        use_cache=not no_cache, no_dump=no_dump, no_network=no_network, jadx=jadx,
+        xref=xref, r2=r2))
 
 
 @app.command()
@@ -174,6 +178,20 @@ def decompile(
     run_command(lambda: decompile_cmd.decompile(
         apk_file, target_class=target_class, all_classes=all_classes,
         out_dir=out, workspace=workspace))
+
+
+@app.command(name="scan-native")
+def scan_native(
+    target: Path = typer.Argument(
+        ..., exists=True, readable=True,
+        help="Workspace directory or an .apk/.xapk to scan.",
+    ),
+    tool: str | None = typer.Option(
+        None, "--tool",
+        help="Deep native analyzer: 'radare2' adds entropy regions + function inventory."),
+) -> None:
+    """Scan native libraries (ELF metadata; --tool radare2 adds region analysis)."""
+    run_command(lambda: scan_native_cmd.scan_native(target, tool=tool))
 
 
 @app.command()

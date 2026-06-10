@@ -8,7 +8,8 @@ offset-located findings are backfilled separately in `scanners.enrich_native_rva
 
 It also emits a per-library grouped printable-string dump (a `native-strings` finding +
 a sidecar under `dumps/native-strings/`), streamed so a hundreds-of-MB `.so` is never
-loaded whole. Suspicious-region mapping and radare2-backed scanning remain future work.
+loaded whole. Entropy/region mapping and the radare2 function inventory live in the
+opt-in `scanners/native_r2.py` (run via `scan-native --tool radare2` / `analyze --r2`).
 """
 
 from __future__ import annotations

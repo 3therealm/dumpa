@@ -12,6 +12,13 @@ dependencies = [
     "typer>=0.12",
 ]
 
+[project.optional-dependencies]
+# radare2 region scanning (scan-native --tool radare2 / analyze --r2). Lazy-imported and
+# fail-soft, so the core has no hard dependency on it; install to enable the deep path.
+radare2 = [
+    "r2pipe>=1.8",
+]
+
 [project.scripts]
 dumpa = "dumpa.cli:app"
 

@@ -286,3 +286,45 @@ def test_host_in_subject_and_location_deduped(tmp_path: Path) -> None:
     tr = next(f for f in out if f.kind == "tracker")
     domain_locs = [loc for loc in tr.locations if loc.domain == "app-measurement.com"]
     assert len(domain_locs) == 1
+
+
+# --- opt-in native_r2 scanner ------------------------------------------------
+
+def test_native_r2_not_in_default_run_all(tmp_path: Path) -> None:
+    from dumpa.core.workspace import make_meta
+    ws = _ws(tmp_path)
+    _touch(ws.extracted_dir, "lib/arm64-v8a/libfoo.so")
+    ws.write_meta(make_meta(input_path=Path("a.apk"), input_sha256="a" * 64,
+                            input_size=1, input_type="apk", tool_versions={}))
+    findings = run_all(ws)
+    assert not [f for f in findings if f.kind == "native-region"]
+    assert not [f for f in findings if f.kind == "native-function-summary"]
+
+
+def test_native_r2_runs_when_requested(tmp_path: Path, monkeypatch) -> None:
+    from dumpa.core.r2 import R2Analysis, R2Function, R2Section
+    from dumpa.core.workspace import make_meta
+    from dumpa.scanners import native_r2
+
+    ws = _ws(tmp_path)
+    _touch(ws.extracted_dir, "lib/arm64-v8a/libfoo.so")
+    ws.write_meta(make_meta(input_path=Path("a.apk"), input_sha256="a" * 64,
+                            input_size=1, input_type="apk", tool_versions={}))
+
+    class _Tool:
+        version = "radare2 5.9.0"
+
+    class _Reg:
+        def resolve(self, name: str) -> _Tool:
+            return _Tool()
+
+    monkeypatch.setattr(native_r2, "build_default_registry", lambda _p: _Reg())
+    monkeypatch.setattr(native_r2, "load_config",
+                        lambda: type("C", (), {"tool_paths": {}})())
+    monkeypatch.setattr(native_r2.r2, "analyze", lambda _p, version=None: R2Analysis(
+        version="radare2 5.9.0", functions=[R2Function("f", 0x10, 8, 1)],
+        sections=[R2Section(".text", 0x1000, 0x400, 2048, "-r-x", 7.95)]))
+
+    findings = run_all(ws, extra=("native_r2",), registry=_Reg())
+    assert [f for f in findings if f.kind == "native-region"]
+    assert [f for f in findings if f.kind == "native-function-summary"]
