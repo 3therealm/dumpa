@@ -19,7 +19,7 @@ from dumpa.core.dex import DexFile, parse_dex
 from dumpa.core.domains import DomainOwner, build_domain_table
 from dumpa.core.elf import ElfFile, parse_elf
 from dumpa.core.endpoints import load_endpoint_rules
-from dumpa.core.errors import ToolNotFoundError
+from dumpa.core.errors import DumpaError, ToolNotFoundError
 from dumpa.core.report import Confidence, Evidence, Finding, Location
 from dumpa.core.rules import load_builtin
 from dumpa.core.tools import ToolRegistry, build_default_registry
@@ -104,9 +104,10 @@ GODOT_SPECS: tuple[ScannerSpec, ...] = (
 )
 # Opt-in scanners: not in the always-run pipeline. native_r2 invokes radare2 (slow,
 # optional), so it runs only when requested via `analyze --r2` / `scan-native --tool
-# radare2`. Its cache key folds in the resolved radare2 version (the `tools` field).
+# radare2`. It is not cached: tool absence, timeouts, and partial output should retry
+# rather than poisoning a workspace with empty findings.
 OPTIONAL_SPECS: dict[str, ScannerSpec] = {
-    "native_r2": ScannerSpec("native_r2", native_r2.scan, tools=("radare2",)),
+    "native_r2": ScannerSpec("native_r2", native_r2.scan, tools=("radare2",), cacheable=False),
 }
 
 _CONFIDENCE_RANK = {Confidence.HIGH: 3, Confidence.MEDIUM: 2, Confidence.LOW: 1}
@@ -510,6 +511,20 @@ def _run_spec(ws: Workspace, spec: ScannerSpec, meta: WorkspaceMeta | None,
     return produced
 
 
+def _apply_enrichments(findings: list[Finding], ws: Workspace) -> list[Finding]:
+    """Run the cross-cutting enrichment passes over an assembled finding list.
+
+    Cheap deterministic post-passes, so they stay uncached. Domain attribution then
+    endpoint-purpose run last so they see every endpoint/tracker finding (including any
+    engine-helper-emitted endpoints). Shared by run_all and run_selected.
+    """
+    findings = enrich_native_rvas(findings, ws)
+    findings = enrich_dex_locations(findings, ws)
+    findings = enrich_resource_names(findings, ws)
+    findings = enrich_domain_attribution(findings, ws)
+    return enrich_endpoint_purpose(findings, ws)
+
+
 def run_all(ws: Workspace, *, use_cache: bool = True, extra: tuple[str, ...] = (),
             registry: ToolRegistry | None = None) -> list[Finding]:
     """Run every registered scanner over the workspace and concatenate their findings.
@@ -517,11 +532,7 @@ def run_all(ws: Workspace, *, use_cache: bool = True, extra: tuple[str, ...] = (
     Per-scanner findings are memoized under a content-hash key (input + dumpa + rule-bundle
     versions + any tool version); pass use_cache=False to force a fresh scan. `extra` names
     opt-in scanners from OPTIONAL_SPECS to append (e.g. "native_r2" for `analyze --r2`).
-    `enrich_native_rvas`, `enrich_dex_locations`, `enrich_resource_names`,
-    `enrich_domain_attribution`, and `enrich_endpoint_purpose` run on the assembled list
-    every time — cheap deterministic post-passes, so they stay uncached. Domain attribution
-    then endpoint-purpose run last so they see every endpoint/tracker finding (including
-    engine-helper-emitted endpoints).
+    The `_apply_enrichments` passes run on the assembled list every time.
     """
     meta = ws.read_meta() if use_cache else None
     if registry is None:
@@ -539,14 +550,34 @@ def run_all(ws: Workspace, *, use_cache: bool = True, extra: tuple[str, ...] = (
         for spec in GODOT_SPECS:
             findings.extend(_run_spec(ws, spec, meta, registry))
     for name in extra:
-        spec = OPTIONAL_SPECS.get(name)
-        if spec is not None:
-            findings.extend(_run_spec(ws, spec, meta, registry))
-    findings = enrich_native_rvas(findings, ws)
-    findings = enrich_dex_locations(findings, ws)
-    findings = enrich_resource_names(findings, ws)
-    findings = enrich_domain_attribution(findings, ws)
-    return enrich_endpoint_purpose(findings, ws)
+        optional_spec = OPTIONAL_SPECS.get(name)
+        if optional_spec is not None:
+            findings.extend(_run_spec(ws, optional_spec, meta, registry))
+    return _apply_enrichments(findings, ws)
+
+
+_SCANNERS_BY_NAME: dict[str, ScannerSpec] = {s.name: s for s in SCANNERS}
+
+
+def run_selected(ws: Workspace, names: list[str], *,
+                 registry: ToolRegistry | None = None) -> list[Finding]:
+    """Run a named subset of the registered scanners, then the shared enrichment tail.
+
+    Analysis-only (uncached, like scan-native): each named scanner runs fresh and the
+    full enrichment tail is applied. The endpoint/purpose passes are no-ops when no
+    endpoint findings exist, so a tracker- or protection-only run is safe while still
+    getting dex/RVA/resource backfill and (for trackers) owner/domain attribution.
+    Raises DumpaError for an unknown scanner name.
+    """
+    if registry is None:
+        registry = build_default_registry(load_config().tool_paths)
+    findings: list[Finding] = []
+    for name in names:
+        spec = _SCANNERS_BY_NAME.get(name)
+        if spec is None:
+            raise DumpaError(f"unknown scanner {name!r}")
+        findings.extend(spec.fn(ws))
+    return _apply_enrichments(findings, ws)
 
 
 def primary_engine(findings: list[Finding]) -> str | None:

@@ -357,7 +357,8 @@ def read_package(registry: ToolRegistry, apk: Path) -> str | None:
 
 def build_workspace(registry: ToolRegistry, ws: Workspace, input_abs: Path,
                     in_type: str, input_sha256: str, sign_config: SigningConfig | None,
-                    build_options: dict[str, str] | None = None) -> None:
+                    build_options: dict[str, str] | None = None,
+                    optional_scanners: tuple[str, ...] = ()) -> None:
     """Populate a fresh workspace: produce app.apk, extract it, and write the marker."""
     ws.prepare_build()
     if in_type == "xapk":
@@ -381,6 +382,7 @@ def build_workspace(registry: ToolRegistry, ws: Workspace, input_abs: Path,
         input_type=in_type,
         tool_versions=collect_tool_versions(registry, tool_names),
         build_options=build_options,
+        optional_scanners=optional_scanners,
     ))
 
 

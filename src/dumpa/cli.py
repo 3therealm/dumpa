@@ -24,6 +24,7 @@ from dumpa.commands import load as load_cmd
 from dumpa.commands import repack as repack_cmd
 from dumpa.commands import rewrite as rewrite_cmd
 from dumpa.commands import rules as rules_cmd
+from dumpa.commands import scan as scan_cmd
 from dumpa.commands import scan_native as scan_native_cmd
 from dumpa.commands import unpack as unpack_cmd
 from dumpa.commands import update_signatures as update_signatures_cmd
@@ -192,6 +193,28 @@ def scan_native(
 ) -> None:
     """Scan native libraries (ELF metadata; --tool radare2 adds region analysis)."""
     run_command(lambda: scan_native_cmd.scan_native(target, tool=tool))
+
+
+@app.command(name="scan-trackers")
+def scan_trackers(
+    target: Path = typer.Argument(
+        ..., exists=True, readable=True,
+        help="Workspace directory or an .apk/.xapk to scan.",
+    ),
+) -> None:
+    """Scan for trackers/SDKs (analysis-only; no report persisted)."""
+    run_command(lambda: scan_cmd.scan_trackers(target))
+
+
+@app.command(name="scan-protections")
+def scan_protections(
+    target: Path = typer.Argument(
+        ..., exists=True, readable=True,
+        help="Workspace directory or an .apk/.xapk to scan.",
+    ),
+) -> None:
+    """Scan for protections/packers (analysis-only; no report persisted)."""
+    run_command(lambda: scan_cmd.scan_protections(target))
 
 
 @app.command()

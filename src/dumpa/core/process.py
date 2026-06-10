@@ -52,6 +52,7 @@ def run(cmd: list[str],
         timeout: int | None = None,
         capture_stdout: bool = False,
         capture_stderr: bool = False,
+        capture_limit: int = const_subprocess_capture_limit,
         quiet: bool = False,
         ) -> subprocess.CompletedProcess[str]:
     """Run a subprocess with bounded runtime and bounded output retention.
@@ -100,6 +101,6 @@ def run(cmd: list[str],
                 log_fail("stdout tail:\n%s", stdout_tail)
             raise ToolExecutionError(fail_msg or f'command failed: {cmd[0]}')
 
-        stdout = _read_limited_output(stdout_file, const_subprocess_capture_limit) if capture_stdout else ''
-        stderr = _read_limited_output(stderr_file, const_subprocess_capture_limit) if capture_stderr else ''
+        stdout = _read_limited_output(stdout_file, capture_limit) if capture_stdout else ''
+        stderr = _read_limited_output(stderr_file, capture_limit) if capture_stderr else ''
         return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)

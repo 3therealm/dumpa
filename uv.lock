@@ -28,21 +28,13 @@ dependencies = [
     { name = "typer" },
 ]
 
-[package.optional-dependencies]
-radare2 = [
-    { name = "r2pipe" },
-]
-
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "r2pipe", marker = "extra == 'radare2'", specifier = ">=1.8" },
-    { name = "typer", specifier = ">=0.12" },
-]
+requires-dist = [{ name = "typer", specifier = ">=0.12" }]
 provides-extras = ["radare2"]
 
 [package.metadata.requires-dev]
@@ -120,12 +112,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/7d/0d/549bd94f1a0a402dc
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d4/24/a372aaf5c9b7208e7112038812994107bc65a84cd00e0354a88c2c77a617/pytest-9.0.3-py3-none-any.whl", hash = "sha256:2c5efc453d45394fdd706ade797c0a81091eccd1d6e4bccfcd476e2b8e0ab5d9", size = 375249, upload-time = "2026-04-07T17:16:16.13Z" },
 ]
-
-[[package]]
-name = "r2pipe"
-version = "1.9.8"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/00/68/1bd2e0d709f3b0d8e112f143797c92074e8b76ad6c1fb44e05420e085e4e/r2pipe-1.9.8.tar.gz", hash = "sha256:87ac3a69cd6466e330364bb47995bf49c2a87aadaf6497b9cd7fdd9dcf24c1df", size = 23828, upload-time = "2026-03-09T19:50:37.928Z" }
 
 [[package]]
 name = "rich"

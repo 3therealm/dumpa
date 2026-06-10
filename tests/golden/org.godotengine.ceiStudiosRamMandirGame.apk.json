@@ -69,11 +69,6 @@
         "present"
       ],
       [
-        "[fe80",
-        "low",
-        "present"
-      ],
-      [
         "according",
         "low",
         "present"
@@ -150,6 +145,11 @@
       ],
       [
         "familiar",
+        "low",
+        "present"
+      ],
+      [
+        "fe80",
         "low",
         "present"
       ],
@@ -571,6 +571,16 @@
     "ip-endpoint": [
       [
         "239.255.255.250",
+        "low",
+        "present"
+      ],
+      [
+        "ff02::c",
+        "low",
+        "present"
+      ],
+      [
+        "ff05::c",
         "low",
         "present"
       ]

@@ -12,10 +12,13 @@ bytecode or printable source. If nothing confirms, bundles are reported as encry
 nothing is written — never a guess. The key *source* (file:offset) is logged as evidence;
 the key bytes live only in the on-disk provenance sidecar, never in the report.
 
-Decryption is gated to assets of an app you own or are authorized to inspect, per the
-roadmap policy. Runs only behind the Cocos2d-x engine gate (COCOS_SPECS).
+A caller may also supply the key out of band via config (`DUMPA_COCOS_KEY` or
+`[cocos] key`, decoded by `core.config`); it is tried first, still confirmation-gated by
+trial-decrypt, and reported with `key_source="caller-provided"`. Decryption is gated to
+assets of an app you own or are authorized to inspect, per the roadmap policy. Runs only
+behind the Cocos2d-x engine gate (COCOS_SPECS).
 
-Deferred: non-XXTEA cocos ciphers; a caller-provided `--key` path.
+Deferred: non-XXTEA cocos ciphers.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ import re
 from pathlib import Path
 
 from dumpa import __version__
+from dumpa.core.config import load_config
 from dumpa.core.report import Confidence, Evidence, Finding, FindingState, Location
 from dumpa.core.workspace import Workspace
 from dumpa.core.xxtea import decrypt
@@ -220,7 +224,9 @@ def scan(ws: Workspace) -> list[Finding]:
         [Location(file_path=_rel(p, ex)) for p in bundles[:5]],
         {"bundle_count": str(len(bundles))}))
 
-    candidates = _candidate_keys(libs)
+    # A caller-supplied key is tried first; it stays confirmation-gated like any candidate.
+    caller_key = load_config().cocos_key
+    candidates = ([caller_key] if caller_key else []) + _candidate_keys(libs)
     confirmed: tuple[bytes, bytes] | None = None
     probe = next((b for b in bundles if b.stat().st_size <= _MAX_BUNDLE_BYTES), None)
     if candidates and probe is not None:
@@ -237,7 +243,10 @@ def scan(ws: Workspace) -> list[Finding]:
         return findings
 
     key, sign = confirmed
-    key_source = _rel(libs[0], ex) if libs else "assets"
+    if caller_key is not None and key == caller_key:
+        key_source = "caller-provided"
+    else:
+        key_source = _rel(libs[0], ex) if libs else "assets"
     decrypted: list[str] = []
     for b in bundles:
         if b.stat().st_size > _MAX_BUNDLE_BYTES:

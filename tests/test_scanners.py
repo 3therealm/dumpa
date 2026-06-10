@@ -11,7 +11,12 @@ from dumpa.core.domains import DomainOwner, DomainTable
 from dumpa.core.report import Confidence, Evidence, Finding, Location
 from dumpa.core.workspace import Workspace
 from dumpa.scanners import engine as engine_scanner
-from dumpa.scanners import enrich_domain_attribution, primary_engine, run_all
+from dumpa.scanners import (
+    enrich_domain_attribution,
+    primary_engine,
+    run_all,
+    run_selected,
+)
 from dumpa.scanners import tracker as tracker_scanner
 from dumpa.scanners import unity as unity_scanner
 
@@ -313,6 +318,7 @@ def test_native_r2_runs_when_requested(tmp_path: Path, monkeypatch) -> None:
 
     class _Tool:
         version = "radare2 5.9.0"
+        argv_prefix = ("radare2",)
 
     class _Reg:
         def resolve(self, name: str) -> _Tool:
@@ -321,10 +327,70 @@ def test_native_r2_runs_when_requested(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(native_r2, "build_default_registry", lambda _p: _Reg())
     monkeypatch.setattr(native_r2, "load_config",
                         lambda: type("C", (), {"tool_paths": {}})())
-    monkeypatch.setattr(native_r2.r2, "analyze", lambda _p, version=None: R2Analysis(
+    monkeypatch.setattr(native_r2.r2, "analyze", lambda _p, argv_prefix=("radare2",), version=None: R2Analysis(
         version="radare2 5.9.0", functions=[R2Function("f", 0x10, 8, 1)],
         sections=[R2Section(".text", 0x1000, 0x400, 2048, "-r-x", 7.95)]))
 
     findings = run_all(ws, extra=("native_r2",), registry=_Reg())
     assert [f for f in findings if f.kind == "native-region"]
     assert [f for f in findings if f.kind == "native-function-summary"]
+
+
+def test_native_r2_requested_scanner_is_not_cached(tmp_path: Path, monkeypatch) -> None:
+    from dumpa.core.r2 import R2Analysis, R2Function, R2Section
+    from dumpa.core.workspace import make_meta
+    from dumpa.scanners import native_r2
+
+    ws = _ws(tmp_path)
+    _touch(ws.extracted_dir, "lib/arm64-v8a/libfoo.so")
+    ws.write_meta(make_meta(input_path=Path("a.apk"), input_sha256="a" * 64,
+                            input_size=1, input_type="apk", tool_versions={}))
+
+    class _Tool:
+        version = "radare2 5.9.0"
+        argv_prefix = ("radare2",)
+
+    class _Reg:
+        def resolve(self, name: str) -> _Tool:
+            return _Tool()
+
+    calls: list[int] = []
+
+    def fake(_p, argv_prefix=("radare2",), version=None) -> R2Analysis:
+        calls.append(1)
+        return R2Analysis(
+            version="radare2 5.9.0",
+            functions=[R2Function("f", 0x10, 8, 1)],
+            sections=[R2Section(".text", 0x1000, 0x400, 2048, "-r-x", 7.95)],
+        )
+
+    monkeypatch.setattr(native_r2, "build_default_registry", lambda _p: _Reg())
+    monkeypatch.setattr(native_r2, "load_config",
+                        lambda: type("C", (), {"tool_paths": {}})())
+    monkeypatch.setattr(native_r2.r2, "analyze", fake)
+
+    run_all(ws, extra=("native_r2",), registry=_Reg())
+    run_all(ws, extra=("native_r2",), registry=_Reg())
+
+    assert calls == [1, 1]
+    assert not (ws.cache_dir / "scanners" / "native_r2.json").exists()
+
+
+# --- run_selected (focused scan subset + shared enrichment tail) -------------
+
+def test_run_selected_runs_only_named_scanner(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    _touch(ws.extracted_dir, "classes.dex", b"junk Lcom/google/firebase/analytics; junk")
+    _touch(ws.extracted_dir, "lib/arm64-v8a/libjiagu.so", b"\x7fELF packed")
+    findings = run_selected(ws, ["tracker"])
+    kinds = {f.kind for f in findings}
+    assert "tracker" in kinds
+    assert "protection" not in kinds                 # libjiagu not scanned
+    fb = next(f for f in findings if f.subject == "Firebase Analytics")
+    assert fb.attributes["owner"] == "Google"        # enrichment tail applied
+
+
+def test_run_selected_unknown_name_raises(tmp_path: Path) -> None:
+    from dumpa.core.errors import DumpaError
+    with pytest.raises(DumpaError):
+        run_selected(_ws(tmp_path), ["nope"])

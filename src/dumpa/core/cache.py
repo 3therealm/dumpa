@@ -41,8 +41,9 @@ def compute_scanner_key(input_sha256: str, bundle_versions: dict[str, str],
     """
     parts = [input_sha256, __version__]
     parts.extend(f"{name}:{bundle_versions[name]}" for name in sorted(bundle_versions))
-    parts.extend(f"tool:{name}:{tool_versions[name]}"
-                 for name in sorted(tool_versions or {}))
+    resolved_tool_versions = tool_versions or {}
+    parts.extend(f"tool:{name}:{resolved_tool_versions[name]}"
+                 for name in sorted(resolved_tool_versions))
     return hashlib.sha256("\x00".join(parts).encode("UTF-8")).hexdigest()
 
 

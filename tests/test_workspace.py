@@ -41,7 +41,43 @@ def test_meta_roundtrip(tmp_path: Path) -> None:
     assert meta.input_sha256 == "a" * 64
     assert meta.input_type == "apk"
     assert meta.tool_versions == {"aapt": "x"}
+    assert meta.optional_scanners == ()
     assert ws.is_populated()
+
+
+def test_meta_roundtrip_optional_scanners(tmp_path: Path) -> None:
+    ws = Workspace(root=tmp_path / "ws")
+    ws.prepare_build()
+    ws.write_meta(make_meta(
+        input_path=tmp_path / "in.apk", input_sha256="a" * 64, input_size=10,
+        input_type="apk", tool_versions={}, optional_scanners=("native_r2",),
+    ))
+    meta = ws.read_meta()
+    assert meta is not None
+    assert meta.optional_scanners == ("native_r2",)
+
+
+def test_legacy_meta_without_optional_scanners_defaults_empty(tmp_path: Path) -> None:
+    ws = Workspace(root=tmp_path / "ws")
+    ws.prepare_build()
+    ws.meta_path.write_text(
+        """{
+  "schema_version": 1,
+  "dumpa_version": "0.1.0",
+  "input_path": "in.apk",
+  "input_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "input_size": 10,
+  "input_type": "apk",
+  "created": "2026-01-01T00:00:00+00:00",
+  "tool_versions": {},
+  "build_options": {}
+}
+""",
+        encoding="UTF-8",
+    )
+    meta = ws.read_meta()
+    assert meta is not None
+    assert meta.optional_scanners == ()
 
 
 def test_reuse_when_sha_matches(tmp_path: Path) -> None:

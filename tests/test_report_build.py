@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 
 from dumpa.core.report import read_json, write_json
@@ -46,6 +47,40 @@ def test_build_report_detects_engine(tmp_path: Path) -> None:
     assert report.facts.engine == "Unity"
     assert any(f.kind == "engine" and f.subject == "Unity" for f in report.findings)
     assert any(f.kind == "engine-detail" for f in report.findings)
+
+
+def test_build_report_uses_workspace_optional_scanners(tmp_path: Path, monkeypatch) -> None:
+    ws = _workspace(tmp_path / "ws")
+    meta = ws.read_meta()
+    assert meta is not None
+    ws.write_meta(replace(meta, optional_scanners=("native_r2",)))
+    seen: list[tuple[str, ...]] = []
+
+    def fake_run_all(_ws, *, use_cache=True, extra=(), registry=None):
+        seen.append(extra)
+        return []
+
+    monkeypatch.setattr("dumpa.reporting.run_all", fake_run_all)
+    build_report(build_default_registry(), ws)
+    assert seen == [("native_r2",)]
+
+
+def test_build_report_explicit_extra_overrides_workspace_optional_scanners(
+    tmp_path: Path, monkeypatch
+) -> None:
+    ws = _workspace(tmp_path / "ws")
+    meta = ws.read_meta()
+    assert meta is not None
+    ws.write_meta(replace(meta, optional_scanners=("native_r2",)))
+    seen: list[tuple[str, ...]] = []
+
+    def fake_run_all(_ws, *, use_cache=True, extra=(), registry=None):
+        seen.append(extra)
+        return []
+
+    monkeypatch.setattr("dumpa.reporting.run_all", fake_run_all)
+    build_report(build_default_registry(), ws, extra=())
+    assert seen == [()]
 
 
 def test_report_json_file_round_trip(tmp_path: Path) -> None:

@@ -3,7 +3,7 @@
 The value-add the zero-dep ELF parser (`scanners/native.py`) cannot give: per-section
 Shannon entropy (to flag packed/encrypted regions), a radare2 function inventory, and
 disasm-level suspicious-region signals. Runs against the **primary ABI only** (multi-ABI
-apks ship the same code per arch) and is fail-soft: radare2/r2pipe absent, oversized
+apks ship the same code per arch) and is fail-soft: radare2 absent, oversized
 libraries, or analysis timeouts produce a warning and no findings, never an error.
 
 Opt-in: registered in `OPTIONAL_SPECS`, not the always-run pipeline (radare2 is optional
@@ -37,6 +37,10 @@ _ENTROPY_ELEVATED = 6.5        # >= this: elevated, flag for review (MEDIUM)
 _OVERSIZED_FN_BYTES = 0x8000   # functions bigger than this hint at obfuscation/packing
 
 
+def _function_count(analysis: R2Analysis) -> int:
+    return analysis.total_function_count if analysis.total_function_count is not None else len(analysis.functions)
+
+
 def _classify(entropy: float) -> tuple[str, Confidence] | None:
     """Map a section entropy to (classification, confidence), or None if not flagged."""
     if entropy >= _ENTROPY_PACKED:
@@ -55,6 +59,9 @@ def _write_sidecar(ws: Workspace, abi: str, so: Path, analysis: R2Analysis,
         "sections": [{"name": s.name, "vaddr": s.vaddr, "offset": s.paddr,
                       "size": s.size, "perm": s.perm, "entropy": s.entropy}
                      for s in analysis.sections],
+        "function_count": _function_count(analysis),
+        "stored_function_count": len(analysis.functions),
+        "functions_truncated": analysis.functions_truncated,
         "functions": [{"name": f.name, "vaddr": f.vaddr, "size": f.size, "nbbs": f.nbbs}
                       for f in analysis.functions],
         "regions": regions,
@@ -109,8 +116,12 @@ def _region_findings(abi: str, rel: str, lib: str, analysis: R2Analysis,
 def _summary_finding(abi: str, rel: str, lib: str, analysis: R2Analysis,
                      sidecar_rel: str | None) -> Finding:
     oversized = sum(1 for f in analysis.functions if f.size > _OVERSIZED_FN_BYTES)
-    attributes = {"abi": abi, "function_count": str(len(analysis.functions)),
+    function_count = _function_count(analysis)
+    attributes = {"abi": abi, "function_count": str(function_count),
+                  "stored_function_count": str(len(analysis.functions)),
                   "oversized_count": str(oversized)}
+    if analysis.functions_truncated:
+        attributes["functions_truncated"] = "true"
     if sidecar_rel is not None:
         attributes["sidecar"] = sidecar_rel
     return Finding(
@@ -120,7 +131,7 @@ def _summary_finding(abi: str, rel: str, lib: str, analysis: R2Analysis,
         state=FindingState.PRESENT,
         attributes=attributes,
         evidence=[Evidence(
-            description=f"{len(analysis.functions)} functions, {oversized} oversized",
+            description=f"{function_count} functions, {oversized} oversized",
             snippet=rel, tool="radare2", rule_version=analysis.version)],
         locations=[Location(file_path=rel)],
     )
@@ -154,7 +165,7 @@ def scan(ws: Workspace) -> list[Finding]:
         if abi != primary:
             continue
         rel = so.relative_to(ex).as_posix()
-        analysis = r2.analyze(so, version=tool.version)
+        analysis = r2.analyze(so, argv_prefix=tool.argv_prefix, version=tool.version)
         if analysis is None:
             continue
         region_findings, regions = _region_findings(abi, rel, so.name, analysis)

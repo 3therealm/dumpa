@@ -9,8 +9,8 @@ Closes: `[ ] radare2-backed region scanning`, `[~] suspicious regions → region
 
 ## Locked decisions (from /sc:brainstorm + /sc:design)
 
-1. r2pipe (accept the dep; isolated to one scanner, fail-soft when absent).
-2. Entropy computed in radare2 (`ph entropy` / `iSj`), not pure-Python.
+1. radare2 CLI execution through the shared bounded process runner (no `r2pipe` dependency).
+2. Sections/functions come from radare2 JSON; entropy is computed in Python over bounded file slices.
 3. New `native-region` finding kind (no overload of `protection`).
 4. Build bare `dumpa scan-native` **and** the `--tool radare2` deep path.
 5. Primary/preferred ABI only.
@@ -19,8 +19,8 @@ Closes: `[ ] radare2-backed region scanning`, `[~] suspicious regions → region
 
 - Bottom-up: cache key → ABI helper → r2 wrapper → scanner → pipeline wiring → command.
 - Every code unit lands with its test first (mirror existing `tests/test_*.py`).
-- External tool (radare2/r2pipe) is **never** required: absence → warn + skip, fail-soft
-  (jadx idiom, `commands/decompile.py:73`). All tests mock r2pipe — no real binary in CI.
+- External tool radare2 is **never** required: absence → warn + skip, fail-soft
+  (jadx idiom, `commands/decompile.py:73`). Tests mock the process wrapper — no real binary in CI.
 
 ## Dependency graph
 
@@ -68,28 +68,22 @@ unchanged (golden-corpus cache hits still hit).
 
 ---
 
-## Phase 3 — core/r2.py r2pipe wrapper (fail-soft + timeout)
+## Phase 3 — core/r2.py CLI wrapper (fail-soft + timeout)
 
-- Test (`tests/test_r2.py`, NEW), r2pipe **mocked** (monkeypatch `r2pipe.open`):
-  - r2pipe import missing → `analyze()` returns None (no raise).
-  - radare2 binary missing (registry can't resolve) → None.
-  - happy path: fake session returns canned `iSj`/`aflj`/`ph entropy` JSON →
-    `R2Analysis` with sections+functions+per-section entropy.
-  - timeout: fake session that "hangs" → watchdog fires → None, warning logged, no raise.
-  - malformed JSON from `cmdj` → None for that command, partial result tolerated.
+- Test (`tests/test_r2.py`, NEW), process runner mocked:
+  - radare2 timeout / execution error → `analyze()` returns None (no raise).
+  - happy path: fake stdout returns canned `iSj`/`aflj` JSON →
+    `R2Analysis` with sections+functions+Python-computed per-section entropy.
+  - malformed/truncated JSON → None, warning logged, no raise.
+  - function inventory is capped while total count/truncation metadata is preserved.
 - New `core/r2.py`:
-  - `R2Session` context manager over `r2pipe.open(path, flags=["-2"])`;
-    `cmdj`/`cmd` returning None on any exception.
-  - `analyze(path, *, timeout, max_bytes, registry) -> R2Analysis | None`:
-    resolve radare2 via registry (None if absent); guard `path.stat().st_size <= max_bytes`;
-    run `aa` then collect `iSj`, `aflj`, per-section `ph entropy @ addr!size`; under a
-    watchdog (kill the r2 child pid on deadline). Depth = `aa`+`aflj`, **not** `aaa`.
-  - `R2Analysis` dataclass: `version`, `machine`, `bitness`, `sections[]`, `functions[]`.
+  - `analyze(path, *, argv_prefix, timeout, max_bytes, max_functions, version) -> R2Analysis | None`:
+    use the resolved radare2 argv prefix, guard `path.stat().st_size <= max_bytes`;
+    run `aa`, collect `iSj` and `aflj`, and let `core.process.run` enforce timeout.
+  - `R2Analysis` dataclass: `version`, `sections[]`, `functions[]`,
+    `total_function_count`, `functions_truncated`.
 
-**Open choice to resolve in implementation:** watchdog = kill r2pipe child pid (preferred)
-vs thread-join deadline. Pick child-kill; r2pipe exposes the subprocess.
-
-**Verify:** `pytest tests/test_r2.py` green with **no radare2 installed** (all mocked).
+**Verify:** `pytest tests/test_r2.py` green with **no radare2 installed** (process mocked).
 
 **Checkpoint C3:** wrapper is fully fail-soft and CI-safe.
 
@@ -99,7 +93,7 @@ vs thread-join deadline. Pick child-kill; r2pipe exposes the subprocess.
 
 Depends on P2 (abi) + P3 (r2).
 
-- Test (`tests/test_native_r2.py`, NEW), r2pipe mocked, synthetic `.so` via
+- Test (`tests/test_native_r2.py`, NEW), r2 process mocked, synthetic `.so` via
   `tests/_elf_build.py`:
   - high-entropy `.text` section (canned entropy ≥7.2) → `native-region` finding,
     `classification="packed"`, `confidence=HIGH`, Location has `file_offset` **and** `rva`.
@@ -107,7 +101,7 @@ Depends on P2 (abi) + P3 (r2).
   - low entropy → no region finding.
   - always emits one `native-function-summary` + writes
     `dumps/native-r2/<abi>__<lib>.json` sidecar (assert shape).
-  - radare2/r2pipe absent → `scan()` returns `[]`, warning logged (no raise).
+  - radare2 absent → `scan()` returns `[]`, warning logged (no raise).
   - only the **primary ABI** is analyzed when multiple ABIs present.
   - oversized `.so` (> max_bytes) → skipped with warning.
 - New `scanners/native_r2.py`:
@@ -116,7 +110,7 @@ Depends on P2 (abi) + P3 (r2).
     `_ENTROPY_PACKED=7.2`, `_ENTROPY_ELEVATED=6.5`, `_MAX_BYTES`, `_TIMEOUT`.
   - `scan(ws) -> list[Finding]`: build registry from config (decompile.py pattern);
     pick `select_primary_abi`; for each `lib/<abi>/*.so` call `r2.analyze`; map sections→
-    entropy regions; emit summary + sidecar; FR3 disasm signals → `native-region`
+    entropy regions; emit summary + bounded sidecar; FR3 disasm signals → `native-region`
     (`anti-debug`/`anti-disasm`/`self-modifying`).
   - Findings carry `Location(file_offset, rva=section vaddr)` so RVAs are correct without
     relying on the PT_LOAD pass.
@@ -134,12 +128,11 @@ Depends on P1 + P4.
 - Test (`tests/test_scanners.py`): extend —
   - `native_r2` is **not** in the default `run_all` output (opt-in).
   - `run_all(ws, extra=("native_r2",))` includes its findings.
-  - cache key for `native_r2` reflects the radare2 version (monkeypatch registry version →
-    different cache file behavior / key).
+  - `native_r2` is not cached, so transient tool absence/timeouts do not poison results.
 - Edit `scanners/__init__.py`:
   - `ScannerSpec` gains `tools: tuple[str,...] = ()`.
   - `OPTIONAL_SPECS: dict[str, ScannerSpec]` with `native_r2`
-    (`tools=("radare2",)`, `cacheable=True`).
+    (`tools=("radare2",)`, `cacheable=False`).
   - `run_all(ws, *, use_cache=True, extra=(), registry=None)`: build one registry if None;
     append `OPTIONAL_SPECS[name]` for each `extra`; thread registry to `_run_spec`.
   - `_run_spec(...)`: resolve `spec.tools` versions (None-safe) → pass to
@@ -149,7 +142,7 @@ Depends on P1 + P4.
 
 **Verify:** `pytest tests/test_scanners.py tests/test_cache.py`.
 
-**Checkpoint C5:** opt-in scanner runs only on request; cache is r2-version-aware;
+**Checkpoint C5:** opt-in scanner runs only on request; default scanner caches stay intact;
 default pipeline byte-identical (golden corpus unaffected).
 
 ---
@@ -162,7 +155,7 @@ Depends on P5.
   - bare `scan-native <apk>` over a populated workspace → runs `native` scan, prints a
     table, exit 0.
   - `--tool radare2` → also runs `native_r2` (mocked) findings appear.
-  - r2pipe/radare2 absent + `--tool radare2` → warns, still exits 0 with ELF-only results.
+  - radare2 absent + `--tool radare2` → warns, still exits 0 with ELF-only results.
   - workspace populate path reuses `decompile.py` helpers.
 - New `commands/scan_native.py`: mirror `decompile.py` structure (config → registry →
   workspace resolve/populate). `--tool radare2` flag selects the deep path
@@ -179,9 +172,10 @@ Depends on P5.
 
 Depends on P5.
 
-- Test (`tests/test_scanners.py` or analyze test): `analyze(..., r2=True)` threads
-  `extra=("native_r2",)` into `run_all`; default `analyze` unchanged.
-- Edit `commands/analyze.py`: add `--r2` flag → `run_all(..., extra=("native_r2",))`.
+- Test (`tests/test_scanners.py` or analyze test): `analyze(..., r2=True)` persists
+  `optional_scanners=("native_r2",)` in workspace metadata; default `analyze` unchanged.
+- Edit `commands/analyze.py`: add `--r2` flag → persist the optional scanner and let
+  `build_report` derive extras from metadata on future rebuilds.
 
 **Verify:** `pytest`; `dumpa analyze <apk> --r2 --workspace out/` (manual, if radare2 present).
 
@@ -215,9 +209,9 @@ Depends on P5.
 | Risk | Mitigation |
 |------|-----------|
 | `aaa` too slow on 195MB `libil2cpp.so` | depth = `aa`+`aflj`; per-lib timeout + max_bytes; primary ABI only |
-| r2pipe child not killed on timeout | watchdog kills child pid, not just thread |
-| r2pipe dep breaks zero-dep installs | optional dep; absence → warn+skip; CI mocks it |
-| stale cache after r2 upgrade | tool-version folded into cache key (P1) |
+| radare2 process hangs | shared process runner enforces timeout and kills child |
+| Python dependency breaks zero-dep installs | no `r2pipe`; external tool absence → warn+skip; CI mocks process runner |
+| stale empty cache after transient r2 failure | native_r2 is non-cacheable |
 | double RVA set (PT_LOAD vs r2 vaddr) | enrich pass skips when rva already set |
 
 ## Out of scope (v1)

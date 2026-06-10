@@ -61,6 +61,11 @@ def _empty_str_map() -> dict[str, str]:
     return {}
 
 
+def _empty_str_tuple() -> tuple[str, ...]:
+    """Typed default factory for optional scanner names."""
+    return ()
+
+
 @dataclass(frozen=True)
 class WorkspaceMeta:
     """The workspace marker: enough to tie findings to one exact input and toolset."""
@@ -73,11 +78,13 @@ class WorkspaceMeta:
     created: str                         # ISO-8601 UTC
     tool_versions: dict[str, str] = field(default_factory=_empty_str_map)
     build_options: dict[str, str] = field(default_factory=_empty_str_map)
+    optional_scanners: tuple[str, ...] = field(default_factory=_empty_str_tuple)
 
 
 def make_meta(*, input_path: Path, input_sha256: str, input_size: int,
               input_type: str, tool_versions: dict[str, str],
-              build_options: dict[str, str] | None = None) -> WorkspaceMeta:
+              build_options: dict[str, str] | None = None,
+              optional_scanners: tuple[str, ...] = ()) -> WorkspaceMeta:
     """Build a WorkspaceMeta stamped with the current dumpa version and UTC time."""
     return WorkspaceMeta(
         schema_version=const_workspace_schema_version,
@@ -89,6 +96,7 @@ def make_meta(*, input_path: Path, input_sha256: str, input_size: int,
         created=datetime.datetime.now(datetime.UTC).isoformat(),
         tool_versions=tool_versions,
         build_options=dict(build_options or {}),
+        optional_scanners=tuple(optional_scanners),
     )
 
 
@@ -209,6 +217,12 @@ class Workspace:
         if not isinstance(loaded, dict):
             return None
         data = cast("dict[str, Any]", loaded)
+        raw_optional = data.get('optional_scanners', [])
+        optional_scanners = (
+            tuple(str(v) for v in raw_optional)
+            if isinstance(raw_optional, list | tuple)
+            else ()
+        )
         try:
             return WorkspaceMeta(
                 schema_version=int(data['schema_version']),
@@ -220,6 +234,7 @@ class Workspace:
                 created=str(data['created']),
                 tool_versions={str(k): str(v) for k, v in dict(data.get('tool_versions', {})).items()},
                 build_options={str(k): str(v) for k, v in dict(data.get('build_options', {})).items()},
+                optional_scanners=optional_scanners,
             )
         except (KeyError, TypeError, ValueError):
             return None
