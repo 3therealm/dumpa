@@ -29,6 +29,7 @@ from pathlib import Path
 
 from dumpa import __version__
 from dumpa.core import unityasset
+from dumpa.core.fs import open_resilient
 from dumpa.core.report import Confidence, Evidence, Finding, FindingState, Location
 from dumpa.core.rules import apply_bundle, load_builtin
 from dumpa.core.unityasset import ExtractedString
@@ -98,7 +99,7 @@ def _record(hosts: dict[str, _HostHits], raw: bytes, offset: int, rel: str) -> N
 
 
 def _scan_file(path: Path, rel: str, hosts: dict[str, _HostHits]) -> None:
-    with path.open("rb") as f:
+    with open_resilient(path) as f:
         tail = b""
         base = 0
         while True:
@@ -199,26 +200,28 @@ def _locate(extracted_dir: Path) -> list[Path]:
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
-def _safe_name(asset_name: str, path_id: int) -> str:
-    """Collision-safe dump filename: <sanitized-name>__<path_id>.txt.
+def _safe_name(asset_name: str, container: str, path_id: int) -> str:
+    """Collision-safe dump filename: <sanitized-name>__<container-hash>__<path_id>.txt.
 
     The `.txt` suffix is deliberate: TextAsset bodies are text by nature, and it makes the
     dumped file eligible for the secrets bundle's text-file targets (which exclude
-    extensionless files) and easy to grep.
+    extensionless files) and easy to grep. Unity path IDs are only unique inside a serialized
+    container, so the source container is part of the stable filename.
     """
     base = _UNSAFE.sub("_", asset_name).strip("_") or "asset"
-    return f"{base[:80]}__{path_id}.txt"
+    token = hashlib.sha256(container.encode("utf-8", "replace")).hexdigest()[:12]
+    return f"{base[:80]}__{token}__{path_id}.txt"
 
 
 def _dump_textassets(ws: Workspace, strings: list[ExtractedString]
-                     ) -> tuple[list[_Dumped], dict[int, str]]:
-    """Write each TextAsset body to dumps/unity/assets/; return (dumped, path_id->rel).
+                     ) -> tuple[list[_Dumped], dict[tuple[str, int], str]]:
+    """Write each TextAsset body to dumps/unity/assets/; return (dumped, asset-key->rel).
 
     Bounded by file count + total bytes; logs (never silently) when a cap truncates output.
     """
     out_dir = ws.dumps_dir / unityasset.const_textasset_subdir
     dumped: list[_Dumped] = []
-    by_pathid: dict[int, str] = {}
+    by_asset: dict[tuple[str, int], str] = {}
     total = 0
     capped = False
     for es in strings:
@@ -227,7 +230,7 @@ def _dump_textassets(ws: Workspace, strings: list[ExtractedString]
         if len(dumped) >= const_max_dump_files or total + len(es.raw) > const_max_dump_total:
             capped = True
             break
-        name = _safe_name(es.asset_name, es.path_id)
+        name = _safe_name(es.asset_name, es.container, es.path_id)
         path = out_dir / name
         try:
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -239,15 +242,16 @@ def _dump_textassets(ws: Workspace, strings: list[ExtractedString]
         digest = hashlib.sha256(es.raw).hexdigest()
         dumped.append(_Dumped(rel=rel, container=es.container, asset_name=es.asset_name,
                               path_id=es.path_id, sha256=digest, size=len(es.raw)))
-        by_pathid[es.path_id] = rel
+        by_asset[(es.container, es.path_id)] = rel
         total += len(es.raw)
     if capped:
         logger.warning("unity_assets: TextAsset dump cap reached (%d files / %d bytes); "
                        "remaining assets not written", const_max_dump_files, const_max_dump_total)
-    return dumped, by_pathid
+    return dumped, by_asset
 
 
-def _endpoint_findings(strings: list[ExtractedString], by_pathid: dict[int, str]) -> list[Finding]:
+def _endpoint_findings(strings: list[ExtractedString],
+                       by_asset: dict[tuple[str, int], str]) -> list[Finding]:
     """Harvest endpoint URLs from extracted Unity strings (flows through the shared tail)."""
     hosts: dict[str, tuple[str, str, ExtractedString]] = {}
     for es in strings:
@@ -256,7 +260,7 @@ def _endpoint_findings(strings: list[ExtractedString], by_pathid: dict[int, str]
         data = es.raw if es.raw is not None else es.text.encode("utf-8", "replace")
         for host, url in harvest_urls(data):
             if host not in hosts and len(hosts) < const_max_endpoint_hosts:
-                loc_file = by_pathid.get(es.path_id, es.container)
+                loc_file = by_asset.get((es.container, es.path_id), es.container)
                 hosts[host] = (url, loc_file, es)
     out: list[Finding] = []
     for host, (url, loc_file, es) in sorted(hosts.items()):

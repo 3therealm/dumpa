@@ -126,8 +126,8 @@ def test_unity_specs_run_when_unity_detected(tmp_path: Path) -> None:
 # --- unity_assets (serialized-asset parsing via UnityPy adapter) -------------
 
 def _es(text: str, *, name: str = "cfg", pid: int = 1, raw: bytes | None = None,
-        cls: str = "TextAsset") -> ExtractedString:
-    return ExtractedString(text=text, container="data.assets", asset_name=name,
+        cls: str = "TextAsset", container: str = "data.assets") -> ExtractedString:
+    return ExtractedString(text=text, container=container, asset_name=name,
                            path_id=pid, class_name=cls, raw=raw)
 
 
@@ -162,6 +162,30 @@ def test_unity_assets_endpoint_from_textasset(
     assert ep[0].attributes["unity_class"] == "TextAsset"
     on_disk = list((ws.dumps_dir / "unity" / "assets").iterdir())
     assert on_disk and on_disk[0].read_bytes() == body
+
+
+def test_unity_assets_dump_names_include_container(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ws = _ws(tmp_path)
+    _touch(ws.extracted_dir, "a.assets")
+    _touch(ws.extracted_dir, "b.assets")
+    one = b"https://one.example.com"
+    two = b"https://two.example.com"
+
+    def fake_parse(_path: Path, rel: str, **_kw) -> list[ExtractedString]:
+        raw = one if rel == "a.assets" else two
+        return [_es(raw.decode(), name="cfg", pid=1, raw=raw, container=rel)]
+
+    monkeypatch.setattr(unityasset, "available", lambda: True)
+    monkeypatch.setattr(unityasset, "parse_container", fake_parse)
+
+    findings = assets_scanner.scan(ws)
+
+    dumps = sorted((ws.dumps_dir / "unity" / "assets").iterdir())
+    assert len(dumps) == 2
+    assert {p.read_bytes() for p in dumps} == {one, two}
+    endpoints = {f.subject: f.locations[0].file_path for f in findings if f.kind == "endpoint"}
+    assert endpoints["one.example.com"] != endpoints["two.example.com"]
 
 
 def test_unity_assets_secret_from_dump(
