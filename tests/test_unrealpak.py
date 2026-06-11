@@ -105,6 +105,30 @@ def test_encrypted_index_deferred(tmp_path: Path) -> None:
     assert pak.entries == []
 
 
+def test_encrypted_index_parsed_with_key(tmp_path: Path) -> None:
+    pytest.importorskip("cryptography")
+    path = _write(tmp_path, build_pak(_FILES, encrypt_index=True, aes_key=_AES_KEY))
+    # without the key: the encrypted index is opaque -> deferred
+    deferred = unrealpak.parse_standalone(path)
+    assert deferred is not None and unrealpak.is_deferred(deferred)
+    assert "encrypted index" in (deferred.deferred_reason or "")
+    # with the key: the index decrypts and the entries list
+    pak = unrealpak.parse_standalone(path, aes_key=_AES_KEY)
+    assert pak is not None
+    assert not unrealpak.is_deferred(pak)
+    assert {e.path for e in pak.entries} == set(_FILES)
+
+
+def test_encrypted_index_and_entries_full_roundtrip(tmp_path: Path) -> None:
+    pytest.importorskip("cryptography")
+    path = _write(tmp_path, build_pak(_FILES, encrypt_index=True, encrypt_entries=True, aes_key=_AES_KEY))
+    pak = unrealpak.parse_standalone(path, aes_key=_AES_KEY)
+    assert pak is not None and not unrealpak.is_deferred(pak)
+    out = tmp_path / "out"
+    assert unrealpak.extract(path, pak, out, aes_key=_AES_KEY) == 2
+    assert (out / "Content/data.json").read_bytes() == _FILES["Content/data.json"]
+
+
 def test_pathhash_index_deferred(tmp_path: Path) -> None:
     pak = unrealpak.parse_standalone(_write(tmp_path, build_pak_pathhash_index(version=11)))
     assert pak is not None

@@ -63,14 +63,16 @@ def _aes_encrypt(data: bytes, key: bytes) -> bytes:
 
 def build_pak(files: dict[str, bytes], *, version: int = 8, mount: str = "../../../Game/",
               compress: str | None = None, encrypt_entries: bool = False,
-              method_override: int | None = None, aes_key: bytes | None = None) -> bytes:
+              method_override: int | None = None, aes_key: bytes | None = None,
+              encrypt_index: bool = False) -> bytes:
     """Build a standalone v8 `.pak`.
 
-    `compress=None` stores files uncompressed; `compress="zlib"`/`"gzip"` deflates each
-    into a single block. `method_override` forces the CompressionMethodIndex (e.g. 3 = Oodle)
-    to exercise the deferral path. `encrypt_entries` sets each entry's encrypted flag; pass
-    `aes_key` too to actually AES-256-ECB encrypt each payload (padded to the 16-byte block,
-    with the stored size left unpadded — exactly how UE writes encrypted entries).
+    `compress=None` stores files uncompressed; `compress="zlib"`/`"gzip"`/`"lz4"` compresses
+    each into a single block. `method_override` forces the CompressionMethodIndex (e.g. 3 =
+    Oodle) to exercise the deferral path. `encrypt_entries` sets each entry's encrypted flag;
+    pass `aes_key` too to actually AES-256-ECB encrypt each payload (padded to the 16-byte
+    block, stored size left unpadded — as UE writes them). `encrypt_index` likewise AES-encrypts
+    the whole legacy index and marks the footer, so the encrypted-index path can be exercised.
     """
     method_index = 0
     if compress == "zlib":
@@ -109,16 +111,21 @@ def build_pak(files: dict[str, bytes], *, version: int = 8, mount: str = "../../
     index = _fstring(mount) + struct.pack("<i", len(index_entries))
     for name, entry in index_entries:
         index += _fstring(name) + entry
+    if encrypt_index and aes_key is not None:
+        index = _aes_encrypt(index, aes_key)        # on-disk index: padded + encrypted
     index_offset = len(data)
 
-    footer = _footer(version, index_offset, len(index), index_encrypted=False)
+    footer = _footer(version, index_offset, len(index), index_encrypted=encrypt_index)
     return data + index + footer
 
 
 def build_pak_encrypted_index(version: int = 8) -> bytes:
-    """A pak whose footer marks the index AES-encrypted (extraction deferred)."""
-    body = b"\x00" * 64
-    return body + _footer(version, 0, 0, index_encrypted=True)
+    """A pak with a real legacy index whose footer marks it AES-encrypted.
+
+    No key is baked in, so the parser hits the encrypted-index branch and defers (the
+    with-key decryption path is exercised by `build_pak(..., encrypt_index=True, aes_key=...)`).
+    """
+    return build_pak({"Content/notes.txt": b"hello"}, version=version, encrypt_index=True)
 
 
 def build_pak_pathhash_index(version: int = 11) -> bytes:

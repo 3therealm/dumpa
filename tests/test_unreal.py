@@ -162,3 +162,21 @@ def test_encrypted_pak_extracted_with_caller_key(
                for f in findings)
     # the endpoint harvested from the now-decrypted config flows through the shared tail
     assert any(f.kind == "endpoint" and f.subject == "api.mygame.example" for f in findings)
+
+
+def test_encrypted_index_pak_extracted_with_key(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("cryptography")
+    key = bytes(range(32))
+    monkeypatch.setenv(const_env_unreal_aes, "0x" + key.hex())
+    ws = _ws(tmp_path)
+    _touch(ws.extracted_dir, "base/Game.pak",
+           build_pak(_FILES, encrypt_index=True, encrypt_entries=True, aes_key=key))
+
+    findings = unreal.scan(ws)
+
+    # the index decrypts so the pak lists + extracts (rather than deferring)
+    assert any(f.subject.startswith("Unreal pak:") for f in findings)
+    assert not any(f.subject.startswith("Unreal pak deferred") for f in findings)
+    out = ws.dumps_dir / "unreal" / "pak" / "base" / "Game" / "Content/notes.txt"
+    assert out.read_bytes() == b"hello"

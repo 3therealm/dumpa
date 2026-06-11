@@ -212,8 +212,22 @@ def _parse_methods(buf: bytes, pos: int, version: int) -> list[str]:
     return methods
 
 
-def parse_standalone(path: Path) -> Pak | None:
-    """Parse a `.pak` file: footer at EOF + (for version < 10) the legacy index."""
+def _decrypt_index(index: bytes, key: bytes | None) -> bytes | None:
+    """AES-ECB-decrypt a block-aligned encrypted pak index; None if the key/extra is absent."""
+    if key is None or not unrealcrypto.aes_available():
+        return None
+    if not index or len(index) % 16 != 0:
+        return None
+    return unrealcrypto.decrypt_aes_ecb(index, key)
+
+
+def parse_standalone(path: Path, *, aes_key: bytes | None = None) -> Pak | None:
+    """Parse a `.pak` file: footer at EOF + (for version < 10) the legacy index.
+
+    An AES-encrypted legacy index is decrypted when `aes_key` and the dumpa[unreal] extra
+    (cryptography) are both present; otherwise it stays deferred. The v10+ path-hash /
+    full-directory index format is not parsed (deferred) regardless of encryption.
+    """
     try:
         file_size = path.stat().st_size
         tail_len = file_size if file_size < _MAX_FOOTER_TAIL // 8 else _MAX_FOOTER_TAIL
@@ -224,18 +238,22 @@ def parse_standalone(path: Path) -> Pak | None:
             if footer is None:
                 return None
             version, index_offset, index_size, index_encrypted, key_guid, methods = footer
-            if index_encrypted:
-                return Pak(version, "", [], True, key_guid, methods,
-                           "encrypted index (AES; decryption deferred)")
             if version >= _V_PATH_HASH_INDEX:
-                return Pak(version, "", [], False, key_guid, methods,
+                return Pak(version, "", [], index_encrypted, key_guid, methods,
                            f"path-hash index format v{version} (UE4.25+) not supported")
             if index_size <= 0 or index_size > file_size:
-                return Pak(version, "", [], False, key_guid, methods, "empty or invalid index")
+                return Pak(version, "", [], index_encrypted, key_guid, methods,
+                           "empty or invalid index")
             f.seek(index_offset)
             index = f.read(index_size)
             if len(index) < index_size:
                 return None
+            if index_encrypted:
+                decrypted = _decrypt_index(index, aes_key)
+                if decrypted is None:
+                    return Pak(version, "", [], True, key_guid, methods,
+                               "encrypted index (AES; decryption deferred — needs dumpa[unreal] + key)")
+                index = decrypted
             return _parse_legacy_index(version, index, methods, key_guid, file_size)
     except OSError:
         return None

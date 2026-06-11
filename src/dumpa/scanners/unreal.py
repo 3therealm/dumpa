@@ -107,7 +107,7 @@ def scan(ws: Workspace) -> list[Finding]:
     lz4_ok = unrealcrypto.lz4_available()
 
     for p in paks:
-        pak = unrealpak.parse_standalone(p)
+        pak = unrealpak.parse_standalone(p, aes_key=config.unreal_aes)
         rel = _rel(p, ex)
         if pak is None:
             continue
