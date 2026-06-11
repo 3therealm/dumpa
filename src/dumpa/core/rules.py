@@ -61,6 +61,8 @@ const_content_chunk_size = 1 << 20          # 1 MiB streaming reads (never load 
 const_max_content_scan_bytes = 512 << 20    # skip individual files larger than 512 MiB
 const_regex_overlap = 1024                  # chunk overlap for regex matches near an edge
 const_max_match_text = 200                  # cap a captured match (e.g. a secret) in evidence
+const_min_anchor_len = 3                    # shortest literal run usable as a regex prefilter anchor
+const_rewrite_encoding = "latin-1"          # byte-exact smali rewrite matching/replacement
 
 
 def _empty_attrs() -> dict[str, str]:
@@ -83,15 +85,20 @@ class Rule:
     strings: tuple[str, ...] = ()
     regex: tuple[str, ...] = ()
     manifest: tuple[str, ...] = ()
+    domains: tuple[str, ...] = ()
+    domain_search: bool = False
     manifest_field: str = const_manifest_field_any
     targets: tuple[str, ...] = ()
     match: str = const_match_any
     state: FindingState = FindingState.PRESENT
     attributes: dict[str, str] = field(default_factory=_empty_attrs)
+    case_insensitive: bool = False              # compile `regex` with re.IGNORECASE
+    game_types: tuple[str, ...] = ()            # dumpcs category selectors; empty = always-on
+    replace: str = ""                           # substitution template (kind="rewrite" only)
 
     @property
     def is_content(self) -> bool:
-        return bool(self.strings or self.regex)
+        return bool(self.strings or self.regex or (self.domains and self.domain_search))
 
     @property
     def is_manifest(self) -> bool:
@@ -99,7 +106,9 @@ class Rule:
 
     @property
     def keys(self) -> tuple[str, ...]:
-        """The pattern keys (literal strings or regex sources) this content rule matches on."""
+        """The pattern keys (literal strings, regex sources, or domain literals) matched on."""
+        if self.domain_search:
+            return self.domains
         return self.strings or self.regex
 
 
@@ -112,6 +121,11 @@ class RuleBundle:
     updated: str
     rules: tuple[Rule, ...]
     default_targets: tuple[str, ...] = ()   # content-scan targets for rules that omit their own
+    license: str = ""                       # data license of an imported bundle (provenance)
+
+    def domain_rules(self) -> tuple[Rule, ...]:
+        """Rules carrying `domains` (search or not), for the attribution table."""
+        return tuple(r for r in self.rules if r.domains)
 
 
 def _require_str(table: dict[str, Any], key: str, ctx: str) -> str:
@@ -163,6 +177,17 @@ def _parse_str_list(raw: object, key: str, ctx: str) -> tuple[str, ...]:
     return tuple(values)
 
 
+def _parse_domains(raw: object, ctx: str) -> tuple[str, ...]:
+    """Parse + normalize a rule's `domains` list via the shared host validator.
+
+    Each entry runs through core.domains.validate_host (raises ConfigError on
+    scheme/path/'*'/edge-dots/empty-label/single-label/over-long-label).
+    """
+    from dumpa.core.domains import validate_host
+    values = _parse_str_list(raw, "domains", ctx)
+    return tuple(validate_host(v) for v in values)
+
+
 def _parse_attributes(table: dict[str, Any], ctx: str) -> dict[str, str]:
     """Collect optional tracker metadata (category/owner/purpose) into a string map."""
     attrs: dict[str, str] = {}
@@ -174,6 +199,19 @@ def _parse_attributes(table: dict[str, Any], ctx: str) -> dict[str, str]:
             raise ConfigError(f"{ctx}: '{key}' must be a non-empty string")
         attrs[key] = value
     return attrs
+
+
+def _validate_template(template: str, compiled: re.Pattern[bytes], ctx: str) -> None:
+    """Reject a `replace` template that Python's replacement parser cannot apply.
+
+    Validated at load (fail closed) so a bad backref or escape never surfaces mid-apply.
+    """
+    try:
+        compiled.sub(template.encode(const_rewrite_encoding), b"", count=0)
+    except UnicodeEncodeError as e:
+        raise ConfigError(f"{ctx}: 'replace' must be encodable as {const_rewrite_encoding}") from e
+    except re.error as e:
+        raise ConfigError(f"{ctx}: invalid replace template: {e}") from e
 
 
 def _parse_rule(raw: object, index: int) -> Rule:
@@ -189,18 +227,34 @@ def _parse_rule(raw: object, index: int) -> Rule:
     except ValueError as e:
         raise ConfigError(f"{ctx}: invalid confidence {conf_raw!r}") from e
 
-    present = [k for k in ("globs", "strings", "regex", "manifest") if k in table]
+    present = [k for k in ("globs", "strings", "regex", "manifest", "domains") if k in table]
     if len(present) != 1:
-        raise ConfigError(f"{ctx}: a rule needs exactly one of 'globs', 'strings', 'regex', or 'manifest'")
+        raise ConfigError(
+            f"{ctx}: a rule needs exactly one of 'globs', 'strings', 'regex', 'manifest', or 'domains'")
+    if "domain_search" in table and "domains" not in table:
+        raise ConfigError(f"{ctx}: 'domain_search' is only valid on a 'domains' rule")
 
     globs: tuple[str, ...] = ()
     strings: tuple[str, ...] = ()
     regex: tuple[str, ...] = ()
     manifest: tuple[str, ...] = ()
+    domains: tuple[str, ...] = ()
+    domain_search = False
     manifest_field = const_manifest_field_any
     targets: tuple[str, ...] = ()
+    compiled_regex: list[re.Pattern[bytes]] = []
     if "globs" in table:
         globs = _parse_globs(table.get("globs"), ctx)
+    elif "domains" in table:
+        domains = _parse_domains(table.get("domains"), ctx)
+        ds = table.get("domain_search", False)
+        if not isinstance(ds, bool):
+            raise ConfigError(f"{ctx}: 'domain_search' must be a boolean")
+        domain_search = ds
+        if "targets" in table:
+            targets = tuple(
+                _validate_glob(g, ctx)
+                for g in _parse_str_list(table.get("targets"), "targets", ctx))
     elif "manifest" in table:
         manifest = _parse_str_list(table.get("manifest"), "manifest", ctx)
         for pattern in manifest:
@@ -216,9 +270,13 @@ def _parse_rule(raw: object, index: int) -> Rule:
             strings = _parse_str_list(table.get("strings"), "strings", ctx)
         else:
             regex = _parse_str_list(table.get("regex"), "regex", ctx)
+            regex_encoding = const_rewrite_encoding if kind == "rewrite" else "utf-8"
             for pattern in regex:
                 try:
-                    re.compile(pattern.encode())
+                    compiled_regex.append(re.compile(pattern.encode(regex_encoding)))
+                except UnicodeEncodeError as e:
+                    raise ConfigError(
+                        f"{ctx}: regex {pattern!r} must be encodable as {regex_encoding}") from e
                 except re.error as e:
                     raise ConfigError(f"{ctx}: invalid regex {pattern!r}: {e}") from e
         if "targets" in table:
@@ -234,11 +292,32 @@ def _parse_rule(raw: object, index: int) -> Rule:
     except ValueError as e:
         raise ConfigError(f"{ctx}: invalid state {state_raw!r}") from e
 
+    ci = table.get("case_insensitive", False)
+    if not isinstance(ci, bool):
+        raise ConfigError(f"{ctx}: 'case_insensitive' must be a boolean")
+    game_types = (_parse_str_list(table.get("game_types"), "game_types", ctx)
+                  if "game_types" in table else ())
+
+    replace = ""
+    if "replace" in table:
+        if kind != "rewrite":
+            raise ConfigError(f"{ctx}: 'replace' is only valid on a kind='rewrite' rule")
+        if not regex:
+            raise ConfigError(f"{ctx}: 'replace' requires 'regex'")
+        rep = table.get("replace")
+        if not isinstance(rep, str) or not rep:
+            raise ConfigError(f"{ctx}: 'replace' must be a non-empty string")
+        for compiled in compiled_regex:
+            _validate_template(rep, compiled, ctx)
+        replace = rep
+
     return Rule(
         kind=kind, subject=subject, confidence=confidence,
         globs=globs, strings=strings, regex=regex, manifest=manifest,
+        domains=domains, domain_search=domain_search,
         manifest_field=manifest_field, targets=targets, match=match,
         state=state, attributes=_parse_attributes(table, ctx),
+        case_insensitive=ci, game_types=game_types, replace=replace,
     )
 
 
@@ -249,8 +328,11 @@ def _parse_bundle(data: dict[str, Any], *, default_source: str) -> RuleBundle:
     bundle_tbl = cast("dict[str, Any]", bundle_tbl)
     name = _require_str(bundle_tbl, "name", "[bundle]")
     version = _require_str(bundle_tbl, "version", "[bundle]")
-    source = bundle_tbl.get("source") if isinstance(bundle_tbl.get("source"), str) else default_source
+    source_raw = bundle_tbl.get("source")
+    source = source_raw if isinstance(source_raw, str) else default_source
     updated = _require_str(bundle_tbl, "updated", "[bundle]")
+    license_raw = bundle_tbl.get("license")
+    license_str = license_raw if isinstance(license_raw, str) else ""
 
     default_targets: tuple[str, ...] = ()
     if "default_targets" in bundle_tbl:
@@ -267,7 +349,7 @@ def _parse_bundle(data: dict[str, Any], *, default_source: str) -> RuleBundle:
         raise ConfigError(f"rule bundle {name!r}: no rules defined")
 
     return RuleBundle(name=name, version=version, source=str(source), updated=updated,
-                      rules=rules, default_targets=default_targets)
+                      rules=rules, default_targets=default_targets, license=license_str)
 
 
 def load_bundle(path: Path) -> RuleBundle:
@@ -289,8 +371,26 @@ def builtin_bundle_names() -> list[str]:
     )
 
 
+def _user_rules_path(name: str) -> Path:
+    """User override bundle: $XDG_CONFIG_HOME/dumpa/rules/<name>.toml (fallback ~/.config)."""
+    import os
+    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    base = Path(xdg).expanduser() if xdg else Path.home() / ".config"
+    return base / "dumpa" / "rules" / f"{name}.toml"
+
+
 def load_builtin(name: str) -> RuleBundle:
-    """Load a bundle shipped inside the package (e.g. 'engines')."""
+    """Load a bundle by name, preferring a user override over the vendored copy.
+
+    A refreshed snapshot written by ``dumpa update-signatures`` lands at
+    ``$XDG_CONFIG_HOME/dumpa/rules/<name>.toml`` and takes precedence over the in-repo
+    vendored bundle (the floor) — the same user-override precedent as the domains seed.
+    A malformed user copy raises (a refresh is explicit; silently falling back would hide
+    a broken update).
+    """
+    user_path = _user_rules_path(name)
+    if user_path.is_file():
+        return load_bundle(user_path)
     resource = importlib.resources.files(const_rules_package) / f"{name}.toml"
     if not resource.is_file():
         available = ", ".join(builtin_bundle_names()) or "none"
@@ -354,24 +454,212 @@ def _content_targets(extracted_dir: Path, targets: tuple[str, ...]) -> list[Path
 _Hit = tuple[str, int, str]
 
 
-def _record_regex_hit(found: dict[str, _Hit], pending_regex: set[str], key: str,
+_QUANTIFIERS = frozenset("?*{")
+
+
+def _split_alternation(pattern: str) -> list[str]:
+    """Split a regex on its top-level ``|`` (respecting escapes and group nesting)."""
+    parts: list[str] = []
+    cur: list[str] = []
+    depth = 0
+    i = 0
+    while i < len(pattern):
+        c = pattern[i]
+        if c == "\\" and i + 1 < len(pattern):
+            cur.append(c)
+            cur.append(pattern[i + 1])
+            i += 2
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth = max(0, depth - 1)
+        if c == "|" and depth == 0:
+            parts.append("".join(cur))
+            cur = []
+        else:
+            cur.append(c)
+        i += 1
+    parts.append("".join(cur))
+    return parts
+
+
+def _mandatory_anchor(branch: str) -> bytes | None:
+    """The longest literal run that *must* appear in any match of a single (no top-level
+    ``|``) branch, or None if there is none of at least ``const_min_anchor_len`` chars.
+
+    Only identifier runs at parenthesis-depth 0 and outside a ``[...]`` class are mandatory —
+    anything inside a group could be an alternative (``(a|b)``) or optional (``(x)?``), and a
+    char class is itself a one-of choice. A run whose following char is a ``*``/``?``/``{``
+    quantifier has its last char trimmed (it may repeat zero times). Escaped chars break the
+    run (conservative — a shorter anchor is still sound). Soundness matters: a missed anchor
+    would make the prefilter skip a real match.
+    """
+    best = ""
+    cur: list[str] = []
+
+    def flush(nxt: str) -> None:
+        nonlocal best, cur
+        run = "".join(cur)
+        cur = []
+        if run and nxt in _QUANTIFIERS:
+            run = run[:-1]
+        if len(run) > len(best):
+            best = run
+
+    depth = 0
+    in_class = False
+    i = 0
+    while i < len(branch):
+        c = branch[i]
+        if c == "\\" and i + 1 < len(branch):
+            flush("")
+            i += 2
+            continue
+        if in_class:
+            if c == "]":
+                in_class = False
+            i += 1
+            continue
+        if c == "[":
+            flush("")
+            in_class = True
+        elif c == "(":
+            flush("")
+            depth += 1
+        elif c == ")":
+            flush("")
+            depth = max(0, depth - 1)
+        elif depth == 0 and (c.isalnum() or c == "_"):
+            cur.append(c)
+        else:
+            flush(c if depth == 0 else "")
+        i += 1
+    flush("")
+    return best.encode() if len(best) >= const_min_anchor_len else None
+
+
+def _branch_anchors(source: str) -> list[bytes] | None:
+    """One mandatory anchor per top-level alternative, or None if any branch has none.
+
+    A class-path signature like ``com.foo.bar|com.baz`` yields an anchor per branch; the
+    source is a candidate when *any* branch anchor is present. If even one branch has no
+    mandatory literal run (e.g. ``(Integrity|Checksum).*(Check|Verify)`` — every literal sits
+    inside an alternation group), the source can't be safely prefiltered, so it returns None
+    and the caller always-runs it.
+    """
+    anchors: list[bytes] = []
+    for branch in _split_alternation(source):
+        anchor = _mandatory_anchor(branch)
+        if anchor is None:
+            return None
+        anchors.append(anchor)
+    return anchors
+
+
+class _RegexSet:
+    """Scan a window for many regex sources without one engine pass per source.
+
+    A naive bundle of N regexes costs N full ``search``es per chunk; combining them into one
+    alternation is far *worse* (CPython's ``re`` backtracks through every branch at every
+    position — pathological once branches contain ``.``/quantifiers). The fast primitive is an
+    alternation of **escaped literals**, which CPython accelerates with a prefix table: one
+    near-free pass tells us *which* sources might be present. So each source contributes a
+    literal anchor per top-level branch; one combined literal alternation per window yields the
+    candidate set, and only those candidates' real regexes actually run. Sources with no usable
+    anchor (no mandatory literal run) fall back to an always-run search.
+
+    Reports first-hit ``(source, match)``; ``discard`` marks a source found so it is skipped and
+    drops out of ``pending`` (which drives the streaming early-exit).
+    """
+
+    def __init__(self, flagged: list[tuple[str, bool]]) -> None:
+        self._all: set[str] = set()
+        self._found: set[str] = set()
+        self._real: dict[str, re.Pattern[bytes]] = {}            # anchor-gated
+        self._standalone: dict[str, re.Pattern[bytes]] = {}      # always-run
+        anchor_src: dict[bool, dict[bytes, set[str]]] = {True: {}, False: {}}
+        for src, ci in flagged:
+            if src in self._all:
+                continue
+            self._all.add(src)
+            compiled = re.compile(src.encode(), re.IGNORECASE if ci else 0)
+            anchors = _branch_anchors(src)
+            if anchors is None:
+                self._standalone[src] = compiled
+                continue
+            self._real[src] = compiled
+            for anchor in anchors:
+                key = anchor.lower() if ci else anchor
+                anchor_src[ci].setdefault(key, set()).add(src)
+        self._prefilters: list[tuple[re.Pattern[bytes], bool, dict[bytes, set[str]]]] = []
+        for ci, table in anchor_src.items():
+            if not table:
+                continue
+            # longest anchors first so the alternation prefers the most specific literal
+            ordered = sorted(table, key=len, reverse=True)
+            pattern = b"|".join(re.escape(a) for a in ordered)
+            self._prefilters.append((re.compile(pattern, re.IGNORECASE if ci else 0), ci, table))
+
+    @property
+    def pending(self) -> set[str]:
+        return self._all - self._found
+
+    def discard(self, key: str) -> None:
+        self._found.add(key)
+
+    def scan(self, window: bytes, *, at_eof: bool = False) -> list[tuple[str, re.Match[bytes]]]:
+        """First match per not-yet-found source in `window`.
+
+        A match ending exactly at the window edge is deferred (it may be truncated and
+        will reappear via the next chunk's overlap) unless `at_eof` — the final tail of a
+        file has no successor, so an edge match there is recorded.
+        """
+        n = len(window)
+        candidates: set[str] = set()
+        for rx, ci, table in self._prefilters:
+            for anchor_match in rx.finditer(window):
+                key = anchor_match.group().lower() if ci else anchor_match.group()
+                candidates |= table.get(key, set())
+        hits: list[tuple[str, re.Match[bytes]]] = []
+        seen: set[str] = set()
+        for src in candidates:
+            if src in self._found or src in seen:
+                continue
+            real_match = self._real[src].search(window)
+            if real_match is not None and (at_eof or real_match.end() != n):
+                seen.add(src)
+                hits.append((src, real_match))
+        for src, rx in self._standalone.items():
+            if src in self._found or src in seen:
+                continue
+            standalone_match = rx.search(window)
+            if standalone_match is not None and (at_eof or standalone_match.end() != n):
+                seen.add(src)
+                hits.append((src, standalone_match))
+        return hits
+
+
+def _record_regex_hit(found: dict[str, _Hit], key: str,
                       match: re.Match[bytes], rel: str, window_start: int) -> None:
     text = match.group()[:const_max_match_text].decode("latin-1")
     found[key] = (rel, window_start + match.start(), text)
-    pending_regex.discard(key)
 
 
 def _scan_content(files: list[Path], literals: dict[str, bytes],
-                  regexes: dict[str, re.Pattern[bytes]], extracted_dir: Path) -> dict[str, _Hit]:
+                  rset: _RegexSet | None, extracted_dir: Path) -> dict[str, _Hit]:
     """First-hit (relpath, offset, text) for each literal/regex key; streams with overlap."""
     found: dict[str, _Hit] = {}
     pending_literals = set(literals)
-    pending_regex = set(regexes)
+    has_regex = rset is not None and bool(rset.pending)
     overlap = max((len(v) for v in literals.values()), default=1)
-    overlap = max(overlap - 1, const_regex_overlap if regexes else 0)
+    overlap = max(overlap - 1, const_regex_overlap if has_regex else 0)
+
+    def regex_pending() -> bool:
+        return rset is not None and bool(rset.pending)
 
     for path in files:
-        if not pending_literals and not pending_regex:
+        if not pending_literals and not regex_pending():
             break
         try:
             if path.stat().st_size > const_max_content_scan_bytes:
@@ -391,22 +679,20 @@ def _scan_content(files: list[Path], literals: dict[str, bytes],
                         found[key] = (rel, window_start + window.find(literals[key]),
                                       key)
                         pending_literals.discard(key)
-                    for key in list(pending_regex):
-                        m = regexes[key].search(window)
-                        if m is not None:
-                            if m.end() == len(window):
-                                continue
-                            _record_regex_hit(found, pending_regex, key, m, rel, window_start)
-                    if not pending_literals and not pending_regex:
+                    if rset is not None:
+                        for key, m in rset.scan(window):
+                            _record_regex_hit(found, key, m, rel, window_start)
+                            rset.discard(key)
+                    if not pending_literals and not regex_pending():
                         break
                     base += len(chunk)
                     tail = window[-overlap:] if overlap > 0 else b""
-                if tail and pending_regex:
+                if tail and regex_pending():
                     window_start = base - len(tail)
-                    for key in list(pending_regex):
-                        m = regexes[key].search(tail)
-                        if m is not None:
-                            _record_regex_hit(found, pending_regex, key, m, rel, window_start)
+                    assert rset is not None
+                    for key, m in rset.scan(tail, at_eof=True):
+                        _record_regex_hit(found, key, m, rel, window_start)
+                        rset.discard(key)
         except OSError:
             logger.debug("content scan: cannot read %s", path, exc_info=True)
             continue
@@ -427,7 +713,12 @@ def _content_finding(rule: Rule, bundle: RuleBundle, hits: dict[str, _Hit]) -> F
             description=description, snippet=text, tool="rules", rule_version=bundle.version,
         ))
         if len(locations) < const_max_locations_per_rule:
-            locations.append(Location(file_path=rel, file_offset=offset))
+            # For a domain-search rule the matched key IS the host; stamp it so the
+            # attribution pass and tracker-only blocklists can see it.
+            locations.append(Location(
+                file_path=rel, file_offset=offset,
+                domain=key if rule.domain_search else None,
+            ))
     return Finding(
         kind=rule.kind, subject=rule.subject, confidence=rule.confidence,
         state=rule.state, attributes=dict(rule.attributes),
@@ -435,8 +726,18 @@ def _content_finding(rule: Rule, bundle: RuleBundle, hits: dict[str, _Hit]) -> F
     )
 
 
+def scan_content_rules(rules: list[Rule], bundle: RuleBundle, root: Path) -> list[Finding]:
+    """Apply content rules rooted at `root`, returning their Findings.
+
+    Public entry for scanners that scan a non-`extracted/` root — e.g. the dumpcs
+    scanner streams regex bundles over `dump.cs`/`script.json` under `dumps/`. Reuses
+    the same streaming primitive (`_scan_content`) as the extracted-tree path.
+    """
+    return _apply_content_rules(rules, bundle, root)
+
+
 def _apply_content_rules(rules: list[Rule], bundle: RuleBundle,
-                         extracted_dir: Path) -> list[Finding]:
+                         root: Path) -> list[Finding]:
     """Scan each target-set once for all its rules' patterns, then assemble findings."""
     fallback = bundle.default_targets or const_default_content_targets
     by_targets: dict[tuple[str, ...], list[Rule]] = {}
@@ -445,9 +746,14 @@ def _apply_content_rules(rules: list[Rule], bundle: RuleBundle,
 
     findings: list[Finding] = []
     for targets, group in by_targets.items():
-        literals = {s: s.encode() for rule in group for s in rule.strings}
-        regexes = {p: re.compile(p.encode()) for rule in group for p in rule.regex}
-        hits = _scan_content(_content_targets(extracted_dir, targets), literals, regexes, extracted_dir)
+        # Literal keys come from `strings` and, for domain-search rules, their `domains`.
+        literals = {k: k.encode() for rule in group for k in rule.keys if not rule.regex}
+        # Regex sources carry a per-rule case flag (IGNORECASE for ported dumpcs rules);
+        # _RegexSet combines them into few alternation passes and keys hits by source so
+        # _content_finding can look them up via rule.keys.
+        flagged = [(p, rule.case_insensitive) for rule in group for p in rule.regex]
+        rset = _RegexSet(flagged) if flagged else None
+        hits = _scan_content(_content_targets(root, targets), literals, rset, root)
         for rule in group:
             rule_hits = {k: hits[k] for k in rule.keys if k in hits}
             fired = (len(rule_hits) == len(rule.keys)) if rule.match == const_match_all else bool(rule_hits)

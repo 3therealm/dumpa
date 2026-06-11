@@ -208,7 +208,104 @@ def test_trackers_builtin_loads() -> None:
     bundle = load_builtin("trackers")
     assert bundle.name == "trackers"
     assert len(bundle.rules) >= 20
-    assert all(r.is_content or r.is_manifest for r in bundle.rules)
+    assert all(r.is_content or r.is_manifest or r.domains for r in bundle.rules)
+
+
+def test_trackers_builtin_has_domain_detectors() -> None:
+    bundle = load_builtin("trackers")
+    detectors = {r.subject for r in bundle.rules if r.domain_search}
+    assert {"Firebase Analytics", "AppsFlyer", "Chartboost"} <= detectors
+    assert all(r.confidence is Confidence.LOW for r in bundle.rules if r.domain_search)
+
+
+def test_domain_search_rejected_without_domains(tmp_path: Path) -> None:
+    text = ('[bundle]\nname="t"\nversion="1"\nupdated="d"\n\n'
+            '[[rule]]\nkind="tracker"\nsubject="X"\nconfidence="high"\n'
+            'strings=["y"]\ndomain_search=true\n')
+    with pytest.raises(ConfigError, match="domain_search"):
+        load_bundle(_write(tmp_path, text))
+
+
+# --- domains matcher kind ----------------------------------------------------
+
+_DOMAIN_SEARCH_BUNDLE = (
+    '[bundle]\nname="t"\nversion="1"\nupdated="d"\n\n'
+    '[[rule]]\nkind="tracker"\nsubject="AppsFlyer"\nconfidence="low"\n'
+    'owner="AppsFlyer"\ncategory="attribution"\n'
+    'domain_search=true\ndomains=["appsflyer.com"]\n'
+)
+_DOMAIN_ATTR_ONLY_BUNDLE = (
+    '[bundle]\nname="t"\nversion="1"\nupdated="d"\n\n'
+    '[[rule]]\nkind="tracker"\nsubject="AppsFlyer"\nconfidence="high"\n'
+    'domains=["appsflyer.com"]\n'
+)
+
+
+def test_domains_rule_parses_and_normalizes(tmp_path: Path) -> None:
+    text = ('[bundle]\nname="t"\nversion="1"\nupdated="d"\n\n'
+            '[[rule]]\nkind="tracker"\nsubject="X"\nconfidence="high"\ndomains=["Example.COM"]\n')
+    bundle = load_bundle(_write(tmp_path, text))
+    assert bundle.rules[0].domains == ("example.com",)
+
+
+@pytest.mark.parametrize("host", ["http://x.com", "x.*", "single"])
+def test_domains_rule_rejects_bad_host(tmp_path: Path, host: str) -> None:
+    text = ('[bundle]\nname="t"\nversion="1"\nupdated="d"\n\n'
+            f'[[rule]]\nkind="tracker"\nsubject="X"\nconfidence="high"\ndomains=["{host}"]\n')
+    with pytest.raises(ConfigError):
+        load_bundle(_write(tmp_path, text))
+
+
+def test_domains_violates_exactly_one_guard(tmp_path: Path) -> None:
+    text = ('[bundle]\nname="t"\nversion="1"\nupdated="d"\n\n'
+            '[[rule]]\nkind="tracker"\nsubject="X"\nconfidence="high"\n'
+            'domains=["x.com"]\nstrings=["y"]\n')
+    with pytest.raises(ConfigError, match="exactly one"):
+        load_bundle(_write(tmp_path, text))
+
+
+def test_domain_search_strict_bool(tmp_path: Path) -> None:
+    text = ('[bundle]\nname="t"\nversion="1"\nupdated="d"\n\n'
+            '[[rule]]\nkind="tracker"\nsubject="X"\nconfidence="high"\n'
+            'domains=["x.com"]\ndomain_search="false"\n')
+    with pytest.raises(ConfigError, match="domain_search"):
+        load_bundle(_write(tmp_path, text))
+
+
+def test_domain_search_detects_and_stamps_domain(tmp_path: Path) -> None:
+    bundle = load_bundle(_write(tmp_path, _DOMAIN_SEARCH_BUNDLE))
+    extracted = tmp_path / "ex"
+    _touch(extracted, "classes.dex", b"xx appsflyer.com yy")
+    findings = apply_bundle(bundle, extracted)
+    assert len(findings) == 1
+    assert findings[0].confidence is Confidence.LOW
+    assert findings[0].locations[0].domain == "appsflyer.com"
+
+
+def test_domain_attribution_only_emits_no_finding(tmp_path: Path) -> None:
+    bundle = load_bundle(_write(tmp_path, _DOMAIN_ATTR_ONLY_BUNDLE))
+    extracted = tmp_path / "ex"
+    _touch(extracted, "classes.dex", b"xx appsflyer.com yy")
+    assert apply_bundle(bundle, extracted) == []
+
+
+def test_domain_rules_accessor(tmp_path: Path) -> None:
+    text = ('[bundle]\nname="t"\nversion="1"\nupdated="d"\n\n'
+            '[[rule]]\nkind="tracker"\nsubject="A"\nconfidence="low"\n'
+            'domain_search=true\ndomains=["a.com"]\n\n'
+            '[[rule]]\nkind="tracker"\nsubject="B"\nconfidence="high"\ndomains=["b.com"]\n\n'
+            '[[rule]]\nkind="tracker"\nsubject="C"\nconfidence="high"\nstrings=["c"]\n')
+    bundle = load_bundle(_write(tmp_path, text))
+    subjects = {r.subject for r in bundle.domain_rules()}
+    assert subjects == {"A", "B"}
+
+
+def test_domain_search_is_content_and_keys(tmp_path: Path) -> None:
+    search = load_bundle(_write(tmp_path, _DOMAIN_SEARCH_BUNDLE)).rules[0]
+    assert search.is_content is True
+    assert search.keys == ("appsflyer.com",)
+    attr_only = load_bundle(_write(tmp_path, _DOMAIN_ATTR_ONLY_BUNDLE)).rules[0]
+    assert attr_only.is_content is False
 
 
 def test_missing_bundle_table_raises(tmp_path: Path) -> None:

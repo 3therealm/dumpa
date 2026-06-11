@@ -13,7 +13,10 @@ entry, an asset path, or a domain) — whichever apply to that kind of finding.
 
 from __future__ import annotations
 
+import csv
 import enum
+import html
+import io
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -169,6 +172,7 @@ class AppFacts:
     min_sdk: str | None = None
     target_sdk: str | None = None
     engine: str | None = None                       # reserved for Phase 4
+    game_types: list[str] = field(default_factory=_str_list)   # Play genres, primary first
     abis: list[str] = field(default_factory=_str_list)
     permissions: list[str] = field(default_factory=_str_list)
     signer_cert_sha256: str | None = None
@@ -183,6 +187,7 @@ class AppFacts:
             "package": self.package, "version_name": self.version_name,
             "version_code": self.version_code, "min_sdk": self.min_sdk,
             "target_sdk": self.target_sdk, "engine": self.engine,
+            "game_types": list(self.game_types),
             "abis": list(self.abis), "permissions": list(self.permissions),
             "signer_cert_sha256": self.signer_cert_sha256,
             "signing_schemes": list(self.signing_schemes),
@@ -197,6 +202,7 @@ class AppFacts:
             package=data.get("package"), version_name=data.get("version_name"),
             version_code=data.get("version_code"), min_sdk=data.get("min_sdk"),
             target_sdk=data.get("target_sdk"), engine=data.get("engine"),
+            game_types=[str(g) for g in data.get("game_types", [])],
             abis=[str(a) for a in data.get("abis", [])],
             permissions=[str(p) for p in data.get("permissions", [])],
             signer_cert_sha256=data.get("signer_cert_sha256"),
@@ -272,6 +278,59 @@ def read_json(path: Path) -> Report | None:
 
 
 _AD_CATEGORIES = frozenset({"ads", "ad mediation"})
+_MEDIATION_CATEGORY = "ad mediation"
+
+
+@dataclass(frozen=True)
+class CompanyRollup:
+    """Per-company view of the tracker findings owned by one company."""
+    owner: str
+    trackers: list[str]        # subjects, sorted-distinct
+    categories: list[str]      # sorted-distinct
+    domains: list[str]         # sorted-distinct, from grouped findings' Location.domain
+    mediation_adapters: int    # count of grouped trackers with category == "ad mediation"
+
+
+def companies(report: Report) -> dict[str, CompanyRollup]:
+    """Group tracker findings by their `owner` attribute into per-company rollups.
+
+    Only `kind == "tracker"` findings carrying an `owner` attribute participate;
+    unattributed trackers are skipped. For each owner, collect sorted-distinct subjects,
+    categories, and Location.domain values, plus a count of trackers whose
+    category == "ad mediation". Keyed by owner string.
+    """
+    subjects: dict[str, set[str]] = {}
+    categories: dict[str, set[str]] = {}
+    domains: dict[str, set[str]] = {}
+    mediation: dict[str, set[str]] = {}
+    for finding in report.findings:
+        if finding.kind != "tracker":
+            continue
+        owner = finding.attributes.get("owner")
+        if not owner:
+            continue
+        subjects.setdefault(owner, set()).add(finding.subject)
+        categories.setdefault(owner, set())
+        domains.setdefault(owner, set())
+        mediation.setdefault(owner, set())
+        category = finding.attributes.get("category")
+        if category:
+            categories[owner].add(category)
+        if category == _MEDIATION_CATEGORY:
+            mediation[owner].add(finding.subject)
+        for loc in finding.locations:
+            if loc.domain:
+                domains[owner].add(loc.domain)
+    return {
+        owner: CompanyRollup(
+            owner=owner,
+            trackers=sorted(subjects[owner]),
+            categories=sorted(categories[owner]),
+            domains=sorted(domains[owner]),
+            mediation_adapters=len(mediation[owner]),
+        )
+        for owner in subjects
+    }
 
 
 def density_score(report: Report) -> dict[str, float]:
@@ -284,13 +343,103 @@ def density_score(report: Report) -> dict[str, float]:
         "trackers": len(trackers),
         "companies": len(owners),
         "ad_sdks": len(ad_sdks),
+        "mediation_adapters": len([f for f in trackers
+                                   if f.attributes.get("category") == _MEDIATION_CATEGORY]),
         "per_mb": round(len(trackers) / size_mb, 3) if size_mb > 0 else 0.0,
     }
     return out
 
 
-def report_domains(report: Report) -> list[str]:
-    """Sorted unique hosts/domains from the report (endpoint hosts + any domain locations)."""
+def report_domains(report: Report, *, trackers_only: bool = False) -> list[str]:
+    """Sorted unique domain strings (string-only helper; CSV/grouped views use domain_records()).
+
+    Default (trackers_only=False) = all hosts: endpoint subjects UNION every Location.domain.
+    trackers_only=True -> only tracker-owned hosts:
+        - a Location.domain present on a tracker finding, OR
+        - an endpoint finding's subject when that endpoint carries an `owner` attribute.
+    """
+    domains: set[str] = set()
+    for finding in report.findings:
+        if trackers_only:
+            if finding.kind == "tracker":
+                for loc in finding.locations:
+                    if loc.domain:
+                        domains.add(loc.domain)
+            elif finding.kind == "endpoint" and finding.attributes.get("owner"):
+                domains.add(finding.subject)
+        else:
+            if finding.kind == "endpoint":
+                domains.add(finding.subject)
+            for loc in finding.locations:
+                if loc.domain:
+                    domains.add(loc.domain)
+    return sorted(d for d in domains if d)
+
+
+_BLOCKLIST_UNATTRIBUTED = "(unattributed)"
+
+
+def render_blocklist(report: Report, fmt: str, *, trackers_only: bool = False) -> str:
+    """Render a domain blocklist in `fmt`, scoped per `trackers_only`.
+
+    fmt line shapes:
+      hosts          -> '0.0.0.0 <domain>'
+      adguard        -> '||<domain>^'
+      nextdns        -> bare '<domain>'
+      rethinkdns     -> bare '<domain>' with a leading '! dumpa' comment line
+      trackercontrol -> '0.0.0.0 <domain>' grouped under '# <owner>' headers (via domain_records())
+    """
+    if fmt == "trackercontrol":
+        scoped = set(report_domains(report, trackers_only=trackers_only))
+        by_owner: dict[str, set[str]] = {}
+        for rec in domain_records(report):
+            if rec.domain not in scoped:
+                continue
+            by_owner.setdefault(rec.owner or _BLOCKLIST_UNATTRIBUTED, set()).add(rec.domain)
+        lines: list[str] = []
+        for owner in sorted(by_owner):
+            lines.append(f"# {owner}")
+            lines.extend(f"0.0.0.0 {d}" for d in sorted(by_owner[owner]))
+        return "\n".join(lines) + "\n" if lines else ""
+
+    domains = report_domains(report, trackers_only=trackers_only)
+    if not domains:
+        return ""
+    if fmt == "adguard":
+        lines = [f"||{d}^" for d in domains]
+    elif fmt == "nextdns":
+        lines = list(domains)
+    elif fmt == "rethinkdns":
+        lines = ["! dumpa", *domains]
+    else:  # hosts
+        lines = [f"0.0.0.0 {d}" for d in domains]
+    return "\n".join(lines) + "\n"
+
+
+@dataclass(frozen=True)
+class DomainRecord:
+    """One attributed domain: ownership + first observed location.
+
+    The single source for the domains CSV and (section-06) grouped blocklists, since
+    report_domains() returns only list[str] and loses owner/category/subject/location.
+    """
+    domain: str
+    owner: str | None
+    category: str | None
+    subject: str | None          # owning tracker subject, if attributed
+    first_file: str | None
+    first_offset: int | None
+
+
+def domain_records(report: Report) -> list[DomainRecord]:
+    """One DomainRecord per unique domain across the report, sorted by domain.
+
+    Collects every domain from endpoint finding subjects and every Location.domain on
+    any finding. For each domain: `subject` is the owning tracker subject when a tracker
+    finding carries that domain in a Location; owner/category come from whichever finding
+    carries the domain (tracker first, then endpoint whose subject == domain); and
+    first_file/first_offset come from the first domain-bearing Location in report order.
+    """
     domains: set[str] = set()
     for finding in report.findings:
         if finding.kind == "endpoint":
@@ -298,14 +447,92 @@ def report_domains(report: Report) -> list[str]:
         for loc in finding.locations:
             if loc.domain:
                 domains.add(loc.domain)
-    return sorted(d for d in domains if d)
+
+    records: list[DomainRecord] = []
+    for domain in sorted(d for d in domains if d):
+        owner: str | None = None
+        category: str | None = None
+        subject: str | None = None
+        first_file: str | None = None
+        first_offset: int | None = None
+        located = False
+        # Tracker carriers win on subject + owner/category (tracker-first).
+        for finding in report.findings:
+            if finding.kind != "tracker":
+                continue
+            if any(loc.domain == domain for loc in finding.locations):
+                if subject is None:
+                    subject = finding.subject
+                if owner is None:
+                    owner = finding.attributes.get("owner")
+                if category is None:
+                    category = finding.attributes.get("category")
+        # Endpoint fallback for owner/category only if no tracker supplied them.
+        if owner is None or category is None:
+            for finding in report.findings:
+                if finding.kind == "endpoint" and finding.subject == domain:
+                    if owner is None:
+                        owner = finding.attributes.get("owner")
+                    if category is None:
+                        category = finding.attributes.get("category")
+        # First domain-bearing location in report order.
+        for finding in report.findings:
+            for loc in finding.locations:
+                if loc.domain == domain:
+                    first_file = loc.file_path
+                    first_offset = loc.file_offset
+                    located = True
+                    break
+            if located:
+                break
+        records.append(DomainRecord(
+            domain=domain, owner=owner, category=category, subject=subject,
+            first_file=first_file, first_offset=first_offset,
+        ))
+    return records
 
 
-def render_blocklist(report: Report, fmt: str) -> str:
-    """Render a domain blocklist: 'hosts' (0.0.0.0 lines) or 'adguard' (||host^)."""
-    domains = report_domains(report)
-    lines = [f"||{d}^" for d in domains] if fmt == "adguard" else [f"0.0.0.0 {d}" for d in domains]
-    return "\n".join(lines) + "\n" if lines else ""
+def _csv_writer(header: list[str]) -> tuple[io.StringIO, Any]:
+    buf = io.StringIO()
+    writer = csv.writer(buf, quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
+    writer.writerow(header)
+    return buf, writer
+
+
+def render_trackers_csv(report: Report) -> str:
+    """CSV, one row per tracker finding (kind == 'tracker'), sorted by subject.
+
+    header: subject,owner,category,confidence,state,domains,files
+    domains/files are ';'-joined sorted-distinct non-empty Location values.
+    """
+    buf, writer = _csv_writer(
+        ["subject", "owner", "category", "confidence", "state", "domains", "files"])
+    trackers = sorted((f for f in report.findings if f.kind == "tracker"),
+                      key=lambda f: f.subject)
+    for f in trackers:
+        domains = sorted({loc.domain for loc in f.locations if loc.domain})
+        files = sorted({loc.file_path for loc in f.locations if loc.file_path})
+        writer.writerow([
+            f.subject, f.attributes.get("owner", ""), f.attributes.get("category", ""),
+            f.confidence.value, f.state.value, ";".join(domains), ";".join(files),
+        ])
+    return buf.getvalue()
+
+
+def render_domains_csv(report: Report) -> str:
+    """CSV, one row per unique domain (sorted), driven by domain_records(report).
+
+    header: domain,owner,category,subject,first_file,first_offset
+    None fields render as empty string.
+    """
+    buf, writer = _csv_writer(
+        ["domain", "owner", "category", "subject", "first_file", "first_offset"])
+    for r in domain_records(report):
+        writer.writerow([
+            r.domain, r.owner or "", r.category or "", r.subject or "",
+            r.first_file or "", "" if r.first_offset is None else r.first_offset,
+        ])
+    return buf.getvalue()
 
 
 def _flag_label(value: bool | None) -> str:
@@ -337,6 +564,7 @@ def render_markdown(report: Report) -> str:
         ("minSdk", f.min_sdk or "?"),
         ("targetSdk", f.target_sdk or "?"),
         ("engine", f.engine or "n/a"),
+        ("game type", ", ".join(f.game_types) if f.game_types else "n/a"),
         ("ABIs", ", ".join(f.abis) if f.abis else "none"),
         ("permissions", str(len(f.permissions))),
         ("exported components", str(f.exported_component_count)
@@ -355,7 +583,11 @@ def render_markdown(report: Report) -> str:
     secrets = [x for x in report.findings if x.kind == "secret"]
     data_access = [x for x in report.findings if x.kind in ("capability", "data-access")]
     endpoints = [x for x in report.findings if x.kind == "endpoint"]
-    _sectioned = ("tracker", "protection", "secret", "capability", "data-access", "endpoint")
+    native_libs = [x for x in report.findings if x.kind == "native"]
+    native_symbols = [x for x in report.findings if x.kind == "native-symbol"]
+    dexes = [x for x in report.findings if x.kind == "dex"]
+    _sectioned = ("tracker", "protection", "secret", "capability", "data-access",
+                  "endpoint", "native", "native-symbol", "dex")
     others = [x for x in report.findings if x.kind not in _sectioned]
 
     lines.append("## Trackers")
@@ -376,6 +608,12 @@ def render_markdown(report: Report) -> str:
                 owner = t.attributes.get("owner")
                 suffix = f" — {owner}" if owner else ""
                 lines.append(f"- {t.subject}{suffix} (confidence: {t.confidence.value})")
+            lines.append("")
+        rollups = companies(report)
+        if rollups:
+            parts = [f"{r.owner} ({len(r.trackers)})"
+                     for r in sorted(rollups.values(), key=lambda r: r.owner)]
+            lines.append(f"companies: {', '.join(parts)}")
             lines.append("")
 
     lines.append("## Protections")
@@ -420,6 +658,32 @@ def render_markdown(report: Report) -> str:
             lines.append(f"- {x.subject}")
     lines.append("")
 
+    lines.append("## Native")
+    if not native_libs and not native_symbols:
+        lines.append("_none_")
+    else:
+        counts = {s.subject: s.attributes for s in native_symbols}
+        for lib in sorted(native_libs, key=lambda i: i.subject):
+            arch = f"{lib.attributes.get('machine', '')} {lib.attributes.get('bitness', '')}".strip()
+            extra = counts.get(lib.subject)
+            if extra:
+                arch += (f" — {extra.get('export_count', '0')} exports, "
+                         f"{extra.get('import_count', '0')} imports, "
+                         f"{extra.get('section_count', '0')} sections")
+            lines.append(f"- {lib.subject}: {arch}")
+    lines.append("")
+
+    lines.append("## DEX")
+    if not dexes:
+        lines.append("_none_")
+    else:
+        for dx in sorted(dexes, key=lambda i: i.subject):
+            a = dx.attributes
+            lines.append(f"- {dx.subject}: {a.get('class_count', '0')} classes, "
+                         f"{a.get('method_count', '0')} methods, "
+                         f"{a.get('field_count', '0')} fields")
+    lines.append("")
+
     lines.append("## Findings")
     if not others:
         lines.append("_none_")
@@ -444,3 +708,203 @@ def render_markdown(report: Report) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+
+_HTML_STYLE = """\
+:root { color-scheme: light dark; }
+body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 60rem;
+       padding: 0 1rem; }
+h1 { font-size: 1.6rem; } h2 { margin-top: 2rem; border-bottom: 1px solid #8884;
+       padding-bottom: .2rem; } h3 { font-size: 1.05rem; color: #888; }
+table { border-collapse: collapse; width: 100%; margin: .5rem 0; }
+th, td { text-align: left; padding: .3rem .6rem; border-bottom: 1px solid #8883;
+       vertical-align: top; }
+th { white-space: nowrap; color: #888; font-weight: 600; }
+code { font-family: ui-monospace, monospace; word-break: break-all; }
+.none { color: #888; font-style: italic; }
+.meta { color: #888; font-size: .85rem; }
+"""
+
+
+def _h(value: object) -> str:
+    """Escape any dynamic value for safe HTML output (markup + attribute context)."""
+    return html.escape(str(value), quote=True)
+
+
+def render_html(report: Report) -> str:
+    """Render a self-contained static HTML view of a report (inline CSS, no JS/assets).
+
+    Mirrors render_markdown's sections. Every interpolated value is HTML-escaped via
+    `_h`; report text (package names, snippets, domains, ...) is attacker-controlled, so
+    nothing reaches the markup unescaped.
+    """
+    f = report.facts
+    title = f.package or Path(report.input_path).name
+    out: list[str] = [
+        "<!DOCTYPE html>",
+        '<html lang="en"><head><meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        f"<title>dumpa report — {_h(title)}</title>",
+        f"<style>{_HTML_STYLE}</style>",
+        "</head><body>",
+        f"<h1>dumpa report — {_h(title)}</h1>",
+        '<p class="meta">'
+        f"input <code>{_h(report.input_path)}</code><br>"
+        f"sha256 <code>{_h(f.input_sha256)}</code><br>"
+        f"size {f.input_size / (1024 * 1024):.2f} MB · created {_h(report.created)}</p>",
+    ]
+
+    version = f.version_name or "?"
+    if f.version_code:
+        version += f" ({f.version_code})"
+    app_rows = [
+        ("package", f.package or "unknown"),
+        ("version", version),
+        ("minSdk", f.min_sdk or "?"),
+        ("targetSdk", f.target_sdk or "?"),
+        ("engine", f.engine or "n/a"),
+        ("game type", ", ".join(f.game_types) if f.game_types else "n/a"),
+        ("ABIs", ", ".join(f.abis) if f.abis else "none"),
+        ("permissions", str(len(f.permissions))),
+        ("exported components", str(f.exported_component_count)
+         if f.exported_component_count is not None else "?"),
+        ("debuggable", _flag_label(f.debuggable)),
+        ("allowBackup", _flag_label(f.allow_backup)),
+        ("signer cert", f.signer_cert_sha256 or "unsigned/unknown"),
+        ("schemes", "+".join(f.signing_schemes) if f.signing_schemes else "none"),
+    ]
+    out.append("<h2>App</h2><table>")
+    out += [f"<tr><th>{_h(k)}</th><td>{_h(v)}</td></tr>" for k, v in app_rows]
+    out.append("</table>")
+
+    trackers = [x for x in report.findings if x.kind == "tracker"]
+    protections = [x for x in report.findings if x.kind == "protection"]
+    secrets = [x for x in report.findings if x.kind == "secret"]
+    data_access = [x for x in report.findings if x.kind in ("capability", "data-access")]
+    endpoints = [x for x in report.findings if x.kind == "endpoint"]
+    native_libs = [x for x in report.findings if x.kind == "native"]
+    native_symbols = [x for x in report.findings if x.kind == "native-symbol"]
+    dexes = [x for x in report.findings if x.kind == "dex"]
+    _sectioned = ("tracker", "protection", "secret", "capability", "data-access",
+                  "endpoint", "native", "native-symbol", "dex")
+    others = [x for x in report.findings if x.kind not in _sectioned]
+
+    out.append("<h2>Trackers</h2>")
+    if not trackers:
+        out.append('<p class="none">none</p>')
+    else:
+        d = density_score(report)
+        out.append('<p class="meta">'
+                   f"{int(d['trackers'])} tracker(s) from {int(d['companies'])} "
+                   f"company(ies); {int(d['ad_sdks'])} ad SDK(s); "
+                   f"{d['per_mb']} trackers/MB</p>")
+        by_category: dict[str, list[Finding]] = {}
+        for t in trackers:
+            by_category.setdefault(t.attributes.get("category", "uncategorized"), []).append(t)
+        for category in sorted(by_category):
+            out.append(f"<h3>{_h(category)}</h3><table>")
+            for t in sorted(by_category[category], key=lambda x: x.subject):
+                owner = t.attributes.get("owner", "")
+                out.append(f"<tr><td>{_h(t.subject)}</td><td>{_h(owner)}</td>"
+                           f"<td>{_h(t.confidence.value)}</td></tr>")
+            out.append("</table>")
+        rollups = companies(report)
+        if rollups:
+            parts = [f"{r.owner} ({len(r.trackers)})"
+                     for r in sorted(rollups.values(), key=lambda r: r.owner)]
+            out.append(f'<p class="meta">companies: {_h(", ".join(parts))}</p>')
+
+    out += _html_simple_section("Protections", protections, tag_attr="category")
+    out += _html_simple_section("Secrets", secrets, tag_attr="category")
+
+    out.append("<h2>Data access</h2>")
+    if not data_access:
+        out.append('<p class="none">none</p>')
+    else:
+        by_cat: dict[str, list[Finding]] = {}
+        for x in data_access:
+            by_cat.setdefault(x.attributes.get("category", "other"), []).append(x)
+        for category in sorted(by_cat):
+            out.append(f"<h3>{_h(category)}</h3><table>")
+            for x in sorted(by_cat[category], key=lambda i: i.subject):
+                out.append(f"<tr><td>{_h(x.subject)}</td><td>{_h(x.state.value)}</td>"
+                           f"<td>{_h(x.confidence.value)}</td></tr>")
+            out.append("</table>")
+
+    out.append("<h2>Endpoints</h2>")
+    if not endpoints:
+        out.append('<p class="none">none</p>')
+    else:
+        out.append("<table>")
+        out += [f"<tr><td><code>{_h(x.subject)}</code></td></tr>"
+                for x in sorted(endpoints, key=lambda i: i.subject)]
+        out.append("</table>")
+
+    out.append("<h2>Native</h2>")
+    if not native_libs and not native_symbols:
+        out.append('<p class="none">none</p>')
+    else:
+        counts = {s.subject: s.attributes for s in native_symbols}
+        out.append("<table>")
+        for lib in sorted(native_libs, key=lambda i: i.subject):
+            arch = f"{lib.attributes.get('machine', '')} {lib.attributes.get('bitness', '')}".strip()
+            extra = counts.get(lib.subject)
+            if extra:
+                arch += (f" — {extra.get('export_count', '0')} exports, "
+                         f"{extra.get('import_count', '0')} imports, "
+                         f"{extra.get('section_count', '0')} sections")
+            out.append(f"<tr><td><code>{_h(lib.subject)}</code></td><td>{_h(arch)}</td></tr>")
+        out.append("</table>")
+
+    out.append("<h2>DEX</h2>")
+    if not dexes:
+        out.append('<p class="none">none</p>')
+    else:
+        out.append("<table>")
+        for dx in sorted(dexes, key=lambda i: i.subject):
+            a = dx.attributes
+            detail = (f"{a.get('class_count', '0')} classes, "
+                      f"{a.get('method_count', '0')} methods, "
+                      f"{a.get('field_count', '0')} fields")
+            out.append(f"<tr><td><code>{_h(dx.subject)}</code></td><td>{_h(detail)}</td></tr>")
+        out.append("</table>")
+
+    out.append("<h2>Findings</h2>")
+    if not others:
+        out.append('<p class="none">none</p>')
+    else:
+        out.append("<table>")
+        for finding in others:
+            ev = "; ".join(e.description for e in finding.evidence)
+            out.append(f"<tr><td>{_h(finding.kind)}</td><td>{_h(finding.subject)}</td>"
+                       f"<td>{_h(finding.confidence.value)}</td><td>{_h(ev)}</td></tr>")
+        out.append("</table>")
+
+    if report.warnings:
+        out.append("<h2>Warnings</h2><ul>")
+        out += [f"<li>{_h(w)}</li>" for w in report.warnings]
+        out.append("</ul>")
+
+    if report.tool_versions:
+        out.append("<h2>Tool versions</h2><table>")
+        out += [f"<tr><th>{_h(name)}</th><td>{_h(ver)}</td></tr>"
+                for name, ver in sorted(report.tool_versions.items())]
+        out.append("</table>")
+
+    out.append("</body></html>")
+    return "\n".join(out) + "\n"
+
+
+def _html_simple_section(heading: str, findings: list[Finding], *, tag_attr: str) -> list[str]:
+    """Render a flat subject/tag/confidence table section (Protections, Secrets)."""
+    out = [f"<h2>{_h(heading)}</h2>"]
+    if not findings:
+        out.append('<p class="none">none</p>')
+        return out
+    out.append("<table>")
+    for item in sorted(findings, key=lambda i: i.subject):
+        tag = item.attributes.get(tag_attr, "")
+        out.append(f"<tr><td>{_h(item.subject)}</td><td>{_h(tag)}</td>"
+                   f"<td>{_h(item.confidence.value)}</td></tr>")
+    out.append("</table>")
+    return out

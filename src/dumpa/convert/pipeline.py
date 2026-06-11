@@ -50,11 +50,20 @@ from dumpa.convert.models import (
 )
 from dumpa.convert.validate import report_output_apk
 from dumpa.core.archive import safe_extract_zip
-from dumpa.core.config import SigningConfig, load_config
-from dumpa.core.errors import ConfigError, ManifestError, XapkToApkError
+from dumpa.core.config import (
+    SigningConfig,
+    const_default_validation_timeout,
+    const_env_validation_timeout,
+    load_config,
+)
+from dumpa.core.env import env_positive_int
+from dumpa.core.errors import ConfigError, ManifestError, ToolNotFoundError, XapkToApkError
 from dumpa.core.fs import working_tmp_dir
+from dumpa.core.hashing import sha256_file
 from dumpa.core.tools import ToolRegistry, build_default_registry
+from dumpa.core.workspace import Workspace, decide_reuse, make_meta, open_workspace
 from dumpa.signing import preflight_keystore, resolve_signing
+from dumpa.tools import aapt
 
 logger = logging.getLogger("dumpa")
 
@@ -232,6 +241,23 @@ def copy_single_apk_to_working_dir(tmp: Path, working_dir: Path, target_name: st
     return dst
 
 
+def _emit_apk(src: Path, working_dir: Path, target_name: str) -> Path:
+    """Copy/link a built apk to <working_dir>/<target_name>.apk, leaving the source intact.
+
+    The persistent-workspace path emits from `ws.app_apk` (the canonical artifact), which
+    must survive — so this copies rather than the rename used for the throwaway scratch.
+    """
+    if not src.is_file():
+        raise XapkToApkError("result apk file not found")
+    dst = working_dir / f'{target_name}{const_ext_apk}'
+    if dst.is_dir():
+        raise XapkToApkError(f"refusing to overwrite directory at {dst}")
+    if dst.exists():
+        dst.unlink()
+    shutil.copy2(src, dst)
+    return dst
+
+
 def _verify_required_tools(registry: ToolRegistry, should_sign: bool) -> None:
     """Ensure apktool, zipalign, and (optionally) apksigner are available; exit if not."""
     names = ['apktool', 'zipalign']
@@ -281,11 +307,109 @@ def build_merged_apk(registry: ToolRegistry, scratch: Path, xapk_abs: Path,
     return target, package_name
 
 
-def convert_xapk(xapk_path: Path, *, signing: str | None = None) -> None:
+# === Reusable workspace builder (shared by `analyze`, `convert`, `dump-il2cpp`) ===
+#
+# Extract an APK/XAPK once into a workspace so later commands never re-extract it.
+# These live here, beside build_merged_apk, because both the standalone `convert`
+# command and the `analyze` umbrella draw from them.
+
+
+def _validation_timeout() -> int:
+    return env_positive_int(const_env_validation_timeout, const_default_validation_timeout)
+
+
+def collect_tool_versions(registry: ToolRegistry, names: list[str]) -> dict[str, str]:
+    """Resolve each named tool and record its version where known (for the workspace marker)."""
+    out: dict[str, str] = {}
+    for name in names:
+        try:
+            tool = registry.resolve(name)
+        except ToolNotFoundError:
+            continue
+        if tool.version:
+            out[name] = tool.version
+    return out
+
+
+def workspace_build_options(in_type: str, sign_config: SigningConfig | None) -> dict[str, str] | None:
+    """Return the build options that affect reusable workspace output."""
+    if in_type != "xapk":
+        return None
+    if sign_config is None:
+        return {"xapk_signing": "unsigned"}
+    return {
+        "xapk_signing": "signed",
+        "keystore_file": str(sign_config.keystore_file.resolve()),
+        "keystore_sha256": sha256_file(sign_config.keystore_file),
+        "key_alias": sign_config.key_alias,
+        "min_sdk_version": str(sign_config.min_sdk_version or ""),
+    }
+
+
+def read_package(registry: ToolRegistry, apk: Path) -> str | None:
+    """Read the package name from an apk via aapt; None if aapt is unavailable."""
+    try:
+        tool = registry.resolve('aapt')
+    except ToolNotFoundError:
+        return None
+    return aapt.read_badging(tool, apk, _validation_timeout()).package
+
+
+def build_workspace(registry: ToolRegistry, ws: Workspace, input_abs: Path,
+                    in_type: str, input_sha256: str, sign_config: SigningConfig | None,
+                    build_options: dict[str, str] | None = None) -> None:
+    """Populate a fresh workspace: produce app.apk, extract it, and write the marker."""
+    ws.prepare_build()
+    if in_type == "xapk":
+        # Build merge scratch under the workspace root (same FS -> instant rename of the
+        # result), then free it before extracting app.apk to keep peak disk bounded.
+        with working_tmp_dir(ws.root) as scratch:
+            target, _package = build_merged_apk(registry, scratch, input_abs, sign_config)
+            target.replace(ws.app_apk)
+        tool_names = ['apktool', 'zipalign', 'aapt']
+        if sign_config is not None:
+            tool_names.append('apksigner')
+    else:
+        shutil.copy2(input_abs, ws.app_apk)
+        tool_names = ['aapt']
+
+    safe_extract_zip(ws.app_apk, ws.extracted_dir)
+    ws.write_meta(make_meta(
+        input_path=input_abs,
+        input_sha256=input_sha256,
+        input_size=input_abs.stat().st_size,
+        input_type=in_type,
+        tool_versions=collect_tool_versions(registry, tool_names),
+        build_options=build_options,
+    ))
+
+
+def convert_into_workspace(registry: ToolRegistry, ws: Workspace, xapk_abs: Path,
+                           input_sha256: str, sign_config: SigningConfig | None,
+                           build_options: dict[str, str] | None, *,
+                           force: bool) -> tuple[Path, str | None]:
+    """Build the xapk into a reusable workspace, or reuse an unchanged one.
+
+    Returns (canonical app.apk path, package name). When the workspace already matches
+    this input + signing, the extraction is reused — no re-merge, no re-extract.
+    """
+    if decide_reuse(ws, input_sha256, force=force, build_options=build_options):
+        logger.info("reusing workspace %s (input unchanged)", ws.root)
+    else:
+        build_workspace(registry, ws, xapk_abs, "xapk", input_sha256, sign_config, build_options)
+    return ws.app_apk, read_package(registry, ws.app_apk)
+
+
+def convert_xapk(xapk_path: Path, *, signing: str | None = None,
+                 workspace: Path | None = None, force: bool = False) -> None:
     """Run all phases for one .xapk, writing the final .apk into the current working directory.
 
     Pure pipeline entry: takes an explicit path so it is callable from the Typer
     CLI (`dumpa convert`), the legacy argv entrypoint, and as a library function.
+
+    With `workspace`, the merge lands in a reusable workspace (extracted once, with a
+    marker) so a later `analyze`/`dump-il2cpp` on that path reuses the extraction; the
+    `<stem>.apk` is still emitted into the cwd. Without it, the build is ephemeral.
     """
     config = load_config()
     registry = build_default_registry(config.tool_paths)
@@ -298,10 +422,23 @@ def convert_xapk(xapk_path: Path, *, signing: str | None = None) -> None:
     logger.info("start")
     cwd = Path.cwd().resolve()
 
-    with working_tmp_dir(cwd) as tmp:
-        _, package_name = build_merged_apk(registry, tmp, xapk_abs, sign_config)
-        final_apk = copy_single_apk_to_working_dir(tmp, cwd, original_stem)
-        report_output_apk(registry, final_apk, package_name, sign_config is not None,
-                          xapk_abs.stat().st_size)
+    if workspace is None:
+        # Ephemeral build: the workspace primitive (wiped on exit, honors DUMPA_KEEP_TMP)
+        # without populating extracted/ — nothing here is reused, so don't pay to unzip it.
+        with open_workspace(None) as ws:
+            _, package_name = build_merged_apk(registry, ws.root, xapk_abs, sign_config)
+            final_apk = copy_single_apk_to_working_dir(ws.root, cwd, original_stem)
+            report_output_apk(registry, final_apk, package_name, sign_config is not None,
+                              xapk_abs.stat().st_size)
+    else:
+        input_sha = sha256_file(xapk_abs)
+        build_options = workspace_build_options("xapk", sign_config)
+        with open_workspace(workspace) as ws:
+            app_apk, pkg = convert_into_workspace(
+                registry, ws, xapk_abs, input_sha, sign_config, build_options, force=force)
+            final_apk = _emit_apk(app_apk, cwd, original_stem)
+            report_output_apk(registry, final_apk, pkg or '?', sign_config is not None,
+                              xapk_abs.stat().st_size)
+            logger.info("workspace: %s", ws.root)
 
     logger.info("complete")

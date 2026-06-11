@@ -1,0 +1,203 @@
+# Imported Exodus Privacy tracker signatures (generated — do not edit by hand).
+# Regenerate with `dumpa update-signatures`. Curated `trackers.toml` stays
+# authoritative; on overlap the curated rule wins (class-path dedup at scan time).
+
+[bundle]
+name = "trackers-exodus"
+version = "exodus.12.96f43d11"
+source = "Exodus Privacy (https://reports.exodus-privacy.eu.org/api/trackers/)"
+updated = "2026-06-08"
+license = "Exodus Privacy tracker data — see https://exodus-privacy.eu.org (AGPL-3.0 project)"
+
+[[rule]]
+kind = "tracker"
+subject = "Adjust"
+category = "attribution"
+confidence = "medium"
+owner = "adjust.com"
+regex = ["com.adjust.sdk."]
+
+[[rule]]
+kind = "tracker"
+subject = "Adjust"
+category = "attribution"
+confidence = "medium"
+owner = "adjust.com"
+regex = ["app.adjust.com|app.adjust.io"]
+
+[[rule]]
+kind = "tracker"
+subject = "AppsFlyer"
+category = "attribution"
+confidence = "medium"
+owner = "appsflyer.com"
+regex = ["com.appsflyer."]
+
+[[rule]]
+kind = "tracker"
+subject = "AppsFlyer"
+category = "attribution"
+confidence = "medium"
+owner = "appsflyer.com"
+regex = ["appsflyer.com"]
+
+[[rule]]
+kind = "tracker"
+subject = "Branch"
+category = "analytics"
+confidence = "medium"
+owner = "branch.io"
+regex = ["io.branch.referral."]
+
+[[rule]]
+kind = "tracker"
+subject = "Branch"
+category = "analytics"
+confidence = "medium"
+owner = "branch.io"
+regex = ["api.branch.io|api2.branch.io"]
+
+[[rule]]
+kind = "tracker"
+subject = "Amplitude"
+category = "analytics"
+confidence = "medium"
+owner = "amplitude.com"
+regex = ["com.amplitude.api."]
+
+[[rule]]
+kind = "tracker"
+subject = "Amplitude"
+category = "analytics"
+confidence = "medium"
+owner = "amplitude.com"
+regex = ["api.amplitude.com"]
+
+[[rule]]
+kind = "tracker"
+subject = "Braze (Appboy)"
+category = "analytics"
+confidence = "medium"
+owner = "braze.com"
+regex = ["com.appboy.|com.braze."]
+
+[[rule]]
+kind = "tracker"
+subject = "Braze (Appboy)"
+category = "analytics"
+confidence = "medium"
+owner = "braze.com"
+regex = ["sdk.iad-..appboy.com"]
+
+[[rule]]
+kind = "tracker"
+subject = "Kochava"
+category = "ads"
+confidence = "medium"
+owner = "kochava.com"
+regex = ["com.kochava."]
+
+[[rule]]
+kind = "tracker"
+subject = "Kochava"
+category = "ads"
+confidence = "medium"
+owner = "kochava.com"
+regex = ["control.kochava.com"]
+
+[[rule]]
+kind = "tracker"
+subject = "Tenjin"
+category = "analytics"
+confidence = "medium"
+owner = "tenjin.com"
+regex = ["com.tenjin."]
+
+[[rule]]
+kind = "tracker"
+subject = "Tenjin"
+category = "analytics"
+confidence = "medium"
+owner = "tenjin.com"
+regex = ["track.tenjin.com"]
+
+[[rule]]
+kind = "tracker"
+subject = "Singular"
+category = "attribution"
+confidence = "medium"
+owner = "singular.net"
+regex = ["com.singular.sdk."]
+
+[[rule]]
+kind = "tracker"
+subject = "Singular"
+category = "attribution"
+confidence = "medium"
+owner = "singular.net"
+regex = ["singular.net"]
+
+[[rule]]
+kind = "tracker"
+subject = "Mixpanel"
+category = "analytics"
+confidence = "medium"
+owner = "mixpanel.com"
+regex = ["com.mixpanel.android."]
+
+[[rule]]
+kind = "tracker"
+subject = "Mixpanel"
+category = "analytics"
+confidence = "medium"
+owner = "mixpanel.com"
+regex = ["api.mixpanel.com"]
+
+[[rule]]
+kind = "tracker"
+subject = "Bugsnag"
+category = "crash reporting"
+confidence = "medium"
+owner = "bugsnag.com"
+regex = ["com.bugsnag.android."]
+
+[[rule]]
+kind = "tracker"
+subject = "Bugsnag"
+category = "crash reporting"
+confidence = "medium"
+owner = "bugsnag.com"
+regex = ["notify.bugsnag.com|sessions.bugsnag.com"]
+
+[[rule]]
+kind = "tracker"
+subject = "Sentry"
+category = "crash reporting"
+confidence = "medium"
+owner = "sentry.io"
+regex = ["io.sentry."]
+
+[[rule]]
+kind = "tracker"
+subject = "Sentry"
+category = "crash reporting"
+confidence = "medium"
+owner = "sentry.io"
+regex = ["sentry.io"]
+
+[[rule]]
+kind = "tracker"
+subject = "OneSignal"
+category = "ads"
+confidence = "medium"
+owner = "onesignal.com"
+regex = ["com.onesignal."]
+
+[[rule]]
+kind = "tracker"
+subject = "OneSignal"
+category = "ads"
+confidence = "medium"
+owner = "onesignal.com"
+regex = ["onesignal.com"]
+

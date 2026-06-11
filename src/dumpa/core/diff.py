@@ -34,14 +34,26 @@ class ReportDiff:
     engine_before: str | None
     engine_after: str | None
     deltas: list[KindDelta]
+    companies_added: list[str] = field(default_factory=_str_list)
+    companies_removed: list[str] = field(default_factory=_str_list)
 
     @property
     def engine_changed(self) -> bool:
         return self.engine_before != self.engine_after
 
     @property
+    def companies_changed(self) -> bool:
+        return bool(self.companies_added or self.companies_removed)
+
+    @property
     def changed(self) -> bool:
-        return self.engine_changed or any(d.changed for d in self.deltas)
+        return (self.engine_changed or self.companies_changed
+                or any(d.changed for d in self.deltas))
+
+
+def _owner_set(report: Report) -> set[str]:
+    return {f.attributes["owner"] for f in report.findings
+            if f.kind == "tracker" and f.attributes.get("owner")}
 
 
 def diff_reports(old: Report, new: Report) -> ReportDiff:
@@ -55,10 +67,14 @@ def diff_reports(old: Report, new: Report) -> ReportDiff:
         removed = sorted(old_subjects - new_subjects)
         if added or removed:
             deltas.append(KindDelta(kind=kind, added=added, removed=removed))
+    old_owners = _owner_set(old)
+    new_owners = _owner_set(new)
     return ReportDiff(
         engine_before=old.facts.engine,
         engine_after=new.facts.engine,
         deltas=deltas,
+        companies_added=sorted(new_owners - old_owners),
+        companies_removed=sorted(old_owners - new_owners),
     )
 
 
@@ -68,9 +84,13 @@ def render_diff(old_label: str, new_label: str, diff: ReportDiff) -> str:
     if diff.engine_changed:
         lines.append(f"engine: {diff.engine_before or 'n/a'} -> {diff.engine_after or 'n/a'}")
         lines.append("")
-    if not diff.deltas:
-        lines.append("no finding changes" if not diff.engine_changed else "")
-        return "\n".join(lines).rstrip() + "\n"
+    if diff.companies_changed:
+        lines.append("## companies")
+        for owner in diff.companies_added:
+            lines.append(f"  + {owner}")
+        for owner in diff.companies_removed:
+            lines.append(f"  - {owner}")
+        lines.append("")
     for delta in diff.deltas:
         lines.append(f"## {delta.kind}")
         for subject in delta.added:
@@ -78,4 +98,6 @@ def render_diff(old_label: str, new_label: str, diff: ReportDiff) -> str:
         for subject in delta.removed:
             lines.append(f"  - {subject}")
         lines.append("")
+    if not diff.changed:
+        lines.append("no finding changes")
     return "\n".join(lines).rstrip() + "\n"

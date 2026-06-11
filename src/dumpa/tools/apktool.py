@@ -50,6 +50,25 @@ def decode(tool: ResolvedTool, apk_file: str, cwd: Path, flags: tuple[str, ...])
             extra_env=_jvm_env())
 
 
+def decode_apk(tool: ResolvedTool, apk: Path, out_dir: Path) -> None:
+    """`apktool d -f -o <out_dir> -- <apk>` — full decode (smali + resources) of one apk.
+
+    Unlike `decode` (cwd-relative, basename-named, for splits), this takes explicit apk
+    and output paths so callers control the workspace layout. Same JVM heap lift and the
+    one-shot `--keep-broken-res` retry on a hard decode failure (timeouts re-raise).
+    """
+    base = ('d', '-f', '-o', str(out_dir), '--', str(apk))
+    try:
+        run(tool.argv(*base), fail_msg=f'failed to decode {apk.name}', extra_env=_jvm_env())
+    except ToolTimeoutError:
+        raise
+    except ToolExecutionError:
+        logger.warning("retry decode with --keep-broken-res: %s", apk.name)
+        run(tool.argv('d', '-f', '--keep-broken-res', '-o', str(out_dir), '--', str(apk)),
+            fail_msg=f'failed to decode {apk.name} (even with --keep-broken-res)',
+            extra_env=_jvm_env())
+
+
 def build(tool: ResolvedTool, apk_dir: Path) -> Path:
     """`apktool b` the merged dir; return the built apk path under dist/."""
     run(tool.argv('b', '--', str(apk_dir)), cwd=apk_dir.parent,

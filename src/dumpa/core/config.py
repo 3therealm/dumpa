@@ -30,9 +30,15 @@ const_env_key_password = 'DUMPA_KEY_PASSWORD'
 const_env_min_sdk_version = 'DUMPA_MIN_SDK_VERSION'
 const_env_validation_timeout = 'DUMPA_VALIDATION_TIMEOUT_SECONDS'
 const_env_il2cpp_engine = 'DUMPA_IL2CPP_ENGINE'
+# [analysis]: dump.cs auto-dump + networked Play genre lookup.
+const_env_auto_dump = 'DUMPA_AUTO_DUMP'
+const_env_play_lookup = 'DUMPA_PLAY_LOOKUP'
+const_env_play_timeout = 'DUMPA_PLAY_TIMEOUT_SECONDS'
+const_env_play_cache_ttl_days = 'DUMPA_PLAY_CACHE_TTL_DAYS'
 
 const_default_validation_timeout = 300
 const_default_il2cpp_engine = 'dumper'
+const_default_play_cache_ttl_days = 30
 const_il2cpp_engines = ('dumper', 'inspector')
 const_config_filename = 'dumpa.toml'
 
@@ -63,11 +69,21 @@ class SigningConfig:
 
 
 @dataclass(frozen=True)
+class AnalysisConfig:
+    """dump.cs auto-dump + Play genre lookup settings (the [analysis] section)."""
+    auto_dump: bool = True
+    play_lookup: bool = True
+    play_timeout: int = const_default_validation_timeout
+    play_cache_ttl_days: int = const_default_play_cache_ttl_days
+
+
+@dataclass(frozen=True)
 class Config:
     """Top-level resolved configuration."""
     signing: SigningConfig | None = None
     tool_paths: dict[str, str] = field(default_factory=_empty_str_map)
     il2cpp_engine: str = const_default_il2cpp_engine
+    analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
 
 
 def _find_config_file(explicit_path: Path | None) -> Path | None:
@@ -166,6 +182,38 @@ def _load_tool_paths(sec: dict[str, Any]) -> dict[str, str]:
     return out
 
 
+def _bool_setting(env_name: str, sec: dict[str, Any], key: str, default: bool, label: str) -> bool:
+    """Resolve a boolean from env (1/0/true/false) over TOML over default."""
+    raw: object = os.environ.get(env_name)
+    if raw is None or raw == '':
+        raw = sec.get(key)
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        low = raw.strip().lower()
+        if low in ('1', 'true', 'yes', 'on'):
+            return True
+        if low in ('0', 'false', 'no', 'off'):
+            return False
+    raise ConfigError(f"{label} must be a boolean (true/false/1/0)")
+
+
+def _load_analysis(sec: dict[str, Any]) -> AnalysisConfig:
+    timeout = _positive_int_or_none(
+        os.environ.get(const_env_play_timeout) or sec.get('play_timeout'), const_env_play_timeout)
+    ttl = _positive_int_or_none(
+        os.environ.get(const_env_play_cache_ttl_days) or sec.get('play_cache_ttl_days'),
+        const_env_play_cache_ttl_days)
+    return AnalysisConfig(
+        auto_dump=_bool_setting(const_env_auto_dump, sec, 'auto_dump', True, 'auto_dump'),
+        play_lookup=_bool_setting(const_env_play_lookup, sec, 'play_lookup', True, 'play_lookup'),
+        play_timeout=timeout if timeout is not None else const_default_validation_timeout,
+        play_cache_ttl_days=ttl if ttl is not None else const_default_play_cache_ttl_days,
+    )
+
+
 def _load_il2cpp_engine(sec: dict[str, Any]) -> str:
     engine = os.environ.get(const_env_il2cpp_engine) or sec.get('engine') or const_default_il2cpp_engine
     if not isinstance(engine, str) or engine not in const_il2cpp_engines:
@@ -180,4 +228,5 @@ def load_config(explicit_path: Path | None = None) -> Config:
         signing=_load_signing(_section(toml, 'signing')),
         tool_paths=_load_tool_paths(_section(toml, 'tools')),
         il2cpp_engine=_load_il2cpp_engine(_section(toml, 'il2cpp')),
+        analysis=_load_analysis(_section(toml, 'analysis')),
     )

@@ -20,7 +20,7 @@ from dumpa.core.privacy import permission_findings
 from dumpa.core.report import AppFacts, Report
 from dumpa.core.tools import ToolRegistry
 from dumpa.core.workspace import Workspace
-from dumpa.scanners import primary_engine, run_all
+from dumpa.scanners import game_types, primary_engine, run_all
 from dumpa.tools import aapt, apksigner
 
 logger = logging.getLogger("dumpa")
@@ -55,8 +55,12 @@ def _read_signer(registry: ToolRegistry, ws: Workspace) -> apksigner.SignerInfo 
     return apksigner.parse_verify_output(out)
 
 
-def build_report(registry: ToolRegistry, ws: Workspace) -> Report:
-    """Assemble a facts-only Report for a populated workspace (findings empty for now)."""
+def build_report(registry: ToolRegistry, ws: Workspace, *, use_cache: bool = True) -> Report:
+    """Assemble the unified Report for a populated workspace.
+
+    Scanner findings are served from the per-scanner content-hash cache when available;
+    pass use_cache=False to force a fresh scan (the `--no-cache` path).
+    """
     meta = ws.read_meta()
     if meta is None:
         raise ValueError(f"workspace {ws.root} has no marker; run `dumpa analyze` first")
@@ -70,7 +74,7 @@ def build_report(registry: ToolRegistry, ws: Workspace) -> Report:
     # failed (and the only source for ABIs, which live in the native-code listing).
     permissions = list(manifest.permissions) if manifest else list(badging.permissions)
 
-    findings = run_all(ws)
+    findings = run_all(ws, use_cache=use_cache)
     findings.extend(permission_findings(permissions))
 
     facts = AppFacts(
@@ -82,6 +86,7 @@ def build_report(registry: ToolRegistry, ws: Workspace) -> Report:
         min_sdk=_prefer(manifest.min_sdk if manifest else None, badging.min_sdk),
         target_sdk=_prefer(manifest.target_sdk if manifest else None, badging.target_sdk),
         engine=primary_engine(findings),
+        game_types=game_types(findings),
         abis=list(badging.abis),
         permissions=permissions,
         signer_cert_sha256=signer.cert_sha256 if signer else None,

@@ -1,0 +1,51 @@
+# Obfuscation / protection markers in IL2CPP dump.cs (new; not in DumpExplorer).
+# Always-on (no game_types).
+[bundle]
+name = "dumpcs_obfuscation"
+version = "2026.06.1"
+source = "dumpa built-in"
+updated = "2026-06-08"
+default_targets = ["dump.cs"]
+
+[[rule]]
+kind = "dumpcs"
+subject = "name-mangling"
+confidence = "low"
+case_insensitive = false
+# Long opaque all-caps/underscore or hash-like type names suggest a name obfuscator.
+regex = ['class [A-Za-z]?[0-9A-F]{8,}\b|class _{2,}[A-Za-z0-9]+']
+
+[[rule]]
+kind = "dumpcs"
+subject = "string-encryption"
+confidence = "medium"
+case_insensitive = true
+regex = ['(String|Crypt|Cipher|Xor|Aes|Rc4).*((Decrypt|Encrypt|Decode|Deobfuscate|Unscramble))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "reflection-heavy"
+confidence = "low"
+case_insensitive = true
+regex = ['(Reflection|Activator|MethodInfo|MethodBase).*((Invoke|GetMethod|CreateInstance))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "control-flow-flatten"
+confidence = "low"
+case_insensitive = true
+regex = ['(StateMachine|Dispatcher|Switch).*((State|Next|Step|Block|Branch))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "packer-stub"
+confidence = "medium"
+case_insensitive = true
+regex = ['(Packer|Unpack|Loader|Stub).*((Load|Decrypt|Unpack|Init|Bootstrap))|(NativeLib|SoLoad).*((Load|Decrypt))']
+
+[[rule]]
+kind = "dumpcs"
+subject = "dynamic-loading"
+confidence = "low"
+case_insensitive = true
+regex = ['(Assembly|DexClassLoader|DexLoad|DynamicLoad).*((Load|LoadFrom|LoadFile|Resolve))']

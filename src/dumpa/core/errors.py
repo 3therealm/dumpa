@@ -39,5 +39,13 @@ class AxmlError(DumpaError):
     """Raised when binary AndroidManifest.xml (AXML) is malformed or truncated."""
 
 
+class ElfError(DumpaError):
+    """Raised when an ELF shared object is malformed or truncated."""
+
+
+class DexError(DumpaError):
+    """Raised when a DEX (`classesN.dex`) file is malformed or truncated."""
+
+
 class ConfigError(DumpaError):
     """Raised when configuration (TOML or environment) is malformed or incomplete."""

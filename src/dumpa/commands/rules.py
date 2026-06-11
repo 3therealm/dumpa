@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from dumpa.core.archive import safe_extract_zip
+from dumpa.core.domains import load_domains_bundle
 from dumpa.core.errors import DumpaError
 from dumpa.core.fs import working_tmp_dir
 from dumpa.core.report import Finding
@@ -87,11 +88,22 @@ def rules_explain(subject: str, *, bundle_path: Path | None = None, builtin: str
     for rule in matches:
         print(f"{rule.kind}: {rule.subject}")
         print(f"  confidence: {rule.confidence.value}")
-        print(f"  match:      {rule.match} (fires when {rule.match} of the globs match)")
+        print(f"  match:      {rule.match} (fires when {rule.match} of the patterns match)")
         print(f"  bundle:     {bundle.name} v{bundle.version} ({bundle.source}, updated {bundle.updated})")
-        print("  globs:")
-        for glob in rule.globs:
-            print(f"    - {glob}")
+        if rule.domains:
+            flag = " (domain_search)" if rule.domain_search else ""
+            label, patterns = f"domains{flag}", rule.domains
+        elif rule.manifest:
+            label, patterns = "manifest", rule.manifest
+        elif rule.strings:
+            label, patterns = "strings", rule.strings
+        elif rule.regex:
+            label, patterns = "regex", rule.regex
+        else:
+            label, patterns = "globs", rule.globs
+        print(f"  {label}:")
+        for pattern in patterns:
+            print(f"    - {pattern}")
 
 
 def rules_list() -> None:
@@ -99,8 +111,13 @@ def rules_list() -> None:
     names = builtin_bundle_names()
     if not names:
         print("no built-in rule bundles")
-        return
     for name in names:
         bundle = load_builtin(name)
         print(f"{name}: v{bundle.version}  source={bundle.source}  "
               f"updated={bundle.updated}  rules={len(bundle.rules)}")
+        if bundle.license:
+            print(f"    license={bundle.license}")
+    # The domains seed is not a rule bundle (not in builtin_bundle_names) — surface it.
+    db = load_domains_bundle()
+    print(f"{db.name}: v{db.version}  source={db.source}  "
+          f"updated={db.updated}  domains={len(db.owners)}")

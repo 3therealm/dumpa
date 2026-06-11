@@ -10,14 +10,15 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from dumpa.commands.analyze import build_workspace, input_type
+from dumpa.commands.analyze import const_file_report_json, input_type
+from dumpa.convert.pipeline import build_workspace
 from dumpa.core.archive import safe_extract_zip
 from dumpa.core.config import load_config
-from dumpa.core.errors import DumpaError
+from dumpa.core.errors import DumpaError, ToolNotFoundError
 from dumpa.core.fs import working_tmp_dir
 from dumpa.core.hashing import sha256_file
-from dumpa.core.tools import ResolvedTool, build_default_registry
-from dumpa.core.workspace import open_workspace
+from dumpa.core.tools import ResolvedTool, ToolRegistry, build_default_registry
+from dumpa.core.workspace import Workspace, open_workspace
 from dumpa.tools.il2cpp import (
     Il2CppEngine,
     find_il2cpp_inputs,
@@ -26,6 +27,46 @@ from dumpa.tools.il2cpp import (
 )
 
 logger = logging.getLogger("dumpa")
+
+const_dump_cs = "dump.cs"
+
+
+def _invalidate_report(ws: Workspace) -> None:
+    """Drop report.json after dump.cs changes so export rebuilds scanner findings."""
+    report_path = ws.reports_dir / const_file_report_json
+    try:
+        report_path.unlink()
+    except FileNotFoundError:
+        return
+    except OSError:
+        logger.debug("could not invalidate report %s", report_path, exc_info=True)
+
+
+def autodump_workspace(registry: ToolRegistry, ws: Workspace, *, engine_name: str) -> bool:
+    """Dump il2cpp into ws.dumps_dir when inputs exist and the tool is available.
+
+    Fail-soft helper for `analyze`'s auto-dump step: returns True if dump.cs is present
+    afterward (already dumped or freshly produced), False otherwise. A missing tool or a
+    failed dump logs a warning and returns False rather than aborting the analysis.
+    """
+    if (ws.dumps_dir / const_dump_cs).is_file():
+        return True
+    if not find_il2cpp_inputs(ws.extracted_dir, None):
+        return False  # not an IL2CPP build
+    try:
+        eng = get_engine(engine_name)
+        tool = registry.resolve(eng.tool_name)
+    except (ToolNotFoundError, DumpaError):
+        logger.warning("auto-dump skipped: il2cpp engine %r unavailable", engine_name)
+        return False
+    ws.dumps_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        _run_dump(eng, engine_name, tool, ws.extracted_dir, None, ws.dumps_dir)
+    except DumpaError:
+        logger.warning("auto-dump failed; continuing without dump.cs", exc_info=True)
+        return False
+    _invalidate_report(ws)
+    return (ws.dumps_dir / const_dump_cs).is_file()
 
 
 def _run_dump(eng: Il2CppEngine, engine_name: str, tool: ResolvedTool,
@@ -74,6 +115,8 @@ def dump_il2cpp(apk_file: Path | None, *, engine: str | None = None,
             out = out_dir.resolve() if out_dir else ws.dumps_dir
             out.mkdir(parents=True, exist_ok=True)
             _run_dump(eng, engine_name, tool, ws.extracted_dir, arch, out)
+            if out == ws.dumps_dir:
+                _invalidate_report(ws)
         return
 
     if apk_file is None:

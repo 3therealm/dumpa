@@ -1,0 +1,267 @@
+# Domain-ownership seed: maps observed hosts to the company/SDK that owns them.
+#
+# This is NOT a rule bundle (it lives under dumpa.data, not dumpa.rules) and is never
+# returned by builtin_bundle_names(). It feeds attribution only.
+#
+# Curation rules (see claude-plan.md §6):
+#   - Every host is a BARE host (no scheme/path/wildcard); each passes validate_host.
+#   - NEVER add a SHARED_INFRA host (firebaseio.com, googleapis.com, fbcdn.net,
+#     cloudfront.net, *.github.io, byteoversea.com, isnssdk.com, ibytedtos.com, ...).
+#     Such hosts attribute only on exact match and must not be claimed by one owner.
+#   - `subject` is optional and links a host to a tracker subject in trackers.toml so the
+#     attribution pass can attach a domain Location to that exact SDK finding. Omit it when
+#     a host is ambiguous between several same-owner SDKs (e.g. facebook.com) — the pass
+#     will then NOT cross-attribute.
+#
+# Shared-infra EXCEPTIONS (tracker subjects deliberately given NO ownership entry because
+# their only endpoints are multi-tenant infrastructure):
+#   - Firebase Cloud Messaging  -> fcm/firebaseinstallations.googleapis.com (googleapis.com)
+#   - Firebase Remote Config    -> firebaseremoteconfig.googleapis.com      (googleapis.com)
+#   - Meta Audience Network     -> graph.facebook.com / *.fbcdn.net (fbcdn.net is shared;
+#                                  facebook.com is listed subject-less under owner "Meta")
+
+[bundle]
+name = "domains"
+version = "2026.06.1"
+source = "dumpa built-in (curated seed)"
+updated = "2026-06-07"
+
+# --- Google ------------------------------------------------------------------
+[[domain]]
+host = "app-measurement.com"
+owner = "Google"
+category = "analytics"
+subject = "Firebase Analytics"
+
+[[domain]]
+host = "google-analytics.com"
+owner = "Google"
+category = "analytics"
+subject = "Google Analytics"
+
+[[domain]]
+host = "ssl.google-analytics.com"
+owner = "Google"
+category = "analytics"
+subject = "Google Analytics"
+
+[[domain]]
+host = "crashlytics.com"
+owner = "Google"
+category = "crash reporting"
+subject = "Firebase Crashlytics"
+
+[[domain]]
+host = "doubleclick.net"
+owner = "Google"
+category = "ads"
+subject = "Google AdMob / Mobile Ads"
+
+[[domain]]
+host = "googleadservices.com"
+owner = "Google"
+category = "ads"
+subject = "Google AdMob / Mobile Ads"
+
+[[domain]]
+host = "admob.com"
+owner = "Google"
+category = "ads"
+subject = "Google AdMob / Mobile Ads"
+
+# --- Unity -------------------------------------------------------------------
+[[domain]]
+host = "unityads.unity3d.com"
+owner = "Unity"
+category = "ads"
+subject = "Unity Ads"
+
+# Bare corporate domain: owner-only (subject omitted) so subdomains like
+# assetstore.unity3d.com don't cross-attribute to the Unity Ads SDK finding.
+[[domain]]
+host = "unity3d.com"
+owner = "Unity"
+category = "ads"
+
+[[domain]]
+host = "ironsrc.com"
+owner = "Unity (ironSource)"
+category = "ad mediation"
+subject = "Unity LevelPlay / ironSource"
+
+[[domain]]
+host = "supersonicads.com"
+owner = "Unity (ironSource)"
+category = "ad mediation"
+subject = "Unity LevelPlay / ironSource"
+
+# --- AppLovin ----------------------------------------------------------------
+[[domain]]
+host = "applovin.com"
+owner = "AppLovin"
+category = "ad mediation"
+subject = "AppLovin MAX"
+
+[[domain]]
+host = "applvn.com"
+owner = "AppLovin"
+category = "ad mediation"
+subject = "AppLovin MAX"
+
+# --- Other ad networks -------------------------------------------------------
+[[domain]]
+host = "vungle.com"
+owner = "Liftoff"
+category = "ads"
+subject = "Vungle / Liftoff"
+
+[[domain]]
+host = "chartboost.com"
+owner = "Chartboost"
+category = "ads"
+subject = "Chartboost"
+
+[[domain]]
+host = "mintegral.com"
+owner = "Mintegral"
+category = "ads"
+subject = "Mintegral"
+
+[[domain]]
+host = "rayjump.com"
+owner = "Mintegral"
+category = "ads"
+subject = "Mintegral"
+
+# pangle.io only — NOT byteoversea.com / ibytedtos.com (those are shared infra).
+[[domain]]
+host = "pangle.io"
+owner = "ByteDance"
+category = "ads"
+subject = "Pangle"
+
+[[domain]]
+host = "tapjoy.com"
+owner = "Tapjoy"
+category = "ads"
+subject = "Tapjoy"
+
+[[domain]]
+host = "tapjoyads.com"
+owner = "Tapjoy"
+category = "ads"
+subject = "Tapjoy"
+
+[[domain]]
+host = "inmobi.com"
+owner = "InMobi"
+category = "ads"
+subject = "InMobi"
+
+[[domain]]
+host = "inmobicdn.net"
+owner = "InMobi"
+category = "ads"
+subject = "InMobi"
+
+[[domain]]
+host = "hyprmx.com"
+owner = "HyprMX"
+category = "ads"
+subject = "HyprMX"
+
+# --- Meta --------------------------------------------------------------------
+# facebook.com is shared by Facebook SDK + Meta Audience Network -> subject omitted
+# so the attribution pass does NOT cross-attribute to one specific SDK.
+[[domain]]
+host = "facebook.com"
+owner = "Meta"
+category = "social login or sharing"
+
+# --- Attribution SDKs --------------------------------------------------------
+[[domain]]
+host = "appsflyer.com"
+owner = "AppsFlyer"
+category = "attribution"
+subject = "AppsFlyer"
+
+[[domain]]
+host = "adjust.com"
+owner = "Adjust"
+category = "attribution"
+subject = "Adjust"
+
+[[domain]]
+host = "adj.st"
+owner = "Adjust"
+category = "attribution"
+subject = "Adjust"
+
+[[domain]]
+host = "branch.io"
+owner = "Branch"
+category = "attribution"
+subject = "Branch"
+
+[[domain]]
+host = "app.link"
+owner = "Branch"
+category = "attribution"
+subject = "Branch"
+
+[[domain]]
+host = "bnc.lt"
+owner = "Branch"
+category = "attribution"
+subject = "Branch"
+
+[[domain]]
+host = "singular.net"
+owner = "Singular"
+category = "attribution"
+subject = "Singular"
+
+[[domain]]
+host = "sng.link"
+owner = "Singular"
+category = "attribution"
+subject = "Singular"
+
+# --- Analytics ---------------------------------------------------------------
+[[domain]]
+host = "amplitude.com"
+owner = "Amplitude"
+category = "analytics"
+subject = "Amplitude"
+
+[[domain]]
+host = "mixpanel.com"
+owner = "Mixpanel"
+category = "analytics"
+subject = "Mixpanel"
+
+[[domain]]
+host = "flurry.com"
+owner = "Yahoo"
+category = "analytics"
+subject = "Flurry"
+
+# --- Crash reporting ---------------------------------------------------------
+[[domain]]
+host = "bugsnag.com"
+owner = "Bugsnag (SmartBear)"
+category = "crash reporting"
+subject = "Bugsnag"
+
+[[domain]]
+host = "sentry.io"
+owner = "Sentry"
+category = "crash reporting"
+subject = "Sentry"
+
+# --- Push messaging ----------------------------------------------------------
+[[domain]]
+host = "onesignal.com"
+owner = "OneSignal"
+category = "push messaging"
+subject = "OneSignal"

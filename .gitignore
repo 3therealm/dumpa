@@ -18,4 +18,7 @@ __pycache__/
 # Local-only docs (kept on disk, not tracked)
 /PHASE-1-DESIGN.md
 /PHASE-1-REQUIREMENTS.md
+/DOMAIN-INTELLIGENCE-DESIGN.md
+/DOMAIN-INTELLIGENCE-REQUIREMENTS.md
 /ROADMAP.md
+/planning/

@@ -1,0 +1,13 @@
+# Google Play genreId -> dumpa dump.cs pattern categories.
+# An unmapped or unknown genre selects no genre-specific bundle; the dumpcs scanner
+# always unions in the always-on categories (general, anti-cheat, obfuscation).
+# Lives under dumpa/data/ (not dumpa/rules/) so it is never loaded as a rule bundle.
+[map]
+GAME_PUZZLE       = ["match3"]
+GAME_CASUAL       = ["match3"]
+GAME_ROLE_PLAYING = ["rpg"]
+GAME_ADVENTURE    = ["rpg"]
+GAME_STRATEGY     = ["strategy"]
+GAME_CARD         = ["strategy"]
+GAME_BOARD        = ["strategy"]
+GAME_SIMULATION   = ["strategy"]

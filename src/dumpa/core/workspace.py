@@ -38,7 +38,13 @@ const_file_workspace_meta = "workspace.json"
 const_dir_extracted = "extracted"
 const_dir_dumps = "dumps"
 const_dir_reports = "reports"
+const_dir_cache = "cache"
+const_dir_smali = "smali"
+const_dir_native = "native"
+const_dir_dex = "dex"
+const_dir_playstore = "playstore"
 const_file_app_apk = "app.apk"
+const_file_gametype = "gametype.json"
 
 
 def _empty_str_map() -> dict[str, str]:
@@ -92,12 +98,46 @@ class Workspace:
         return self.root / const_dir_extracted
 
     @property
+    def smali_dir(self) -> Path:
+        """apktool decode tree (smali/ + res/ + manifest); produced by `dumpa unpack --decode`."""
+        return self.root / const_dir_smali
+
+    def has_smali(self) -> bool:
+        """True when the apktool decode tree exists and has content."""
+        return self.smali_dir.is_dir() and any(self.smali_dir.iterdir())
+
+    @property
     def dumps_dir(self) -> Path:
         return self.root / const_dir_dumps
 
     @property
     def reports_dir(self) -> Path:
         return self.root / const_dir_reports
+
+    @property
+    def cache_dir(self) -> Path:
+        """Per-scanner derived-finding cache (cache/scanners/<name>.json)."""
+        return self.root / const_dir_cache
+
+    @property
+    def native_dir(self) -> Path:
+        """Per-library native symbol/section sidecars (dumps/native/)."""
+        return self.dumps_dir / const_dir_native
+
+    @property
+    def dex_dir(self) -> Path:
+        """Per-dex class/method/field inventory sidecars (dumps/dex/)."""
+        return self.dumps_dir / const_dir_dex
+
+    @property
+    def gametype_sidecar(self) -> Path:
+        """Resolved game-type cache shared by the gametype + dumpcs scanners (dumps/gametype.json)."""
+        return self.dumps_dir / const_file_gametype
+
+    @property
+    def playstore_cache_dir(self) -> Path:
+        """Cached Play store listings, keyed by package (cache/playstore/)."""
+        return self.cache_dir / const_dir_playstore
 
     @property
     def meta_path(self) -> Path:
@@ -149,6 +189,8 @@ class Workspace:
             self.app_apk.unlink()
         if self.meta_path.exists():
             self.meta_path.unlink()
+        if self.cache_dir.exists():
+            shutil.rmtree(self.cache_dir, ignore_errors=True)
         create_or_recreate_dir(self.extracted_dir)
         create_or_recreate_dir(self.dumps_dir)
 

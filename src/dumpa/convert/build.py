@@ -71,12 +71,38 @@ def build_single_apk(registry: ToolRegistry, path_dir_tmp: Path, main_apk_dir: P
         logger.info("skip signing apk")
 
 
+def pack_align_sign(registry: ToolRegistry, apk_dir: Path, out: Path,
+                    sign: SigningConfig | None) -> Path:
+    """Repack a decoded apk dir, zipalign, and optionally sign — emitting `out`.
+
+    The repack-facing counterpart to `build_single_apk` (which uses the convert tmp
+    layout). Operates on an explicit decoded `apk_dir` (e.g. a workspace's smali tree)
+    and writes the finished apk to `out`. Returns `out`.
+    """
+    logger.info("repack apk")
+    built = apktool.build(registry.resolve('apktool'), apk_dir)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    logger.info("zipalign apk")
+    zipalign.align(registry.resolve('zipalign'), built, out)
+    if not out.exists():
+        raise XapkToApkError("failed to zipalign apk (output missing)")
+    if sign is not None:
+        sign_apk_path(registry.resolve('apksigner'), out, sign)
+    else:
+        logger.info("skip signing apk")
+    return out
+
+
 def sign_apk(tool: ResolvedTool, path_dir_tmp: Path, sign: SigningConfig) -> None:
     """Sign tmp/target.apk via apksigner; verify v2+v3 schemes; print SHA-256."""
     target = path_dir_tmp / f'{const_file_target_file}{const_ext_apk}'
     if not target.exists():
         raise XapkToApkError("result apk not found")
+    sign_apk_path(tool, target, sign)
 
+
+def sign_apk_path(tool: ResolvedTool, target: Path, sign: SigningConfig) -> None:
+    """Sign an apk at an explicit path via apksigner; verify v2+v3 schemes; print SHA-256."""
     logger.info("resign apk")
     apksigner.sign(
         tool, target,
