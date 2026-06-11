@@ -14,7 +14,9 @@ addresses — a candidate is only reported when its context marks it as a real n
 address: it carries a `:port` suffix, or it is a multicast/special-use address (e.g. the
 SSDP/mDNS group). A portless unicast literal is indistinguishable from a version string
 without a parser, so it is intentionally not harvested. Private RFC1918 ranges are tagged,
-not dropped. IPv6 is deferred (rarer, far noisier without a parser).
+not dropped. IPv6 is harvested only in bracket notation (`[addr]` / `[addr]:port`) — the
+unambiguous form it takes in URLs/configs — and validated via the stdlib; bare unbracketed
+IPv6 stays deferred (hex-colon runs are too noisy without a parser).
 
 Findings are low confidence by nature: a URL string in a binary may be dead, a
 template, or third-party. Host-less domains are intentionally not harvested.
@@ -22,6 +24,7 @@ template, or third-party. Host-less domains are intentionally not harvested.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
 from dataclasses import dataclass, field
@@ -53,6 +56,13 @@ _TRIM = ".,;:'\")]}>"
 # (`1.2.3.4.5`), a hostname, or a URL path/host already captured by the URL pass.
 _IPV4_RE = re.compile(rb"(?:[0-9]{1,3}\.){3}[0-9]{1,3}")
 _HOSTISH = frozenset(b"0123456789abcdefABCDEFghijklmnopqrstuvwxyzGHIJKLMNOPQRSTUVWXYZ.-/@")
+
+# IPv6 is only harvested in bracket notation — `[<addr>]` or `[<addr>]:port` — the
+# unambiguous, low-noise form IPv6 literals take in URLs and configs. The bracket is
+# the gate; the inner text is validated by ipaddress, never trusted. Bare unbracketed
+# IPv6 stays deferred (hex-colon runs are too noisy without a parser), mirroring the
+# portless-IPv4 stance above.
+_IPV6_RE = re.compile(rb"\[([0-9A-Fa-f:.]{2,45})\](?::[0-9]{1,5})?")
 
 
 def _str_list() -> list[str]:
@@ -135,10 +145,54 @@ def _record_ip(ips: dict[str, _IpHit], window: bytes, start: int, end: int,
     ips[ip] = _IpHit(file=rel, offset=abs_offset, scope=scope)
 
 
+def _ipv6_scope(addr: str) -> tuple[str, str] | None:
+    """Validate a bracketed IPv6 literal; return (compressed_addr, scope) or None.
+
+    None rejects: a malformed address, the unspecified `::`, loopback `::1`, and other
+    reserved space — none a meaningful endpoint. Multicast (`ff00::/8`) is its own scope;
+    link-local (`fe80::/10`) and ULA (`fc00::/7`) classify as 'private'. The compressed
+    canonical form is returned as the finding subject so equivalent literals dedupe.
+    """
+    try:
+        v6 = ipaddress.IPv6Address(addr)
+    except ipaddress.AddressValueError:
+        return None
+    if v6.is_unspecified or v6.is_loopback or v6.is_reserved:
+        return None
+    if v6.is_multicast:
+        return (v6.compressed, "multicast")
+    if v6.is_link_local or v6.is_private:
+        return (v6.compressed, "private")
+    return (v6.compressed, "public")
+
+
+def _record_ip6(ips: dict[str, _IpHit], window: bytes, start: int, inner: bytes,
+                abs_offset: int, rel: str) -> None:
+    """Record a bracketed IPv6 match; the bracket gates context, just validate + scope.
+
+    A `[` preceded by a host-ish byte (e.g. the `/` of `https://[..]`) is a URL host
+    already captured by the URL pass, so it is skipped — mirroring the IPv4 pass, which
+    keeps `ip-endpoint` for bare literals only.
+    """
+    if start > 0 and window[start - 1] in _HOSTISH:
+        return
+    if len(ips) >= const_max_ips:
+        return
+    classified = _ipv6_scope(inner.decode("latin-1"))
+    if classified is None:
+        return
+    addr, scope = classified
+    if addr in ips:
+        return
+    ips[addr] = _IpHit(file=rel, offset=abs_offset, scope=scope)
+
+
 def host_of(url: str) -> str | None:
     rest = url.split("://", 1)[1] if "://" in url else ""
-    host = re.split(r"[/?#]", rest, maxsplit=1)[0]
-    host = host.split("@")[-1].split(":")[0]
+    authority = re.split(r"[/?#]", rest, maxsplit=1)[0].split("@")[-1]
+    # a bracketed IPv6 literal host (`[..]`) keeps its inner colons; otherwise strip :port
+    host = (authority[1:].split("]", 1)[0] if authority.startswith("[")
+            else authority.split(":")[0])
     return host.lower() or None
 
 
@@ -216,6 +270,10 @@ def _scan_window(window: bytes, window_start: int, rel: str, is_tail: bool,
         if not is_tail and m.end() == len(window):
             continue  # may be truncated at the chunk edge; re-caught next window
         _record_ip(ips, window, m.start(), m.end(), window_start + m.start(), rel)
+    for m in _IPV6_RE.finditer(window):
+        if not is_tail and m.end() == len(window):
+            continue  # may be truncated at the chunk edge; re-caught next window
+        _record_ip6(ips, window, m.start(), m.group(1), window_start + m.start(), rel)
 
 
 def _scan_file(path: Path, rel: str, hosts: dict[str, _HostHits],
@@ -267,10 +325,11 @@ def scan(ws: Workspace) -> list[Finding]:
     # Bare IPs are a separate kind with no Location.domain, so report_domains / blocklist
     # exports (which key on kind == "endpoint" and Location.domain) never pick them up.
     for ip, ihit in sorted(ips.items()):
+        family = "IPv6" if ":" in ip else "IPv4"
         findings.append(Finding(
             kind="ip-endpoint", subject=ip, confidence=Confidence.LOW,
             state=FindingState.PRESENT, attributes={"scope": ihit.scope},
-            evidence=[Evidence(description=f"{ihit.scope} IPv4 literal", snippet=ip,
+            evidence=[Evidence(description=f"{ihit.scope} {family} literal", snippet=ip,
                                tool="endpoint")],
             locations=[Location(file_path=ihit.file, file_offset=ihit.offset)],
         ))

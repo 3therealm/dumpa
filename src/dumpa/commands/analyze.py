@@ -12,6 +12,7 @@ import logging
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 
 from dumpa.convert.pipeline import build_workspace, prepare_convert, workspace_build_options
@@ -37,17 +38,25 @@ logger = logging.getLogger("dumpa")
 
 const_ext_apk = ".apk"
 const_ext_xapk = ".xapk"
+const_ext_apks = ".apks"
 const_file_report_json = "report.json"
+const_optional_native_r2 = "native_r2"
+
+# Input types whose canonical app.apk is produced by the merge/build pipeline
+# (vs. an .apk, which is copied in directly).
+const_build_input_types = ("xapk", "apks")
 
 
 def input_type(path: Path) -> str:
-    """Classify an input path as 'apk' or 'xapk' by suffix; raise otherwise."""
+    """Classify an input path as 'apk', 'xapk', or 'apks' by suffix; raise otherwise."""
     suffix = path.suffix.lower()
     if suffix == const_ext_xapk:
         return "xapk"
+    if suffix == const_ext_apks:
+        return "apks"
     if suffix == const_ext_apk:
         return "apk"
-    raise DumpaError(f"unsupported input {path.name}: expected a .apk or .xapk file")
+    raise DumpaError(f"unsupported input {path.name}: expected a .apk, .xapk, or .apks file")
 
 
 def _validation_timeout() -> int:
@@ -64,12 +73,13 @@ def _package_of(registry: ToolRegistry, apk: Path) -> str | None:
 
 
 def _report_workspace(registry: ToolRegistry, ws: Workspace, *,
-                      signed_expected: bool, input_size: int, use_cache: bool = True) -> None:
+                      signed_expected: bool, input_size: int, use_cache: bool = True,
+                      extra: tuple[str, ...] | None = None) -> None:
     """Log a one-line apk sanity report, write the JSON report, and point at the layout."""
     package = _package_of(registry, ws.app_apk) or '?'
     report_output_apk(registry, ws.app_apk, package, signed_expected, input_size)
     report_path = ws.reports_dir / const_file_report_json
-    write_json(build_report(registry, ws, use_cache=use_cache), report_path)
+    write_json(build_report(registry, ws, use_cache=use_cache, extra=extra), report_path)
     logger.info("workspace: %s", ws.root)
     logger.info("  extracted: %s", ws.extracted_dir)
     logger.info("  dumps:     %s", ws.dumps_dir)
@@ -93,12 +103,12 @@ def open_for_diff(input_path: Path) -> Iterator[tuple[Workspace, Report]]:
     if input_abs.is_dir():
         ws = Workspace(root=input_abs)
         if ws.read_meta() is None:
-            raise DumpaError(f"{input_abs} is not a dumpa workspace; pass an .apk/.xapk or run analyze first")
+            raise DumpaError(f"{input_abs} is not a dumpa workspace; pass an .apk/.xapk/.apks or run analyze first")
         yield ws, build_report(registry, ws)
         return
 
     in_type = input_type(input_abs)
-    if in_type == "xapk":
+    if in_type in const_build_input_types:
         prepare_convert(registry, None)
     with open_workspace(None) as ws:
         build_workspace(registry, ws, input_abs, in_type, sha256_file(input_abs), None)
@@ -153,10 +163,23 @@ def _maybe_xref(ws: Workspace, *, enabled: bool) -> None:
     logger.info("  xref:      %d cross-layer correlations (%s)", multi, ws.xref_sidecar)
 
 
+def _merge_optional_scanners(ws: Workspace, requested: tuple[str, ...]) -> None:
+    """Persist newly requested optional scanners into workspace metadata."""
+    if not requested:
+        return
+    meta = ws.read_meta()
+    if meta is None:
+        return
+    merged = tuple(dict.fromkeys((*meta.optional_scanners, *requested)))
+    if merged == meta.optional_scanners:
+        return
+    ws.write_meta(replace(meta, optional_scanners=merged))
+
+
 def analyze(input_file: Path, *, workspace: Path | None = None, force: bool = False,
             signing: str | None = None, use_cache: bool = True,
             no_dump: bool = False, no_network: bool = False, jadx: bool = False,
-            xref: bool = False) -> None:
+            xref: bool = False, r2: bool = False) -> None:
     """Extract input_file into a reproducible workspace, reusing it when unchanged."""
     if no_network:
         os.environ[const_env_play_lookup] = "0"  # scanners read play_lookup from config/env
@@ -167,12 +190,13 @@ def analyze(input_file: Path, *, workspace: Path | None = None, force: bool = Fa
 
     input_abs = input_file.resolve()
     in_type = input_type(input_abs)
-    if in_type == "xapk":
+    if in_type in const_build_input_types:
         prepare_convert(registry, sign_config)
 
+    requested_optional = (const_optional_native_r2,) if r2 else ()
     input_sha = sha256_file(input_abs)
     build_options = workspace_build_options(in_type, sign_config)
-    signed_expected = in_type == "xapk" and sign_config is not None
+    signed_expected = in_type in const_build_input_types and sign_config is not None
     ws_path = workspace.resolve() if workspace else Path.cwd() / f'{input_abs.stem}-workspace'
 
     with open_workspace(ws_path) as ws:
@@ -180,11 +204,13 @@ def analyze(input_file: Path, *, workspace: Path | None = None, force: bool = Fa
             logger.info("reusing workspace %s (input unchanged)", ws.root)
             meta = ws.read_meta()
             size = meta.input_size if meta else input_abs.stat().st_size
+            _merge_optional_scanners(ws, requested_optional)
             _maybe_autodump(registry, ws, config, enabled=autodump_enabled)
             _report_workspace(registry, ws, signed_expected=signed_expected, input_size=size,
                               use_cache=use_cache)
         else:
-            build_workspace(registry, ws, input_abs, in_type, input_sha, sign_config, build_options)
+            build_workspace(registry, ws, input_abs, in_type, input_sha, sign_config, build_options,
+                            optional_scanners=requested_optional)
             logger.info("workspace ready")
             _maybe_autodump(registry, ws, config, enabled=autodump_enabled)
             _report_workspace(registry, ws, signed_expected=signed_expected,

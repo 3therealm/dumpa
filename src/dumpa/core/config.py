@@ -37,6 +37,8 @@ const_env_play_timeout = 'DUMPA_PLAY_TIMEOUT_SECONDS'
 const_env_play_cache_ttl_days = 'DUMPA_PLAY_CACHE_TTL_DAYS'
 # ASN/country host enrichment: separate opt-in (per-host, rate-limited), default off.
 const_env_asn_lookup = 'DUMPA_ASN_LOOKUP'
+# Caller-provided Cocos2d-x decryption key (tried before heuristic recovery from the lib).
+const_env_cocos_key = 'DUMPA_COCOS_KEY'
 
 const_default_validation_timeout = 300
 const_default_il2cpp_engine = 'dumper'
@@ -89,6 +91,9 @@ class Config:
     tool_paths: dict[str, str] = field(default_factory=_empty_str_map)
     il2cpp_engine: str = const_default_il2cpp_engine
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
+    # Caller-supplied Cocos2d-x XXTEA key (decoded bytes), or None. The Cocos scanner
+    # tries it before its heuristic native-lib recovery, still trial-decrypt confirmed.
+    cocos_key: bytes | None = None
 
 
 def _find_config_file(explicit_path: Path | None) -> Path | None:
@@ -220,6 +225,32 @@ def _load_analysis(sec: dict[str, Any]) -> AnalysisConfig:
     )
 
 
+def _decode_key(raw: str) -> bytes:
+    """Decode a caller-supplied key: `hex:`/`0x` prefix -> raw bytes, else UTF-8 string.
+
+    XXTEA keys are usually ASCII (matching the native-harvested candidates), so the bare
+    form is treated as a string; a `hex:`/`0x` prefix supplies raw key bytes explicitly.
+    """
+    stripped = raw.strip()
+    lowered = stripped.lower()
+    if lowered.startswith(('hex:', '0x')):
+        hexpart = stripped[stripped.find(':') + 1:] if lowered.startswith('hex:') else stripped[2:]
+        try:
+            return bytes.fromhex(hexpart)
+        except ValueError as e:
+            raise ConfigError(f"{const_env_cocos_key} hex value is invalid: {e}") from e
+    return stripped.encode('utf-8')
+
+
+def _load_cocos_key(sec: dict[str, Any]) -> bytes | None:
+    raw = os.environ.get(const_env_cocos_key) or sec.get('key')
+    if raw is None or raw == '':
+        return None
+    if not isinstance(raw, str):
+        raise ConfigError(f"[cocos] key ({const_env_cocos_key}) must be a string")
+    return _decode_key(raw)
+
+
 def _load_il2cpp_engine(sec: dict[str, Any]) -> str:
     engine = os.environ.get(const_env_il2cpp_engine) or sec.get('engine') or const_default_il2cpp_engine
     if not isinstance(engine, str) or engine not in const_il2cpp_engines:
@@ -235,4 +266,5 @@ def load_config(explicit_path: Path | None = None) -> Config:
         tool_paths=_load_tool_paths(_section(toml, 'tools')),
         il2cpp_engine=_load_il2cpp_engine(_section(toml, 'il2cpp')),
         analysis=_load_analysis(_section(toml, 'analysis')),
+        cocos_key=_load_cocos_key(_section(toml, 'cocos')),
     )

@@ -13,8 +13,15 @@ from zipfile import ZipFile
 import pytest
 
 from dumpa.convert import pipeline
-from dumpa.convert.pipeline import _emit_apk, build_workspace, convert_into_workspace, workspace_build_options
-from dumpa.core.errors import ToolNotFoundError
+from dumpa.convert.merge import merge_apk_resources
+from dumpa.convert.pipeline import (
+    _emit_apk,
+    build_workspace,
+    convert_into_workspace,
+    phase_extract_apks,
+    workspace_build_options,
+)
+from dumpa.core.errors import ToolNotFoundError, XapkToApkError
 from dumpa.core.tools import build_default_registry
 from dumpa.core.workspace import Workspace, make_meta
 
@@ -134,3 +141,102 @@ def test_build_options_apk_is_none() -> None:
 
 def test_build_options_xapk_unsigned() -> None:
     assert workspace_build_options("xapk", None) == {"xapk_signing": "unsigned"}
+
+
+def test_build_options_apks_unsigned() -> None:
+    assert workspace_build_options("apks", None) == {"xapk_signing": "unsigned"}
+
+
+# --- phase_extract_apks: locate the .apks payload ----------------------------
+
+def _apk_zip(path: Path) -> None:
+    with ZipFile(path, "w") as zf:
+        zf.writestr("AndroidManifest.xml", b"manifest")
+
+
+def test_extract_apks_universal_short_circuits(tmp_path: Path) -> None:
+    apks = tmp_path / "app.apks"
+    with ZipFile(apks, "w") as zf:
+        zf.writestr("universal.apk", b"PK\x03\x04universal")
+        zf.writestr("toc.pb", b"\x00")
+    out = tmp_path / "out"
+    out.mkdir()
+    mode, location = phase_extract_apks(apks, out)
+    assert mode == "single"
+    assert location == out / "universal.apk"
+
+
+def test_extract_apks_splits_dir(tmp_path: Path) -> None:
+    apks = tmp_path / "app.apks"
+    with ZipFile(apks, "w") as zf:
+        zf.writestr("splits/base-master.apk", b"PK\x03\x04base")
+        zf.writestr("splits/base-arm64_v8a.apk", b"PK\x03\x04arch")
+        zf.writestr("toc.pb", b"\x00")
+    out = tmp_path / "out"
+    out.mkdir()
+    mode, location = phase_extract_apks(apks, out)
+    assert mode == "splits"
+    assert location == out / "splits"
+
+
+def test_extract_apks_splits_at_root(tmp_path: Path) -> None:
+    apks = tmp_path / "app.apks"
+    with ZipFile(apks, "w") as zf:
+        zf.writestr("base.apk", b"PK\x03\x04base")
+        zf.writestr("split_config.xxhdpi.apk", b"PK\x03\x04dpi")
+    out = tmp_path / "out"
+    out.mkdir()
+    mode, location = phase_extract_apks(apks, out)
+    assert mode == "splits"
+    assert location == out
+
+
+def test_extract_apks_empty_raises(tmp_path: Path) -> None:
+    apks = tmp_path / "app.apks"
+    with ZipFile(apks, "w") as zf:
+        zf.writestr("toc.pb", b"\x00")
+    out = tmp_path / "out"
+    out.mkdir()
+    with pytest.raises(XapkToApkError, match="no apk found"):
+        phase_extract_apks(apks, out)
+
+
+def test_build_workspace_apks_universal_copies_canonical_apk(tmp_path: Path) -> None:
+    # A universal .apks needs no merge tools: build_workspace copies it straight in.
+    apks = tmp_path / "app.apks"
+    inner = tmp_path / "universal.apk"
+    _apk_zip(inner)
+    with ZipFile(apks, "w") as zf:
+        zf.writestr("universal.apk", inner.read_bytes())
+    ws = Workspace(root=tmp_path / "ws")
+
+    class _NoTools:
+        def resolve(self, name: str) -> object:
+            raise ToolNotFoundError(f"missing {name}")
+
+    build_workspace(_NoTools(), ws, apks, "apks", _SHA, None)
+    assert ws.app_apk.is_file()
+    assert (ws.extracted_dir / "AndroidManifest.xml").read_bytes() == b"manifest"
+
+
+# --- merge conflict visibility -----------------------------------------------
+
+def _write(p: Path, data: bytes) -> None:
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(data)
+
+
+def test_merge_resources_reports_size_conflict(tmp_path: Path) -> None:
+    main = tmp_path / "main"
+    split = tmp_path / "split"
+    _write(main / "res" / "drawable" / "a.png", b"already-here-bigger")
+    _write(split / "res" / "drawable" / "a.png", b"new")  # same path, different size
+    assert merge_apk_resources(main, split) == 1
+
+
+def test_merge_resources_no_conflict_on_identical_size(tmp_path: Path) -> None:
+    main = tmp_path / "main"
+    split = tmp_path / "split"
+    _write(main / "res" / "drawable" / "a.png", b"1234")
+    _write(split / "res" / "drawable" / "a.png", b"abcd")  # same size -> assumed dup
+    assert merge_apk_resources(main, split) == 0

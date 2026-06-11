@@ -113,6 +113,25 @@ def test_gate_fires_only_for_cocos(tmp_path: Path) -> None:
     assert not any(s.startswith("Cocos2d-x") for s in subjects2)
 
 
+def test_caller_key_decrypts_when_lib_key_absent(tmp_path: Path, monkeypatch) -> None:
+    # lib carries the wrong key; the caller supplies the real one via config.
+    monkeypatch.setenv("DUMPA_COCOS_KEY", _KEY.decode())
+    ws = _cocos_app(tmp_path, with_key=False)
+    findings = cocos.scan(ws)
+    rec = next(f for f in findings if f.subject == "Cocos2d-x XXTEA key recovered")
+    assert rec.attributes["key_source"] == "caller-provided"
+    out = ws.dumps_dir / "cocos" / "decrypted" / "assets/src/game.js"
+    assert out.read_bytes() == _SCRIPT
+
+
+def test_wrong_caller_key_falls_back_to_encrypted(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("DUMPA_COCOS_KEY", "totally-wrong-key")
+    ws = _cocos_app(tmp_path, with_key=False)
+    findings = cocos.scan(ws)
+    assert any("encrypted" in f.subject for f in findings)
+    assert not (ws.dumps_dir / "cocos" / "decrypted").exists()
+
+
 def test_cached_run_all_recreates_decrypted_artifacts(tmp_path: Path) -> None:
     ws = _cocos_app(tmp_path, with_key=True)
     _mark_reusable(ws)

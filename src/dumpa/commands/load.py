@@ -10,7 +10,7 @@ from dumpa.core.errors import DumpaError
 
 logger = logging.getLogger("dumpa")
 
-const_inputs_suffixes = (".apk", ".xapk")
+const_inputs_suffixes = (".apk", ".xapk", ".apks")
 
 
 def _counts(kind: str, findings_kinds: list[str]) -> int:
@@ -18,13 +18,13 @@ def _counts(kind: str, findings_kinds: list[str]) -> int:
 
 
 def load(directory: Path) -> None:
-    """Analyze every .apk/.xapk in a directory and print one summary row per file."""
+    """Analyze every .apk/.xapk/.apks in a directory and print one summary row per file."""
     root = directory.resolve()
     if not root.is_dir():
         raise DumpaError(f"not a directory: {root}")
     inputs = sorted(p for p in root.iterdir() if p.suffix.lower() in const_inputs_suffixes)
     if not inputs:
-        print("no .apk/.xapk files found")
+        print("no .apk/.xapk/.apks files found")
         return
 
     print(f"{'file':40} {'package':32} {'engine':10} trk prot sec")

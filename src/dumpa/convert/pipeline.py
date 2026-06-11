@@ -37,6 +37,9 @@ from dumpa.convert.merge import (
 from dumpa.convert.models import (
     ApkPart,
     StepFailure,
+    const_apks_dir_splits,
+    const_apks_dir_standalones,
+    const_apks_file_universal,
     const_env_unpack_workers,
     const_ext_apk,
     const_file_target_file,
@@ -163,13 +166,14 @@ def phase_unpack_splits(registry: ToolRegistry, tmp: Path, parts: list[ApkPart])
             fut.result()
 
 
-def _safe_merge(part: ApkPart, phase: str, fn: Callable[[], None],
-                failures: list[StepFailure]) -> None:
-    """Run fn(); append a StepFailure to failures on expected merge errors."""
+def _safe_merge(part: ApkPart, phase: str, fn: Callable[[], int | None],
+                failures: list[StepFailure]) -> int:
+    """Run fn(); append a StepFailure on expected merge errors. Returns fn's conflict count."""
     try:
-        fn()
+        return fn() or 0
     except (XapkToApkError, OSError, shutil.Error, ValueError, KeyError) as e:
         failures.append(StepFailure(apk_file=part.file_name, phase=phase, error=str(e)))
+        return 0
 
 
 def _drop_split_dir(part: ApkPart) -> None:
@@ -191,25 +195,29 @@ def phase_merge_splits(parts: list[ApkPart]) -> tuple[ApkPart, list[StepFailure]
     assetpack_parts = get_apks_of_type(parts, const_split_apk_type_assetpack)
 
     failures: list[StepFailure] = []
+    conflicts = 0
     for p in arch_parts:
         _safe_merge(p, 'merge_arch',
                     partial(merge_apk_arch, main.dir_path, p.dir_path), failures)
         _drop_split_dir(p)
     for p in prioritize_dpi_apk_list(dpi_parts):
-        _safe_merge(p, 'merge_resources',
-                    partial(merge_apk_resources, main.dir_path, p.dir_path), failures)
+        conflicts += _safe_merge(p, 'merge_resources',
+                                 partial(merge_apk_resources, main.dir_path, p.dir_path), failures)
         _drop_split_dir(p)
     for p in locale_parts:
-        _safe_merge(p, 'merge_resources',
-                    partial(merge_apk_resources, main.dir_path, p.dir_path), failures)
-        _safe_merge(p, 'merge_assets',
-                    partial(merge_apk_assets, main.dir_path, p.dir_path), failures)
+        conflicts += _safe_merge(p, 'merge_resources',
+                                 partial(merge_apk_resources, main.dir_path, p.dir_path), failures)
+        conflicts += _safe_merge(p, 'merge_assets',
+                                 partial(merge_apk_assets, main.dir_path, p.dir_path), failures)
         _drop_split_dir(p)
     for p in assetpack_parts:
-        _safe_merge(p, 'merge_assets',
-                    partial(merge_apk_assets, main.dir_path, p.dir_path), failures)
+        conflicts += _safe_merge(p, 'merge_assets',
+                                 partial(merge_apk_assets, main.dir_path, p.dir_path), failures)
         _drop_split_dir(p)
 
+    if conflicts:
+        logger.warning("%s file(s) dropped during merge due to a cross-split size conflict "
+                       "(first split wins)", conflicts)
     return main, failures
 
 
@@ -307,6 +315,85 @@ def build_merged_apk(registry: ToolRegistry, scratch: Path, xapk_abs: Path,
     return target, package_name
 
 
+def _dir_has_apk(d: Path) -> bool:
+    """True if d directly contains at least one .apk file."""
+    return d.is_dir() and any(
+        p.is_file() and p.suffix == const_ext_apk for p in d.iterdir())
+
+
+def _pick_standalone(d: Path) -> Path | None:
+    """Choose one standalone apk (alternatives, not splits): prefer an arm64 build."""
+    apks = sorted(p for p in d.iterdir() if p.is_file() and p.suffix == const_ext_apk)
+    if not apks:
+        return None
+    for p in apks:
+        if 'arm64' in p.name:
+            return p
+    return apks[0]
+
+
+def phase_extract_apks(apks_abs_path: Path, tmp: Path) -> tuple[str, Path]:
+    """Unzip a .apks bundle into tmp and locate its payload.
+
+    Returns ("single", apk_path) when the bundle is already one complete apk — a
+    `universal.apk` or a chosen `standalones/` build, neither of which is merged —
+    or ("splits", dir) when it carries complementary split apks to merge. The
+    splits dir is bundletool's `splits/` when present, else the archive root
+    (SAI-style dumps drop the splits at the top level).
+    """
+    logger.info("unpacking apks")
+    safe_extract_zip(apks_abs_path, tmp)
+
+    universal = tmp / const_apks_file_universal
+    if universal.is_file():
+        return "single", universal
+
+    standalones = tmp / const_apks_dir_standalones
+    if standalones.is_dir():
+        picked = _pick_standalone(standalones)
+        if picked is not None:
+            return "single", picked
+
+    splits = tmp / const_apks_dir_splits
+    if _dir_has_apk(splits):
+        return "splits", splits
+    if _dir_has_apk(tmp):
+        return "splits", tmp
+    raise XapkToApkError("no apk found in .apks bundle")
+
+
+def build_merged_apks(registry: ToolRegistry, scratch: Path, apks_abs: Path,
+                      sign_config: SigningConfig | None) -> tuple[Path, str | None]:
+    """Resolve a .apks bundle to one canonical apk inside scratch.
+
+    A universal/standalone bundle is already complete and returned as-is (no
+    apktool round-trip). A split bundle reuses the xapk classify->unpack->merge->
+    finalize->build path. Package name is read later from the built apk via aapt
+    (a .apks carries no manifest.json), so None is returned here.
+    """
+    mode, location = phase_extract_apks(apks_abs, scratch)
+    if mode == "single":
+        return location, None
+
+    # Splits are keyed by file name (base.apk/base-master.apk -> main); the package
+    # name is not needed to classify a .apks, so an empty package name is passed.
+    parts = phase_classify_splits(location, "")
+    phase_unpack_splits(registry, location, parts)
+
+    main_part, failures = phase_merge_splits(parts)
+    if failures:
+        _print_merge_failures(failures)
+        raise XapkToApkError(f"{len(failures)} merge step(s) failed")
+
+    phase_finalize_main_apk(main_part)
+    phase_build_and_sign(registry, location, main_part, sign_config)
+
+    target = location / f'{const_file_target_file}{const_ext_apk}'
+    if not target.is_file():
+        raise XapkToApkError("result apk file not found")
+    return target, None
+
+
 # === Reusable workspace builder (shared by `analyze`, `convert`, `dump-il2cpp`) ===
 #
 # Extract an APK/XAPK once into a workspace so later commands never re-extract it.
@@ -333,7 +420,7 @@ def collect_tool_versions(registry: ToolRegistry, names: list[str]) -> dict[str,
 
 def workspace_build_options(in_type: str, sign_config: SigningConfig | None) -> dict[str, str] | None:
     """Return the build options that affect reusable workspace output."""
-    if in_type != "xapk":
+    if in_type not in ("xapk", "apks"):
         return None
     if sign_config is None:
         return {"xapk_signing": "unsigned"}
@@ -357,14 +444,16 @@ def read_package(registry: ToolRegistry, apk: Path) -> str | None:
 
 def build_workspace(registry: ToolRegistry, ws: Workspace, input_abs: Path,
                     in_type: str, input_sha256: str, sign_config: SigningConfig | None,
-                    build_options: dict[str, str] | None = None) -> None:
+                    build_options: dict[str, str] | None = None,
+                    optional_scanners: tuple[str, ...] = ()) -> None:
     """Populate a fresh workspace: produce app.apk, extract it, and write the marker."""
     ws.prepare_build()
-    if in_type == "xapk":
+    if in_type in ("xapk", "apks"):
         # Build merge scratch under the workspace root (same FS -> instant rename of the
         # result), then free it before extracting app.apk to keep peak disk bounded.
+        builder = build_merged_apk if in_type == "xapk" else build_merged_apks
         with working_tmp_dir(ws.root) as scratch:
-            target, _package = build_merged_apk(registry, scratch, input_abs, sign_config)
+            target, _package = builder(registry, scratch, input_abs, sign_config)
             target.replace(ws.app_apk)
         tool_names = ['apktool', 'zipalign', 'aapt']
         if sign_config is not None:
@@ -381,6 +470,7 @@ def build_workspace(registry: ToolRegistry, ws: Workspace, input_abs: Path,
         input_type=in_type,
         tool_versions=collect_tool_versions(registry, tool_names),
         build_options=build_options,
+        optional_scanners=optional_scanners,
     ))
 
 

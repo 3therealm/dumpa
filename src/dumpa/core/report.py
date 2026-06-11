@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
-const_report_schema_version = 1
+const_report_schema_version = 2
 
 
 class Confidence(enum.StrEnum):
@@ -241,6 +241,7 @@ class Report:
             "tool_versions": dict(self.tool_versions),
             "findings": [f.to_dict() for f in self.findings],
             "warnings": list(self.warnings),
+            "density": density_score(self),
         }
 
     @classmethod
@@ -340,19 +341,25 @@ def companies(report: Report) -> dict[str, CompanyRollup]:
     }
 
 
-def density_score(report: Report) -> dict[str, float]:
-    """Ad/tracker density metrics derived from the tracker findings."""
+def density_score(report: Report) -> dict[str, Any]:
+    """Ad/tracker density metrics derived from the tracker findings.
+
+    `per_engine_ad_sdks` attributes the ad-SDK count to the detected engine (one engine
+    per report, so `{engine: count}`); it is keyed so `load` can sum it across apps later.
+    """
     trackers = [f for f in report.findings if f.kind == "tracker"]
     owners = {f.attributes["owner"] for f in trackers if f.attributes.get("owner")}
     ad_sdks = [f for f in trackers if f.attributes.get("category") in _AD_CATEGORIES]
     size_mb = report.facts.input_size / (1024 * 1024)
-    out: dict[str, float] = {
+    engine = report.facts.engine or "unknown"
+    out: dict[str, Any] = {
         "trackers": len(trackers),
         "companies": len(owners),
         "ad_sdks": len(ad_sdks),
         "mediation_adapters": len([f for f in trackers
                                    if f.attributes.get("category") == _MEDIATION_CATEGORY]),
         "per_mb": round(len(trackers) / size_mb, 3) if size_mb > 0 else 0.0,
+        "per_engine_ad_sdks": {engine: len(ad_sdks)},
     }
     return out
 
@@ -749,6 +756,8 @@ def render_markdown(report: Report) -> str:
         d = density_score(report)
         lines.append(f"{int(d['trackers'])} tracker(s) from {int(d['companies'])} "
                      f"company(ies); {int(d['ad_sdks'])} ad SDK(s); {d['per_mb']} trackers/MB")
+        per_engine = ", ".join(f"{eng}: {n}" for eng, n in sorted(d["per_engine_ad_sdks"].items()))
+        lines.append(f"ad SDKs per engine — {per_engine}")
         lines.append("")
         by_category: dict[str, list[Finding]] = {}
         for t in trackers:
@@ -1015,6 +1024,9 @@ def render_html(report: Report) -> str:
                    f"{int(d['trackers'])} tracker(s) from {int(d['companies'])} "
                    f"company(ies); {int(d['ad_sdks'])} ad SDK(s); "
                    f"{d['per_mb']} trackers/MB</p>")
+        per_engine = ", ".join(f"{_h(eng)}: {n}"
+                               for eng, n in sorted(d["per_engine_ad_sdks"].items()))
+        out.append(f'<p class="meta">ad SDKs per engine — {per_engine}</p>')
         by_category: dict[str, list[Finding]] = {}
         for t in trackers:
             by_category.setdefault(t.attributes.get("category", "uncategorized"), []).append(t)

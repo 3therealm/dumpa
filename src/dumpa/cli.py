@@ -24,6 +24,8 @@ from dumpa.commands import load as load_cmd
 from dumpa.commands import repack as repack_cmd
 from dumpa.commands import rewrite as rewrite_cmd
 from dumpa.commands import rules as rules_cmd
+from dumpa.commands import scan as scan_cmd
+from dumpa.commands import scan_native as scan_native_cmd
 from dumpa.commands import unpack as unpack_cmd
 from dumpa.commands import update_signatures as update_signatures_cmd
 from dumpa.commands import xref as xref_cmd
@@ -70,7 +72,7 @@ def convert(
 def unpack(
     input_file: Path = typer.Argument(
         ..., exists=True, dir_okay=False, readable=True,
-        help="Path to the .apk or .xapk to unpack.",
+        help="Path to the .apk, .xapk, or .apks to unpack.",
     ),
     workspace: Path | None = typer.Option(
         None, "--workspace", help="Workspace directory (default: ./<stem>-workspace)."),
@@ -131,7 +133,7 @@ def rewrite(
 def analyze(
     input_file: Path = typer.Argument(
         ..., exists=True, dir_okay=False, readable=True,
-        help="Path to the .apk or .xapk to analyze.",
+        help="Path to the .apk, .xapk, or .apks to analyze.",
     ),
     workspace: Path | None = typer.Option(
         None, "--workspace", help="Workspace directory (default: ./<stem>-workspace)."),
@@ -147,12 +149,15 @@ def analyze(
         False, "--jadx", help="Also run a full JADX decompile into <workspace>/decompiled (heavy; opt-in)."),
     xref: bool = typer.Option(
         False, "--xref", help="Also build the cross-reference index into <workspace>/dumps/xref.json."),
+    r2: bool = typer.Option(
+        False, "--r2", help="Also run the radare2 native region scan (entropy + functions; opt-in, slow)."),
     signing: str | None = typer.Option(None, "--signing", help=_SIGNING_HELP),
 ) -> None:
     """Extract an APK/XAPK once into a reproducible workspace."""
     run_command(lambda: analyze_cmd.analyze(
         input_file, workspace=workspace, force=force, signing=signing,
-        use_cache=not no_cache, no_dump=no_dump, no_network=no_network, jadx=jadx, xref=xref))
+        use_cache=not no_cache, no_dump=no_dump, no_network=no_network, jadx=jadx,
+        xref=xref, r2=r2))
 
 
 @app.command()
@@ -176,11 +181,47 @@ def decompile(
         out_dir=out, workspace=workspace))
 
 
+@app.command(name="scan-native")
+def scan_native(
+    target: Path = typer.Argument(
+        ..., exists=True, readable=True,
+        help="Workspace directory or an .apk/.xapk/.apks to scan.",
+    ),
+    tool: str | None = typer.Option(
+        None, "--tool",
+        help="Deep native analyzer: 'radare2' adds entropy regions + function inventory."),
+) -> None:
+    """Scan native libraries (ELF metadata; --tool radare2 adds region analysis)."""
+    run_command(lambda: scan_native_cmd.scan_native(target, tool=tool))
+
+
+@app.command(name="scan-trackers")
+def scan_trackers(
+    target: Path = typer.Argument(
+        ..., exists=True, readable=True,
+        help="Workspace directory or an .apk/.xapk/.apks to scan.",
+    ),
+) -> None:
+    """Scan for trackers/SDKs (analysis-only; no report persisted)."""
+    run_command(lambda: scan_cmd.scan_trackers(target))
+
+
+@app.command(name="scan-protections")
+def scan_protections(
+    target: Path = typer.Argument(
+        ..., exists=True, readable=True,
+        help="Workspace directory or an .apk/.xapk/.apks to scan.",
+    ),
+) -> None:
+    """Scan for protections/packers (analysis-only; no report persisted)."""
+    run_command(lambda: scan_cmd.scan_protections(target))
+
+
 @app.command()
 def info(
     input_file: Path = typer.Argument(
         ..., exists=True, dir_okay=False, readable=True,
-        help="Path to the .apk or .xapk to inspect.",
+        help="Path to the .apk, .xapk, or .apks to inspect.",
     ),
 ) -> None:
     """Print fast triage facts (package, version, ABIs, signer) without deep analysis."""
@@ -228,8 +269,8 @@ def evidence(
 
 @app.command()
 def diff(
-    old: Path = typer.Argument(..., exists=True, readable=True, help="Old .apk/.xapk or workspace dir."),
-    new: Path = typer.Argument(..., exists=True, readable=True, help="New .apk/.xapk or workspace dir."),
+    old: Path = typer.Argument(..., exists=True, readable=True, help="Old .apk/.xapk/.apks or workspace dir."),
+    new: Path = typer.Argument(..., exists=True, readable=True, help="New .apk/.xapk/.apks or workspace dir."),
 ) -> None:
     """Show what changed between two apps (trackers, protections, engine, ...)."""
     run_command(lambda: diff_cmd.diff(old, new))
@@ -260,7 +301,7 @@ def xref(
 def load(
     directory: Path = typer.Argument(
         ..., exists=True, file_okay=False, readable=True,
-        help="Directory of .apk/.xapk files to summarize.",
+        help="Directory of .apk/.xapk/.apks files to summarize.",
     ),
 ) -> None:
     """Analyze a directory of APK/XAPK files into one combined summary."""

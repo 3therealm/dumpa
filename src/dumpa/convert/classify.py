@@ -21,23 +21,47 @@ from dumpa.convert.models import (
 from dumpa.core.errors import XapkToApkError
 
 
+def config_token(apk_file_name: str) -> str | None:
+    """Extract the config qualifier from a split file name, or None if it has none.
+
+    Handles three naming conventions, all reducing to the same qualifier token
+    (e.g. `arm64_v8a`, `xxhdpi`, `en`):
+      - XAPK:        `config.<token>.apk`
+      - SAI-style:   `split_config.<token>.apk`
+      - bundletool:  `base-<token>.apk`   (the `base-master.apk` base is excluded)
+    """
+    stem = Path(apk_file_name).stem
+    for prefix in ('split_config.', f'{const_prefix_apk_split_type_config}.'):
+        if stem.startswith(prefix):
+            return stem[len(prefix):] or None
+    if stem.startswith('base-') and stem != 'base-master':
+        return stem[len('base-'):] or None
+    return None
+
+
+def _classify_config_token(token: str) -> str:
+    """Map a config qualifier token to a split type (dpi/arch/locale)."""
+    if token.endswith(const_suffix_apk_split_type_dpi):
+        return const_split_apk_type_dpi
+    if token in const_values_apk_split_type_arch:
+        return const_split_apk_type_arch
+    return const_split_apk_type_locale
+
+
 def determine_split_type_by_apk_file_name(apk_file_name: str, xapk_package_name: str) -> str | None:
     """Classify an APK split as main/arch/dpi/locale/assetpack based on its file name."""
-    if (xapk_package_name + const_ext_apk) == apk_file_name or apk_file_name == 'base.apk':
+    if (xapk_package_name + const_ext_apk) == apk_file_name or apk_file_name in (
+            'base.apk', 'base-master.apk'):
         return const_split_apk_type_main
     if apk_file_name.lower().endswith(const_suffix_apk_split_type_assetpack):
         return const_split_apk_type_assetpack
-    if not apk_file_name.startswith(const_prefix_apk_split_type_config):
-        return const_split_apk_type_locale
-    stem = Path(apk_file_name).stem
-    parts = stem.split('.')
-    if len(parts) < 2:
+    token = config_token(apk_file_name)
+    if token is not None:
+        return _classify_config_token(token)
+    # A malformed `config*` name (no qualifier) is unclassifiable; any other
+    # non-config split (a bare locale split, a dynamic-feature master) is a locale.
+    if apk_file_name.startswith(const_prefix_apk_split_type_config):
         return None
-    config_name = parts[1]
-    if config_name.endswith(const_suffix_apk_split_type_dpi):
-        return const_split_apk_type_dpi
-    if config_name in const_values_apk_split_type_arch:
-        return const_split_apk_type_arch
     return const_split_apk_type_locale
 
 

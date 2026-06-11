@@ -1,0 +1,49 @@
+# Native-symbol detection rules.
+#
+# Matcher kind: `symbols` — each pattern is a regex tested against the parsed ELF
+# symbol-table names (`.dynsym`/`.symtab`), NOT a substring scan of the binary. This
+# distinguishes a real export/import from an incidental `.rodata` string and yields the
+# export's RVA. `symbol_scope` picks the symbol set: `exports` (defined GLOBAL/WEAK),
+# `imports` (undefined / linked-in), or `any` (default). Detection is inventory only.
+
+[bundle]
+name = "native_symbols"
+version = "2026.06.1"
+source = "dumpa built-in (curated)"
+updated = "2026-06-10"
+
+# --- anti-debug / anti-analysis imports --------------------------------------
+# `ptrace` is the canonical Android anti-debug primitive; a lib that imports it is
+# (almost always) self-defending. Scoped to imports so a libc re-export doesn't fire.
+
+[[rule]]
+kind = "protection"
+subject = "ptrace anti-debug (native import)"
+category = "anti-debug"
+confidence = "medium"
+symbols = ['^ptrace$']
+symbol_scope = "imports"
+
+# --- JNI surface -------------------------------------------------------------
+# A defined JNI_OnLoad export marks a native lib that registers methods at load time —
+# a useful map of which libraries are reachable from Java.
+
+[[rule]]
+kind = "native-symbol-marker"
+subject = "JNI_OnLoad entry point"
+category = "jni"
+confidence = "low"
+symbols = ['^JNI_OnLoad$']
+symbol_scope = "exports"
+
+# --- packer / protector runtime exports --------------------------------------
+# Exported runtime entry points left by common commercial hardeners. The .so filename
+# is often renamed, but the loader symbol survives; scoped to exports.
+
+[[rule]]
+kind = "protection"
+subject = "Jiagu/packer native loader export"
+category = "packer"
+confidence = "medium"
+symbols = ['jiagu', 'Java_com_(?:stub|secneo|secshell)_']
+symbol_scope = "exports"
