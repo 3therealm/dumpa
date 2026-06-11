@@ -10,13 +10,13 @@ from a window around the `setXXTEAKeyAndSign` marker in `libcocos2d*.so`, then e
 trial-decrypted against a real bundle and accepted only if the output sniffs as Lua
 bytecode or printable source. If nothing confirms, bundles are reported as encrypted and
 nothing is written — never a guess. The key *source* (file:offset) is logged as evidence;
-the key bytes live only in the on-disk provenance sidecar, never in the report.
+recovered app keys live only in the on-disk provenance sidecar, never in the report.
 
 A caller may also supply the key out of band via config (`DUMPA_COCOS_KEY` or
 `[cocos] key`, decoded by `core.config`); it is tried first, still confirmation-gated by
-trial-decrypt, and reported with `key_source="caller-provided"`. Decryption is gated to
-assets of an app you own or are authorized to inspect, per the roadmap policy. Runs only
-behind the Cocos2d-x engine gate (COCOS_SPECS).
+trial-decrypt, and reported with `key_source="caller-provided"` without persisting the
+caller-supplied key bytes. Decryption is gated to assets of an app you own or are authorized
+to inspect, per the roadmap policy. Runs only behind the Cocos2d-x engine gate (COCOS_SPECS).
 
 Deferred: non-XXTEA cocos ciphers.
 """
@@ -30,6 +30,7 @@ from pathlib import Path
 
 from dumpa import __version__
 from dumpa.core.config import load_config
+from dumpa.core.fs import read_bytes_resilient
 from dumpa.core.report import Confidence, Evidence, Finding, FindingState, Location
 from dumpa.core.workspace import Workspace
 from dumpa.core.xxtea import decrypt
@@ -88,7 +89,7 @@ def _version(libs: list[Path]) -> tuple[str, str] | None:
     """Return (version, lib_name) from a cocos2d-x version string in the native lib."""
     for lib in libs:
         try:
-            data = lib.read_bytes()
+            data = read_bytes_resilient(lib)
         except OSError:
             continue
         m = _VERSION_RE.search(data)
@@ -103,7 +104,7 @@ def _candidate_keys(libs: list[Path]) -> list[bytes]:
     out: list[bytes] = []
     for lib in libs:
         try:
-            data = lib.read_bytes()
+            data = read_bytes_resilient(lib)
         except OSError:
             continue
         start = 0
@@ -231,7 +232,7 @@ def scan(ws: Workspace) -> list[Finding]:
     probe = next((b for b in bundles if b.stat().st_size <= _MAX_BUNDLE_BYTES), None)
     if candidates and probe is not None:
         try:
-            confirmed = _confirm_key(probe.read_bytes(), candidates)
+            confirmed = _confirm_key(read_bytes_resilient(probe), candidates)
         except OSError:
             confirmed = None
 
@@ -252,7 +253,7 @@ def scan(ws: Workspace) -> list[Finding]:
         if b.stat().st_size > _MAX_BUNDLE_BYTES:
             continue
         try:
-            out = decrypt(b.read_bytes()[len(sign):], key)
+            out = decrypt(read_bytes_resilient(b)[len(sign):], key)
         except OSError:
             continue
         if out is None:
@@ -270,15 +271,18 @@ def scan(ws: Workspace) -> list[Finding]:
         FindingState.INITIALIZED, "decrypted into dumps/cocos/decrypted/",
         decrypted[0] if decrypted else "", []))
 
-    _write_sidecar(ws, {
+    sidecar: dict[str, object] = {
         "engine": "cocos2d-x",
         "version": ver[0] if ver else None,
         "scripting": scripting[0] if scripting else None,
         "key_source": key_source,
-        "key_hex": key.hex(),
+        "key_bytes": len(key),
         "sign": sign.decode("latin-1"),
         "bundle_count": len(bundles),
         "decrypted_count": len(decrypted),
         "dumpa_version": __version__,
-    })
+    }
+    if key_source != "caller-provided":
+        sidecar["key_hex"] = key.hex()
+    _write_sidecar(ws, sidecar)
     return findings

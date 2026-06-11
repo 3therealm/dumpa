@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from dumpa.core.config import AnalysisConfig
 from dumpa.core.domains import DomainOwner, DomainTable
 from dumpa.core.report import Confidence, Evidence, Finding, Location
 from dumpa.core.workspace import Workspace
@@ -16,6 +17,7 @@ from dumpa.scanners import (
     primary_engine,
     run_all,
     run_selected,
+    stamp_provenance,
 )
 from dumpa.scanners import tracker as tracker_scanner
 from dumpa.scanners import unity as unity_scanner
@@ -326,7 +328,7 @@ def test_native_r2_runs_when_requested(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(native_r2, "build_default_registry", lambda _p: _Reg())
     monkeypatch.setattr(native_r2, "load_config",
-                        lambda: type("C", (), {"tool_paths": {}})())
+                        lambda: type("C", (), {"tool_paths": {}, "analysis": AnalysisConfig()})())
     monkeypatch.setattr(native_r2.r2, "analyze", lambda _p, argv_prefix=("radare2",), version=None: R2Analysis(
         version="radare2 5.9.0", functions=[R2Function("f", 0x10, 8, 1)],
         sections=[R2Section(".text", 0x1000, 0x400, 2048, "-r-x", 7.95)]))
@@ -366,7 +368,7 @@ def test_native_r2_requested_scanner_is_not_cached(tmp_path: Path, monkeypatch) 
 
     monkeypatch.setattr(native_r2, "build_default_registry", lambda _p: _Reg())
     monkeypatch.setattr(native_r2, "load_config",
-                        lambda: type("C", (), {"tool_paths": {}})())
+                        lambda: type("C", (), {"tool_paths": {}, "analysis": AnalysisConfig()})())
     monkeypatch.setattr(native_r2.r2, "analyze", fake)
 
     run_all(ws, extra=("native_r2",), registry=_Reg())
@@ -394,3 +396,23 @@ def test_run_selected_unknown_name_raises(tmp_path: Path) -> None:
     from dumpa.core.errors import DumpaError
     with pytest.raises(DumpaError):
         run_selected(_ws(tmp_path), ["nope"])
+
+
+def test_stamp_provenance_backfills_missing_version() -> None:
+    from dumpa import __version__
+
+    missing = Finding(kind="endpoint", subject="https://x", confidence=Confidence.LOW,
+                      evidence=[Evidence(description="url match")])
+    kept = Finding(kind="tracker", subject="firebase", confidence=Confidence.HIGH,
+                   evidence=[Evidence(description="rule hit", rule_version="2026.06.1")])
+    out = stamp_provenance([missing, kept])
+
+    assert out[0].evidence[0].rule_version == __version__   # code finding gets dumpa version
+    assert out[1].evidence[0].rule_version == "2026.06.1"   # rule finding's version preserved
+    assert out[1] is kept                                   # no-gap finding returned unchanged
+
+
+def test_stamp_provenance_finding_without_evidence_unchanged() -> None:
+    f = Finding(kind="native", subject="arm64/libfoo.so", confidence=Confidence.HIGH)
+    out = stamp_provenance([f])
+    assert out[0] is f

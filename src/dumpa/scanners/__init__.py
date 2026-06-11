@@ -12,6 +12,7 @@ import dataclasses
 from collections.abc import Callable
 from pathlib import PurePosixPath
 
+from dumpa import __version__
 from dumpa.core import cache
 from dumpa.core.arsc import ArscTable, parse_arsc_file
 from dumpa.core.config import load_config
@@ -39,12 +40,14 @@ from dumpa.scanners import (
     native_symbols,
     privacy,
     protection,
+    protobuf,
     resources,
     secret,
     tracker,
     unity,
     unity_assets,
     unity_rules,
+    unreal,
 )
 
 Scanner = Callable[[Workspace], list[Finding]]
@@ -77,6 +80,9 @@ SCANNERS: tuple[ScannerSpec, ...] = (
     ScannerSpec("dex", dex.scan),
     ScannerSpec("resources", resources.scan),
     ScannerSpec("endpoint", endpoint.scan),
+    # protobuf decodes .pb-like blobs (code-only, keyed on the dumpa version) and reuses the
+    # secrets bundle, so its cache key folds in that bundle's version.
+    ScannerSpec("protobuf", protobuf.scan, ("secrets",)),
     # gametype resolves a networked, TTL-bound Play genre -> never cached (the
     # dumps/gametype.json sidecar already memoizes the fetch within a workspace).
     ScannerSpec("gametype", gametype.scan, cacheable=False),
@@ -85,12 +91,13 @@ SCANNERS: tuple[ScannerSpec, ...] = (
     ScannerSpec("dumpcs", dumpcs.scan, dumpcs.const_dumpcs_bundles, cacheable=False),
 )
 # Unity deep helpers run only when the engine scanner flagged Unity. unity_rules consumes
-# the `unity` bundle (cache-keyed on its version); unity.scan and unity_assets.scan are
-# code-only (keyed on the dumpa version).
+# the `unity` bundle (cache-keyed on its version); unity.scan is code-only (keyed on the
+# dumpa version). unity_assets writes TextAsset dump artifacts to dumps/unity/, so it is
+# uncached for the same reason as cocos/godot (partial output must not poison a workspace).
 UNITY_SPECS: tuple[ScannerSpec, ...] = (
     ScannerSpec("unity", unity.scan),
     ScannerSpec("unity_rules", unity_rules.scan, ("unity",)),
-    ScannerSpec("unity_assets", unity_assets.scan),
+    ScannerSpec("unity_assets", unity_assets.scan, cacheable=False),
 )
 # Cocos2d-x deep helper runs only when the engine scanner flagged Cocos2d-x. It writes
 # decrypted bundle artifacts, so keep it uncached until those sidecars are part of the key.
@@ -101,6 +108,11 @@ COCOS_SPECS: tuple[ScannerSpec, ...] = (
 # resources, so keep it uncached until those sidecars are part of the key.
 GODOT_SPECS: tuple[ScannerSpec, ...] = (
     ScannerSpec("godot", godot.scan, cacheable=False),
+)
+# Unreal deep helper runs only when the engine scanner flagged Unreal Engine. It extracts
+# pak resources, so keep it uncached until those sidecars are part of the key.
+UNREAL_SPECS: tuple[ScannerSpec, ...] = (
+    ScannerSpec("unreal", unreal.scan, cacheable=False),
 )
 # Opt-in scanners: not in the always-run pipeline. native_r2 invokes radare2 (slow,
 # optional), so it runs only when requested via `analyze --r2` / `scan-native --tool
@@ -120,10 +132,15 @@ def _is_lib_so(rel: str) -> bool:
 
 
 def enrich_native_rvas(findings: list[Finding], ws: Workspace) -> list[Finding]:
-    """Backfill Location.rva on any finding located by file offset inside a lib/*.so.
+    """Backfill native ELF context on any finding located by file offset in a lib/*.so.
 
     Cross-cutting pass: protection/tracker/secret findings carry a file offset but no
-    RVA; map each through the covering PT_LOAD segment. Each library is parsed once.
+    ELF context. Map each offset through the parsed library to:
+      * its virtual address (via the covering PT_LOAD segment);
+      * the covering ELF section (`section_at`);
+      * the containing defined symbol (`symbol_at_rva`, demangled), when one covers it.
+    Each library is parsed once. A location already carrying an rva, or one that resolves
+    to nothing, passes through unchanged.
     """
     cache: dict[str, ElfFile | None] = {}
 
@@ -144,11 +161,14 @@ def enrich_native_rvas(findings: list[Finding], ws: Workspace) -> list[Finding]:
             if elf is None:
                 continue
             rva = elf.offset_to_rva(loc.file_offset)
-            if rva is None:
+            section = elf.section_at(loc.file_offset)
+            symbol = elf.symbol_at_rva(rva) if rva is not None else None
+            if rva is None and section is None and symbol is None:
                 continue
             if new_locs is None:
                 new_locs = list(finding.locations)
-            new_locs[i] = dataclasses.replace(loc, rva=rva)
+            new_locs[i] = dataclasses.replace(
+                loc, rva=rva, native_section=section, native_symbol=symbol)
         out.append(dataclasses.replace(finding, locations=new_locs)
                    if new_locs is not None else finding)
     return out
@@ -525,6 +545,23 @@ def _apply_enrichments(findings: list[Finding], ws: Workspace) -> list[Finding]:
     return enrich_endpoint_purpose(findings, ws)
 
 
+def stamp_provenance(findings: list[Finding]) -> list[Finding]:
+    """Backfill a provenance version onto every Evidence that lacks one.
+
+    Rule-driven findings already record their bundle version in Evidence.rule_version;
+    code-generated scanners and enrichment passes do not. Stamp the dumpa core version on
+    those so every Evidence carries a reproducible "version of the producing logic", without
+    touching the ~30 individual call sites. Evidence/Finding are frozen, so rebuild via
+    dataclasses.replace; an evidence list with no gaps is returned unchanged.
+    """
+    out: list[Finding] = []
+    for f in findings:
+        ev = [e if e.rule_version else dataclasses.replace(e, rule_version=__version__)
+              for e in f.evidence]
+        out.append(f if ev == f.evidence else dataclasses.replace(f, evidence=ev))
+    return out
+
+
 def run_all(ws: Workspace, *, use_cache: bool = True, extra: tuple[str, ...] = (),
             registry: ToolRegistry | None = None) -> list[Finding]:
     """Run every registered scanner over the workspace and concatenate their findings.
@@ -548,6 +585,9 @@ def run_all(ws: Workspace, *, use_cache: bool = True, extra: tuple[str, ...] = (
             findings.extend(_run_spec(ws, spec, meta, registry))
     if any(f.kind == "engine" and f.subject == "Godot" for f in findings):
         for spec in GODOT_SPECS:
+            findings.extend(_run_spec(ws, spec, meta, registry))
+    if any(f.kind == "engine" and f.subject == "Unreal Engine" for f in findings):
+        for spec in UNREAL_SPECS:
             findings.extend(_run_spec(ws, spec, meta, registry))
     for name in extra:
         optional_spec = OPTIONAL_SPECS.get(name)

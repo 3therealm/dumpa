@@ -7,8 +7,9 @@ external-tool imports, so it sits at the bottom of the dependency graph. The bui
 that fills a report from a real apk lives in `dumpa.reporting`.
 
 A `Finding` carries a kind, a subject, a confidence, an evidence list, and
-zero-or-more locations (a native RVA, a file offset, a DEX class/method, a manifest
-entry, an asset path, or a domain) — whichever apply to that kind of finding.
+zero-or-more locations (a native RVA, a file offset, a DEX class/method, an ELF
+section/symbol, a manifest entry, an asset path, or a domain) — whichever apply to that
+kind of finding.
 """
 
 from __future__ import annotations
@@ -76,6 +77,8 @@ class Location:
     dex_method: str | None = None
     dex_field: str | None = None        # "DefiningClass.name" — accessed/initialized field
     dex_bytecode_offset: int | None = None   # instruction offset in 16-bit code units
+    native_section: str | None = None        # covering ELF section, e.g. ".text"/".rodata"
+    native_symbol: str | None = None         # containing symbol (demangled) in a lib/*.so
     manifest_entry: str | None = None
     domain: str | None = None
 
@@ -85,6 +88,7 @@ class Location:
             "rva": self.rva, "file_offset": self.file_offset, "file_path": self.file_path,
             "dex_class": self.dex_class, "dex_method": self.dex_method,
             "dex_field": self.dex_field, "dex_bytecode_offset": self.dex_bytecode_offset,
+            "native_section": self.native_section, "native_symbol": self.native_symbol,
             "manifest_entry": self.manifest_entry, "domain": self.domain,
         }.items():
             if value is not None:
@@ -98,6 +102,7 @@ class Location:
             file_path=data.get("file_path"), dex_class=data.get("dex_class"),
             dex_method=data.get("dex_method"), dex_field=data.get("dex_field"),
             dex_bytecode_offset=data.get("dex_bytecode_offset"),
+            native_section=data.get("native_section"), native_symbol=data.get("native_symbol"),
             manifest_entry=data.get("manifest_entry"), domain=data.get("domain"),
         )
 
@@ -832,10 +837,10 @@ def render_markdown(report: Report) -> str:
             for x in sorted(by_cat[category], key=lambda i: i.subject):
                 lines.append(f"- {x.subject} ({x.state.value}, confidence: {x.confidence.value})")
             lines.append("")
-    for a in ad_id_attrs:
-        source = a.attributes.get("source", "unknown")
+    for ad_attr in ad_id_attrs:
+        source = ad_attr.attributes.get("source", "unknown")
         lines.append(f"- AD_ID likely added by: {source} "
-                     f"(confidence: {a.confidence.value})")
+                     f"(confidence: {ad_attr.confidence.value})")
         lines.append("")
 
     lines.append("## Data Safety")
@@ -860,10 +865,10 @@ def render_markdown(report: Report) -> str:
         lines.append("_none_")
     else:
         for x in sorted(endpoints, key=lambda i: i.subject):
-            purpose = x.attributes.get("purpose")
+            endpoint_purpose = x.attributes.get("purpose")
             country = x.attributes.get("country")
             asn = x.attributes.get("asn")
-            tag = f" [{purpose}]" if purpose else ""
+            tag = f" [{endpoint_purpose}]" if endpoint_purpose else ""
             geo = " — " + ", ".join(p for p in (country, asn) if p) if (country or asn) else ""
             lines.append(f"- {x.subject}{tag}{geo}")
     lines.append("")
@@ -898,10 +903,10 @@ def render_markdown(report: Report) -> str:
         lines.append("_none_")
     else:
         for dx in sorted(dexes, key=lambda i: i.subject):
-            a = dx.attributes
-            lines.append(f"- {dx.subject}: {a.get('class_count', '0')} classes, "
-                         f"{a.get('method_count', '0')} methods, "
-                         f"{a.get('field_count', '0')} fields")
+            dex_attrs = dx.attributes
+            lines.append(f"- {dx.subject}: {dex_attrs.get('class_count', '0')} classes, "
+                         f"{dex_attrs.get('method_count', '0')} methods, "
+                         f"{dex_attrs.get('field_count', '0')} fields")
     lines.append("")
 
     lines.append("## Findings")
@@ -1152,10 +1157,10 @@ def render_html(report: Report) -> str:
     else:
         out.append("<table>")
         for dx in sorted(dexes, key=lambda i: i.subject):
-            a = dx.attributes
-            detail = (f"{a.get('class_count', '0')} classes, "
-                      f"{a.get('method_count', '0')} methods, "
-                      f"{a.get('field_count', '0')} fields")
+            dex_attrs = dx.attributes
+            detail = (f"{dex_attrs.get('class_count', '0')} classes, "
+                      f"{dex_attrs.get('method_count', '0')} methods, "
+                      f"{dex_attrs.get('field_count', '0')} fields")
             out.append(f"<tr><td><code>{_h(dx.subject)}</code></td><td>{_h(detail)}</td></tr>")
         out.append("</table>")
 

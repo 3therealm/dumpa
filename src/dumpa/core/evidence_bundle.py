@@ -41,7 +41,7 @@ def _first(finding: Finding, attr: str) -> str | None:
     """First non-None value of `attr` across the finding's evidence entries."""
     for e in finding.evidence:
         value = getattr(e, attr)
-        if value is not None:
+        if isinstance(value, str):
             return value
     return None
 

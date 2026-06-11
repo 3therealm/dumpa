@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 
 from dumpa.core.elf import parse_elf
 from dumpa.core.report import Finding
@@ -24,7 +25,7 @@ logger = logging.getLogger("dumpa")
 const_symbol_bundle = "native_symbols"
 
 
-def _from_sidecar(path) -> NativeSymbols | None:
+def _from_sidecar(path: Path) -> NativeSymbols | None:
     try:
         payload = json.loads(path.read_text(encoding="UTF-8"))
         abi = str(payload["abi"])
@@ -37,7 +38,7 @@ def _from_sidecar(path) -> NativeSymbols | None:
     return NativeSymbols(rel_path=f"lib/{abi}/{lib}", abi=abi, exports=exports, imports=imports)
 
 
-def _from_elf(so) -> NativeSymbols | None:
+def _from_elf(so: Path) -> NativeSymbols | None:
     elf = parse_elf(so)
     if elf is None:
         return None

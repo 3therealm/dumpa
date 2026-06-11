@@ -117,6 +117,16 @@ def test_location_dex_field_round_trip() -> None:
     assert restored.dex_bytecode_offset == 3
 
 
+def test_location_native_fields_round_trip() -> None:
+    loc = Location(file_path="lib/arm64-v8a/libt.so", file_offset=120, rva=0x10078,
+                   native_section=".text", native_symbol="Foo::Bar::baz")
+    restored = Location.from_dict(loc.to_dict())
+    assert restored == loc
+    assert restored.native_section == ".text"
+    assert restored.native_symbol == "Foo::Bar::baz"
+    assert "native_section" in loc.to_dict() and "native_symbol" in loc.to_dict()
+
+
 def test_evidence_omits_none() -> None:
     ev = Evidence(description="hi")
     assert ev.to_dict() == {"description": "hi"}

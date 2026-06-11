@@ -14,6 +14,7 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
+from dumpa.core.fs import open_resilient
 from dumpa.core.report import Confidence, Evidence, Finding, FindingState, Location
 from dumpa.core.workspace import Workspace
 
@@ -30,7 +31,7 @@ def _rel(path: Path, root: Path) -> str:
 def _metadata_version(path: Path) -> tuple[bool, int | None]:
     """Return (magic_ok, version) from a global-metadata.dat header."""
     try:
-        with path.open("rb") as f:
+        with open_resilient(path) as f:
             head = f.read(_METADATA_HEADER.size)
     except OSError:
         return (False, None)

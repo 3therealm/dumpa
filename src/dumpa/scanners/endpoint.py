@@ -30,6 +30,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from dumpa.core.fs import open_resilient
 from dumpa.core.report import Confidence, Evidence, Finding, FindingState, Location
 from dumpa.core.workspace import Workspace
 
@@ -278,7 +279,7 @@ def _scan_window(window: bytes, window_start: int, rel: str, is_tail: bool,
 
 def _scan_file(path: Path, rel: str, hosts: dict[str, _HostHits],
                ips: dict[str, _IpHit]) -> None:
-    with path.open("rb") as f:
+    with open_resilient(path) as f:
         tail = b""
         base = 0
         while True:
@@ -306,8 +307,14 @@ def scan(ws: Workspace) -> list[Finding]:
             if path.stat().st_size > const_max_file_bytes:
                 continue
             _scan_file(path, path.relative_to(ws.extracted_dir).as_posix(), hosts, ips)
+        except FileNotFoundError:
+            continue                     # vanished between glob and read — tolerate quietly
         except OSError:
-            logger.debug("endpoint scan: cannot read %s", path, exc_info=True)
+            # An existing file we still couldn't read after the open retries: surface it
+            # (a transient EMFILE/ENFILE would have been retried away) rather than silently
+            # dropping its endpoints, so an incomplete result is visible, not invisible.
+            logger.warning("endpoint scan: failed to read %s; result may be incomplete",
+                           path, exc_info=True)
 
     findings: list[Finding] = []
     for host, hit in sorted(hosts.items()):

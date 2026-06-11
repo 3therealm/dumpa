@@ -51,6 +51,7 @@ def build_elf(*, bits: int = 64, endian: str = "<", machine: int = 0xB7,
         return off
 
     n_dynsym, n_dynstr, n_shstr = shname(".dynsym"), shname(".dynstr"), shname(".shstrtab")
+    n_text = shname(".text")
     shstr = bytes(shstr)
 
     # Layout: ehdr | phdr | payload | .dynsym | .dynstr | .shstrtab | pad | shdrs
@@ -62,7 +63,7 @@ def build_elf(*, bits: int = 64, endian: str = "<", machine: int = 0xB7,
     raw_end = shstr_off + len(shstr)
     shoff = (raw_end + 7) & ~7
     pad = shoff - raw_end
-    shnum = 4                      # NULL, .dynsym, .dynstr, .shstrtab
+    shnum = 5                      # NULL, .dynsym, .dynstr, .shstrtab, .text
     total = shoff + shnum * sh_size
 
     ident = b"\x7fELF" + bytes([2 if is64 else 1, 1 if en == "<" else 2, 1]) + b"\x00" * 9
@@ -83,18 +84,23 @@ def build_elf(*, bits: int = 64, endian: str = "<", machine: int = 0xB7,
         phdr = struct.pack(en + "IIIIIIII", p_type, 0, LOAD_VADDR_BASE,
                            LOAD_VADDR_BASE, total, total, 5, 0x1000)
 
-    def shdr(name: int, typ: int, offset: int, size: int, link: int, entsize: int) -> bytes:
+    def shdr(name: int, typ: int, offset: int, size: int, link: int, entsize: int,
+             addr: int = 0, flags: int = 0) -> bytes:
         if is64:
-            return struct.pack(en + "IIQQQQIIQQ", name, typ, 0, 0, offset, size,
+            return struct.pack(en + "IIQQQQIIQQ", name, typ, flags, addr, offset, size,
                                link, 0, 1, entsize)
-        return struct.pack(en + "IIIIIIIIII", name, typ, 0, 0, offset, size,
+        return struct.pack(en + "IIIIIIIIII", name, typ, flags, addr, offset, size,
                            link, 0, 1, entsize)
 
+    # .text: an allocated PROGBITS section describing the payload bytes, so a file offset
+    # inside the payload resolves to a real section (SHF_ALLOC|SHF_EXECINSTR = 0x6).
     shdrs = (
         shdr(0, 0, 0, 0, 0, 0)
         + shdr(n_dynsym, 11, dynsym_off, len(dynsym), 2, sym_size)   # link=2 (.dynstr)
         + shdr(n_dynstr, 3, dynstr_off, len(dynstr), 0, 0)
         + shdr(n_shstr, 3, shstr_off, len(shstr), 0, 0)
+        + shdr(n_text, 1, payload_off, len(payload), 0, 0,
+               addr=LOAD_VADDR_BASE + payload_off, flags=0x6)
     )
 
     out = ehdr + phdr + payload + dynsym + dynstr + shstr + b"\x00" * pad + shdrs

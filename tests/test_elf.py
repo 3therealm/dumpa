@@ -65,6 +65,36 @@ def test_no_pt_load_maps_nothing(tmp_path: Path) -> None:
     assert elf.offset_to_rva(payload_off) is None
 
 
+def test_section_at(tmp_path: Path) -> None:
+    data, payload_off = build_elf(payload=b"\x90" * 64)
+    elf = parse_elf(_write(tmp_path, data))
+    assert elf is not None
+    # An offset inside the payload lands in the allocated .text section.
+    assert elf.section_at(payload_off) == ".text"
+    assert elf.section_at(payload_off + 63) == ".text"
+    # The ELF header region belongs to no allocated section.
+    assert elf.section_at(0) is None
+    # Past every section.
+    assert elf.section_at(len(data) + 1000) is None
+
+
+def test_symbol_at_rva(tmp_path: Path) -> None:
+    data, _ = build_elf(exports=(("native_fn", 0x10500, 16),))
+    elf = parse_elf(_write(tmp_path, data))
+    assert elf is not None
+    assert elf.symbol_at_rva(0x10500) == "native_fn"     # start of span
+    assert elf.symbol_at_rva(0x1050F) == "native_fn"     # last covered byte
+    assert elf.symbol_at_rva(0x10510) is None            # one past the end
+    assert elf.symbol_at_rva(0x104FF) is None            # before the start
+
+
+def test_symbol_at_rva_demangles_cpp(tmp_path: Path) -> None:
+    data, _ = build_elf(exports=(("_ZN3Foo3Bar3bazEv", 0x10600, 8),))
+    elf = parse_elf(_write(tmp_path, data))
+    assert elf is not None
+    assert elf.symbol_at_rva(0x10600) == "Foo::Bar::baz"
+
+
 def test_truncated_returns_none(tmp_path: Path) -> None:
     data, _ = build_elf()
     assert parse_elf(_write(tmp_path, data[:30])) is None

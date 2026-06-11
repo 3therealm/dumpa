@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from _xxtea_build import make_signed
@@ -122,6 +123,12 @@ def test_caller_key_decrypts_when_lib_key_absent(tmp_path: Path, monkeypatch) ->
     assert rec.attributes["key_source"] == "caller-provided"
     out = ws.dumps_dir / "cocos" / "decrypted" / "assets/src/game.js"
     assert out.read_bytes() == _SCRIPT
+    raw = (ws.dumps_dir / "cocos" / ".dumpa-cocos.json").read_text()
+    data = json.loads(raw)
+    assert data["key_source"] == "caller-provided"
+    assert data["key_bytes"] == len(_KEY)
+    assert "key_hex" not in data
+    assert _KEY.hex() not in raw
 
 
 def test_wrong_caller_key_falls_back_to_encrypted(tmp_path: Path, monkeypatch) -> None:

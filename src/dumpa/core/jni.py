@@ -8,7 +8,8 @@ native symbol to the dex/manifest/dump.cs class it bridges.
 
 This recovers the **class** reliably (the join key the xref needs); the method is
 best-effort, since the short form is genuinely ambiguous when an identifier's own leading
-underscore abuts a separator. C++ Itanium ``_Z`` demangling is intentionally out of scope.
+underscore abuts a separator. C++ Itanium ``_Z`` demangling lives in
+:mod:`dumpa.core.cppname`.
 """
 
 from __future__ import annotations

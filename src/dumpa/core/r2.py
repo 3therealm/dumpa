@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from dumpa.core.errors import ToolExecutionError, ToolTimeoutError
+from dumpa.core.fs import open_resilient
 from dumpa.core.process import run
 
 logger = logging.getLogger("dumpa")
@@ -128,7 +129,7 @@ def _entropy_for_region(path: Path, paddr: int, size: int) -> float | None:
     counts = [0] * 256
     total = 0
     try:
-        with path.open("rb") as f:
+        with open_resilient(path) as f:
             f.seek(paddr)
             remaining = size
             while remaining > 0:

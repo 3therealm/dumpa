@@ -27,7 +27,7 @@ from dumpa.core.privacy_compare import compare, resolve_disclosure
 from dumpa.core.report import AppFacts, Report
 from dumpa.core.tools import ToolRegistry
 from dumpa.core.workspace import Workspace
-from dumpa.scanners import game_types, primary_engine, run_all
+from dumpa.scanners import game_types, primary_engine, run_all, stamp_provenance
 from dumpa.tools import aapt, apksigner
 
 logger = logging.getLogger("dumpa")
@@ -111,6 +111,11 @@ def build_report(registry: ToolRegistry, ws: Workspace, *, use_cache: bool = Tru
         findings = enrich_asn_geo(findings, ws, allow_network=analysis.asn_lookup,
                                   timeout=analysis.play_timeout,
                                   ttl_days=const_asn_ttl_days)
+
+    # Final pass: stamp the dumpa version onto any Evidence still missing a rule_version, so
+    # every finding (scanner, enrichment, or post-pass) carries a reproducible producing
+    # version. Runs last to catch evidence added at every stage above.
+    findings = stamp_provenance(findings)
 
     facts = AppFacts(
         input_sha256=meta.input_sha256,

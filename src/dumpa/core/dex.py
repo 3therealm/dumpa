@@ -53,6 +53,7 @@ from pathlib import Path
 from typing import BinaryIO
 
 from dumpa.core.errors import DexError
+from dumpa.core.fs import open_resilient
 
 logger = logging.getLogger("dumpa")
 
@@ -171,7 +172,7 @@ class DexFile:
         if offset < insns_start:
             return None                  # inside the code_item header, not the bytecode
         try:
-            with path.open("rb") as f:
+            with open_resilient(path) as f:
                 f.seek(insns_start)
                 insns = f.read(end - insns_start)
         except OSError:
@@ -189,7 +190,7 @@ class DexFile:
 def parse_dex(path: Path) -> DexFile | None:
     """Parse a .dex. Returns None on any non-DEX/malformed/truncated input."""
     try:
-        with path.open("rb") as f:
+        with open_resilient(path) as f:
             return _parse(f)
     except (DexError, OSError, struct.error):
         logger.debug("DEX parse failed for %s", path, exc_info=True)

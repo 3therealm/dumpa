@@ -43,9 +43,21 @@ def test_standalone_pck_listed_and_extracted(tmp_path: Path) -> None:
     assert "Godot version 3.5.2" in subjects
     assert any(s.startswith("Godot PCK: assets/game.pck") for s in subjects)
     assert any(s.startswith("Godot resources extracted (2)") for s in subjects)
-    assert (ws.dumps_dir / "godot" / "pck" / "game" / "scenes/main.tscn").read_bytes() \
+    assert (ws.dumps_dir / "godot" / "pck" / "assets" / "game" / "scenes/main.tscn").read_bytes() \
         == _FILES["res://scenes/main.tscn"]
     assert (ws.dumps_dir / "godot" / ".dumpa-godot.json").is_file()
+
+
+def test_same_stem_pcks_extract_to_distinct_dirs(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    _touch(ws.extracted_dir, "assets/base/game.pck", build_pck({"res://base.txt": b"base"}))
+    _touch(ws.extracted_dir, "assets/dlc/game.pck", build_pck({"res://dlc.txt": b"dlc"}))
+
+    godot.scan(ws)
+
+    root = ws.dumps_dir / "godot" / "pck" / "assets"
+    assert (root / "base" / "game" / "base.txt").read_bytes() == b"base"
+    assert (root / "dlc" / "game" / "dlc.txt").read_bytes() == b"dlc"
 
 
 def test_embedded_pck_located_and_extracted(tmp_path: Path) -> None:
@@ -55,7 +67,8 @@ def test_embedded_pck_located_and_extracted(tmp_path: Path) -> None:
     findings = godot.scan(ws)
     assert any(s.startswith("Godot PCK: lib/arm64-v8a/libgodot.so") for s in
                {f.subject for f in findings})
-    assert (ws.dumps_dir / "godot" / "pck" / "libgodot" / "scripts/player.gd").read_bytes() \
+    assert (ws.dumps_dir / "godot" / "pck" / "lib" / "arm64-v8a" / "libgodot"
+            / "scripts/player.gd").read_bytes() \
         == _FILES["res://scripts/player.gd"]
 
 
@@ -117,7 +130,7 @@ def test_cached_run_all_recreates_extracted_resources(tmp_path: Path) -> None:
     ws = _ws(tmp_path)
     _mark_reusable(ws)
     _touch(ws.extracted_dir, "assets/game.pck", build_pck(_FILES))
-    out = ws.dumps_dir / "godot" / "pck" / "game" / "scenes/main.tscn"
+    out = ws.dumps_dir / "godot" / "pck" / "assets" / "game" / "scenes/main.tscn"
 
     run_all(ws)
     assert out.read_bytes() == _FILES["res://scenes/main.tscn"]

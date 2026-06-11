@@ -6,18 +6,18 @@ import json
 from pathlib import Path
 
 import pytest
-
-from dumpa.core.arsc import parse_arsc
-from dumpa.core.errors import ArscError
-from dumpa.core.report import Confidence, Finding, FindingState, Location
-from dumpa.core.workspace import Workspace
-from dumpa.scanners import enrich_resource_names, resources
 from _arsc_build import (
     build_arsc,
     build_arsc_bag,
     build_arsc_encoded,
     build_arsc_localized,
 )
+
+from dumpa.core.arsc import parse_arsc
+from dumpa.core.errors import ArscError
+from dumpa.core.report import Confidence, Finding, FindingState, Location
+from dumpa.core.workspace import Workspace
+from dumpa.scanners import enrich_resource_names, resources
 
 
 def test_parses_package_and_string_entries() -> None:
@@ -38,7 +38,7 @@ def test_parses_package_and_string_entries() -> None:
 def test_iter_strings_yields_values() -> None:
     data = build_arsc("com.example", "string", [("api_url", "https://api.example.com/v1")])
     rows = list(parse_arsc(data).iter_strings())
-    assert ("com.example", "string", "api_url", "https://api.example.com/v1") == rows[0][:4]
+    assert rows[0][:4] == ("com.example", "string", "api_url", "https://api.example.com/v1")
 
 
 def test_locate_maps_value_offset_to_resource() -> None:

@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dumpa import __version__
+from dumpa.core.fs import read_bytes_resilient
 from dumpa.core.pck import Pck, extract, find_embedded, parse_at, parse_standalone
 from dumpa.core.report import Confidence, Evidence, Finding, FindingState, Location
 from dumpa.core.workspace import Workspace
@@ -93,6 +94,13 @@ def _write_sidecar(ws: Workspace, payload: dict[str, object]) -> None:
         logger.warning("could not write godot provenance sidecar", exc_info=True)
 
 
+def _pck_dump_dir(ws: Workspace, rel: str) -> tuple[Path, str]:
+    """Return a collision-resistant dump directory for an extracted/-relative pack path."""
+    rel_no_ext = Path(rel).with_suffix("")
+    dump_rel = Path("godot") / "pck" / rel_no_ext
+    return ws.dumps_dir / dump_rel, dump_rel.as_posix()
+
+
 def _ver_str(v: tuple[int, int, int]) -> str:
     return ".".join(str(n) for n in v)
 
@@ -138,12 +146,12 @@ def scan(ws: Workspace) -> list[Finding]:
             FindingState.PRESENT, "packed resource archive", "; ".join(sample),
             [Location(file_path=pk.rel)], {"file_count": str(len(pk.pck.entries))}))
 
-        out_dir = ws.dumps_dir / "godot" / "pck" / Path(pk.rel).stem
+        out_dir, dump_rel = _pck_dump_dir(ws, pk.rel)
         n = extract(pk.source, pk.pck, out_dir)
         extracted_dirs.append(out_dir)
         findings.append(_f(
             f"Godot resources extracted ({n})", Confidence.HIGH, FindingState.INITIALIZED,
-            f"from {pk.rel} into dumps/godot/pck/{Path(pk.rel).stem}/", pk.rel, []))
+            f"from {pk.rel} into dumps/{dump_rel}/", pk.rel, []))
         sidecar_packs.append({"source": pk.rel, "fmt_version": pk.pck.fmt_version,
                               "encrypted": False, "extracted": n})
 
@@ -178,7 +186,7 @@ def _endpoint_findings(out_dirs: list[Path], ws: Workspace) -> list[Finding]:
             try:
                 if path.stat().st_size > _MAX_CONFIG_BYTES:
                     continue
-                data = path.read_bytes()
+                data = read_bytes_resilient(path)
             except OSError:
                 logger.debug("godot endpoint scan: cannot read %s", path, exc_info=True)
                 continue
