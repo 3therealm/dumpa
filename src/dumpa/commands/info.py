@@ -8,6 +8,7 @@ from the arch split names.
 
 from __future__ import annotations
 
+import zipfile
 from pathlib import Path
 
 from dumpa.commands.analyze import input_type
@@ -27,6 +28,7 @@ from dumpa.core.config import (
 from dumpa.core.env import env_positive_int
 from dumpa.core.errors import ToolExecutionError, ToolNotFoundError
 from dumpa.core.fs import working_tmp_dir
+from dumpa.core.rules import probe_engine_from_names
 from dumpa.core.tools import ToolRegistry, build_default_registry
 from dumpa.tools import aapt, apksigner
 
@@ -88,8 +90,18 @@ def _read_badging(registry: ToolRegistry, apk: Path) -> aapt.BadgingInfo:
     return aapt.read_badging(tool, apk, _validation_timeout())
 
 
+def _probe_engine(apk: Path) -> str | None:
+    """Detect the game engine from the apk's zip entry names (no extraction)."""
+    try:
+        with zipfile.ZipFile(apk) as zf:
+            return probe_engine_from_names(zf.namelist())
+    except (OSError, zipfile.BadZipFile):
+        return None
+
+
 def _print_info(input_abs: Path, in_type: str, badging: aapt.BadgingInfo,
-                signer: apksigner.SignerInfo | None, abis: tuple[str, ...]) -> None:
+                signer: apksigner.SignerInfo | None, abis: tuple[str, ...],
+                engine: str | None) -> None:
     size_mb = input_abs.stat().st_size / (1024.0 * 1024.0)
     version = badging.version_name or '?'
     if badging.version_code:
@@ -100,12 +112,14 @@ def _print_info(input_abs: Path, in_type: str, badging: aapt.BadgingInfo,
         ("size", f"{size_mb:.2f} MB"),
         ("package", badging.package or 'unknown'),
         ("version", version),
+        ("engine", engine or 'unknown'),
         ("minSdk", badging.min_sdk or '?'),
         ("targetSdk", badging.target_sdk or '?'),
         ("ABIs", ", ".join(abis) if abis else 'none'),
         ("permissions", str(badging.permission_count)),
         ("signer cert", signer.cert_sha256 if signer and signer.cert_sha256 else 'unsigned/unknown'),
         ("schemes", '+'.join(signer.schemes) if signer and signer.schemes else 'none'),
+        ("debug cert", ('yes' if signer.is_debug else 'no') if signer else '?'),
     ]
     width = max(len(k) for k, _ in rows)
     for key, value in rows:
@@ -126,6 +140,7 @@ def info(input_file: Path) -> None:
             probe_apk, abis_override = input_abs, None
         badging = _read_badging(registry, probe_apk)
         signer = _read_signer(registry, probe_apk)
+        engine = _probe_engine(probe_apk)
 
     abis = abis_override if abis_override is not None else badging.abis
-    _print_info(input_abs, in_type, badging, signer, abis)
+    _print_info(input_abs, in_type, badging, signer, abis, engine)

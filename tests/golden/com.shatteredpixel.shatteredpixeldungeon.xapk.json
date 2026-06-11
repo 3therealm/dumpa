@@ -1,0 +1,315 @@
+{
+  "facts": {
+    "abis": [
+      "armeabi-v7a"
+    ],
+    "engine": "libGDX",
+    "exported_component_count": 3,
+    "game_types": [],
+    "input_sha256": "b4f955ab345a5e62d5173ec1ae145af5ce232eb8c1b2ac293cd1c93d9a74f228",
+    "package": "com.shatteredpixel.shatteredpixeldungeon",
+    "permissions": [
+      "android.permission.ACCESS_NETWORK_STATE",
+      "android.permission.INTERNET",
+      "android.permission.VIBRATE",
+      "android.permission.WAKE_LOCK",
+      "com.android.vending.BILLING",
+      "com.google.android.finsky.permission.BIND_GET_INSTALL_REFERRER_SERVICE",
+      "com.shatteredpixel.shatteredpixeldungeon.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+    ],
+    "version_name": "3.3.8"
+  },
+  "findings": {
+    "capability": [
+      [
+        "Network state",
+        "high",
+        "present"
+      ]
+    ],
+    "data-access": [
+      [
+        "Android ID",
+        "medium",
+        "referenced"
+      ],
+      [
+        "Clipboard access",
+        "medium",
+        "referenced"
+      ],
+      [
+        "Device identifiers (IMEI / serial / subscriber)",
+        "medium",
+        "referenced"
+      ]
+    ],
+    "dex": [
+      [
+        "classes.dex",
+        "high",
+        "present"
+      ]
+    ],
+    "endpoint": [
+      [
+        "android.googlesource.com",
+        "low",
+        "present"
+      ],
+      [
+        "api-project-162079574763.firebaseio.com",
+        "low",
+        "present"
+      ],
+      [
+        "app-measurement.com",
+        "low",
+        "present"
+      ],
+      [
+        "celesti-whispers.itch.io",
+        "low",
+        "present"
+      ],
+      [
+        "developer.android.com",
+        "low",
+        "present"
+      ],
+      [
+        "explore.transifex.com",
+        "low",
+        "present"
+      ],
+      [
+        "firebase-settings.crashlytics.com",
+        "low",
+        "present"
+      ],
+      [
+        "firebase.google.com",
+        "low",
+        "present"
+      ],
+      [
+        "firebaseinstallations.googleapis.com",
+        "low",
+        "present"
+      ],
+      [
+        "github.com",
+        "low",
+        "present"
+      ],
+      [
+        "goo.gl",
+        "low",
+        "present"
+      ],
+      [
+        "google.com",
+        "low",
+        "present"
+      ],
+      [
+        "issuetracker.google.com",
+        "low",
+        "present"
+      ],
+      [
+        "libgdx.com",
+        "low",
+        "present"
+      ],
+      [
+        "mastodon.gamedev.place",
+        "low",
+        "present"
+      ],
+      [
+        "pagead2.googlesyndication.com",
+        "low",
+        "present"
+      ],
+      [
+        "play.google.com",
+        "low",
+        "present"
+      ],
+      [
+        "plus.google.com",
+        "low",
+        "present"
+      ],
+      [
+        "schemas.android.com",
+        "low",
+        "present"
+      ],
+      [
+        "shatteredpixel.com",
+        "low",
+        "present"
+      ],
+      [
+        "watabou.itch.io",
+        "low",
+        "present"
+      ],
+      [
+        "www.alekskomitov.com",
+        "low",
+        "present"
+      ],
+      [
+        "www.freesound.org",
+        "low",
+        "present"
+      ],
+      [
+        "www.google.com",
+        "low",
+        "present"
+      ],
+      [
+        "www.googleadservices.com",
+        "low",
+        "present"
+      ],
+      [
+        "www.gwtproject.org",
+        "low",
+        "present"
+      ],
+      [
+        "www.youtube.com",
+        "low",
+        "present"
+      ],
+      [
+        "youtrack.jetbrains.com",
+        "low",
+        "present"
+      ]
+    ],
+    "engine": [
+      [
+        "libGDX",
+        "high",
+        "present"
+      ]
+    ],
+    "manifest": [
+      [
+        "allowBackup=true",
+        "medium",
+        "present"
+      ],
+      [
+        "exported activity: com.google.android.gms.games.internal.v2.appshortcuts.PlayGamesAppShortcutsActivity",
+        "high",
+        "present"
+      ],
+      [
+        "exported activity: com.shatteredpixel.shatteredpixeldungeon.android.AndroidLauncher",
+        "high",
+        "present"
+      ],
+      [
+        "exported receiver: androidx.profileinstaller.ProfileInstallReceiver",
+        "medium",
+        "present"
+      ]
+    ],
+    "native": [
+      [
+        "armeabi-v7a/libdatastore_shared_counter.so",
+        "high",
+        "present"
+      ],
+      [
+        "armeabi-v7a/libgdx-freetype.so",
+        "high",
+        "present"
+      ],
+      [
+        "armeabi-v7a/libgdx.so",
+        "high",
+        "present"
+      ]
+    ],
+    "native-strings": [
+      [
+        "armeabi-v7a/libdatastore_shared_counter.so",
+        "high",
+        "present"
+      ],
+      [
+        "armeabi-v7a/libgdx-freetype.so",
+        "high",
+        "present"
+      ],
+      [
+        "armeabi-v7a/libgdx.so",
+        "high",
+        "present"
+      ]
+    ],
+    "native-symbol": [
+      [
+        "armeabi-v7a/libdatastore_shared_counter.so",
+        "high",
+        "present"
+      ],
+      [
+        "armeabi-v7a/libgdx-freetype.so",
+        "high",
+        "present"
+      ],
+      [
+        "armeabi-v7a/libgdx.so",
+        "high",
+        "present"
+      ]
+    ],
+    "protection": [
+      [
+        "Emulator detection",
+        "medium",
+        "present"
+      ]
+    ],
+    "resource-table": [
+      [
+        "com.shatteredpixel.shatteredpixeldungeon",
+        "low",
+        "present"
+      ]
+    ],
+    "secret": [
+      [
+        "Firebase Realtime Database URL",
+        "medium",
+        "present"
+      ],
+      [
+        "Google API key",
+        "high",
+        "present"
+      ]
+    ],
+    "tracker": [
+      [
+        "Firebase Analytics",
+        "high",
+        "present"
+      ],
+      [
+        "Firebase Crashlytics",
+        "high",
+        "present"
+      ]
+    ]
+  }
+}

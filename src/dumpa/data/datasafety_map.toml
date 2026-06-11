@@ -1,0 +1,33 @@
+# Join key for the Data Safety comparison (Phase 6).
+#
+# Maps a dumpa *observed* category (the `category` attribute on tracker / capability /
+# data-access findings) to the Google Play Data Safety data-type label(s) that would
+# *disclose* it. A category is "comparable" only if it appears here: if any of its
+# covering labels is in the app's declared disclosure, the observation is disclosed;
+# otherwise it is an undisclosed-collection gap.
+#
+# Categories with NO Data Safety equivalent are intentionally omitted so they never
+# produce noise: connectivity device-access (bluetooth, network), clipboard, and the
+# tracker purposes that are app-functionality rather than a disclosed data type
+# (push messaging, remote config, consent management, social, anti-fraud, A/B testing).
+
+[map]
+# data-access + capability categories (core/privacy.py, rules/privacy.toml)
+"advertising id" = ["Device or other IDs"]
+"android id" = ["Device or other IDs"]
+"device identifiers" = ["Device or other IDs"]
+"location" = ["Location"]
+"contacts" = ["Contacts"]
+"accounts" = ["Personal info"]
+"microphone" = ["Audio"]
+"camera" = ["Photos and videos"]
+"external storage" = ["Files and docs", "Photos and videos"]
+"sensors" = ["Health and fitness"]
+"installed packages" = ["App activity", "Device or other IDs"]
+
+# tracker categories (rules/trackers.toml) that imply a disclosed data type
+"ads" = ["Device or other IDs"]
+"ad mediation" = ["Device or other IDs"]
+"analytics" = ["App activity", "Device or other IDs"]
+"attribution" = ["Device or other IDs"]
+"crash reporting" = ["App info and performance"]

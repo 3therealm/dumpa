@@ -7,9 +7,17 @@ and model-only; the command layer renders it.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
+from dumpa.core.dumpcs_methods import method_set
+from dumpa.core.hashing import sha256_file
 from dumpa.core.report import Report
+from dumpa.core.workspace import Workspace
+
+# Cap names listed per group in rendered output; the model keeps the full lists.
+const_diff_display_cap = 200
+const_dump_cs = "dump.cs"
 
 
 def _str_list() -> list[str]:
@@ -101,3 +109,200 @@ def render_diff(old_label: str, new_label: str, diff: ReportDiff) -> str:
     if not diff.changed:
         lines.append("no finding changes")
     return "\n".join(lines).rstrip() + "\n"
+
+
+# --- native symbol diff ------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class NativeSymbolDelta:
+    """Exports/imports added or removed for one lib/<abi>/*.so between two workspaces."""
+    lib: str                     # "<abi>/<name>.so"
+    exports_added: list[str] = field(default_factory=_str_list)
+    exports_removed: list[str] = field(default_factory=_str_list)
+    imports_added: list[str] = field(default_factory=_str_list)
+    imports_removed: list[str] = field(default_factory=_str_list)
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.exports_added or self.exports_removed
+                    or self.imports_added or self.imports_removed)
+
+
+def _load_sidecars(ws: Workspace) -> dict[str, dict[str, set[str]]]:
+    """{ '<abi>/<lib>.so': {'exports': {...}, 'imports': {...}} } from dumps/native/*.json."""
+    out: dict[str, dict[str, set[str]]] = {}
+    native_dir = ws.native_dir
+    if not native_dir.is_dir():
+        return out
+    for sidecar in sorted(native_dir.glob("*.json")):
+        try:
+            data = json.loads(sidecar.read_text(encoding="UTF-8"))
+        except (OSError, ValueError):
+            continue
+        abi = data.get("abi", "")
+        lib = data.get("lib", sidecar.stem)
+        key = f"{abi}/{lib}" if abi else lib
+        out[key] = {
+            "exports": {s.get("name", "") for s in data.get("exports", []) if s.get("name")},
+            "imports": {s.get("name", "") for s in data.get("imports", []) if s.get("name")},
+        }
+    return out
+
+
+def diff_native_symbols(old_ws: Workspace, new_ws: Workspace) -> list[NativeSymbolDelta]:
+    """Per-lib export/import set diff from each workspace's dumps/native/*.json sidecars.
+
+    A lib present on only one side yields an all-added or all-removed delta. Only libs
+    with a real change are returned, sorted by lib name.
+    """
+    old = _load_sidecars(old_ws)
+    new = _load_sidecars(new_ws)
+    deltas: list[NativeSymbolDelta] = []
+    for lib in sorted(set(old) | set(new)):
+        o = old.get(lib, {"exports": set(), "imports": set()})
+        n = new.get(lib, {"exports": set(), "imports": set()})
+        delta = NativeSymbolDelta(
+            lib=lib,
+            exports_added=sorted(n["exports"] - o["exports"]),
+            exports_removed=sorted(o["exports"] - n["exports"]),
+            imports_added=sorted(n["imports"] - o["imports"]),
+            imports_removed=sorted(o["imports"] - n["imports"]),
+        )
+        if delta.changed:
+            deltas.append(delta)
+    return deltas
+
+
+def _render_capped(lines: list[str], sign: str, names: list[str]) -> None:
+    """Append up to the display cap of `  <sign> name` lines, with an overflow note."""
+    for name in names[:const_diff_display_cap]:
+        lines.append(f"    {sign} {name}")
+    extra = len(names) - const_diff_display_cap
+    if extra > 0:
+        lines.append(f"    ... ({sign}{extra} more)")
+
+
+def render_native_symbol_diff(deltas: list[NativeSymbolDelta]) -> str:
+    """Render the native-symbol section; empty string when nothing changed."""
+    if not deltas:
+        return ""
+    lines = ["## native symbols", ""]
+    for d in deltas:
+        lines.append(d.lib)
+        lines.append(f"  exports +{len(d.exports_added)} / -{len(d.exports_removed)}")
+        _render_capped(lines, "+", d.exports_added)
+        _render_capped(lines, "-", d.exports_removed)
+        lines.append(f"  imports +{len(d.imports_added)} / -{len(d.imports_removed)}")
+        _render_capped(lines, "+", d.imports_added)
+        _render_capped(lines, "-", d.imports_removed)
+    lines.append("")
+    return "\n".join(lines)
+
+
+# --- changed-files diff ------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FileDelta:
+    """Files added/removed/modified in the raw extraction between two workspaces."""
+    added: list[str] = field(default_factory=_str_list)
+    removed: list[str] = field(default_factory=_str_list)
+    modified: list[str] = field(default_factory=_str_list)
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.added or self.removed or self.modified)
+
+
+def _file_sizes(ws: Workspace) -> dict[str, int]:
+    """{ '<relpath>': size } over ws.extracted_dir; empty when the dir is absent."""
+    out: dict[str, int] = {}
+    root = ws.extracted_dir
+    if not root.is_dir():
+        return out
+    for path in root.rglob("*"):
+        if path.is_file():
+            out[path.relative_to(root).as_posix()] = path.stat().st_size
+    return out
+
+
+def diff_files(old_ws: Workspace, new_ws: Workspace) -> FileDelta:
+    """Diff the raw extraction (extracted/) of two workspaces by path + content.
+
+    A file is `modified` when its size differs, or — when sizes match — when its
+    SHA-256 differs. Hashing is bounded to same-size pairs so a 195 MB extraction
+    is not hashed wholesale.
+    """
+    old = _file_sizes(old_ws)
+    new = _file_sizes(new_ws)
+    added = sorted(set(new) - set(old))
+    removed = sorted(set(old) - set(new))
+    modified: list[str] = []
+    for rel in sorted(set(old) & set(new)):
+        # `or` short-circuits: the (whole-file) hash is only read when sizes match.
+        if (old[rel] != new[rel]
+                or sha256_file(old_ws.extracted_dir / rel)
+                != sha256_file(new_ws.extracted_dir / rel)):
+            modified.append(rel)
+    return FileDelta(added=added, removed=removed, modified=modified)
+
+
+def render_file_diff(delta: FileDelta) -> str:
+    """Render the changed-files section; empty string when nothing changed."""
+    if not delta.changed:
+        return ""
+    lines = ["## files",
+             f"  +{len(delta.added)} / -{len(delta.removed)} / ~{len(delta.modified)}"]
+    _render_capped(lines, "+", delta.added)
+    _render_capped(lines, "-", delta.removed)
+    _render_capped(lines, "~", delta.modified)
+    lines.append("")
+    return "\n".join(lines)
+
+
+# --- Unity method (dump.cs) diff ---------------------------------------------
+
+
+@dataclass(frozen=True)
+class MethodDelta:
+    """IL2CPP method signatures added/removed between two dump.cs files."""
+    added: list[str] = field(default_factory=_str_list)
+    removed: list[str] = field(default_factory=_str_list)
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.added or self.removed)
+
+
+def diff_unity_methods(old_ws: Workspace, new_ws: Workspace) -> MethodDelta | None:
+    """Set-diff of dump.cs method signatures. None when either dump.cs is absent.
+
+    Returning None (vs an empty delta) lets the caller print a "run analyze/dump-il2cpp
+    first" note instead of implying the method sets are identical.
+    """
+    old_cs = old_ws.dumps_dir / const_dump_cs
+    new_cs = new_ws.dumps_dir / const_dump_cs
+    if not old_cs.is_file() or not new_cs.is_file():
+        return None
+    old = method_set(old_cs)
+    new = method_set(new_cs)
+    return MethodDelta(added=sorted(new - old), removed=sorted(old - new))
+
+
+def render_unity_method_diff(delta: MethodDelta | None) -> str:
+    """Render the unity-methods section (call only when the engine is Unity).
+
+    `delta is None` means a dump.cs was missing on one/both sides -> a skip note. An
+    unchanged delta renders nothing.
+    """
+    if delta is None:
+        return "## unity methods\n  (no dump.cs in one or both inputs; run analyze first)\n"
+    if not delta.changed:
+        return ""
+    lines = ["## unity methods",
+             f"  +{len(delta.added)} / -{len(delta.removed)}"]
+    _render_capped(lines, "+", delta.added)
+    _render_capped(lines, "-", delta.removed)
+    lines.append("")
+    return "\n".join(lines)

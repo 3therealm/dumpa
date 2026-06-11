@@ -13,25 +13,33 @@ from collections.abc import Callable
 from pathlib import PurePosixPath
 
 from dumpa.core import cache
+from dumpa.core.arsc import ArscTable, parse_arsc_file
 from dumpa.core.dex import DexFile, parse_dex
 from dumpa.core.domains import DomainOwner, build_domain_table
 from dumpa.core.elf import ElfFile, parse_elf
+from dumpa.core.endpoints import load_endpoint_rules
 from dumpa.core.report import Confidence, Evidence, Finding, Location
 from dumpa.core.rules import load_builtin
 from dumpa.core.workspace import Workspace, WorkspaceMeta
 from dumpa.scanners import (
+    cocos,
     dex,
     dumpcs,
     endpoint,
     engine,
     gametype,
+    godot,
     manifest_privacy,
+    mediation,
     native,
     privacy,
     protection,
+    resources,
     secret,
     tracker,
     unity,
+    unity_assets,
+    unity_rules,
 )
 
 Scanner = Callable[[Workspace], list[Finding]]
@@ -51,12 +59,15 @@ class ScannerSpec:
 SCANNERS: tuple[ScannerSpec, ...] = (
     ScannerSpec("engine", engine.scan, ("engines",)),
     ScannerSpec("manifest_privacy", manifest_privacy.scan, ("manifest",)),
-    ScannerSpec("tracker", tracker.scan, ("trackers", "trackers_exodus")),
+    ScannerSpec("tracker", tracker.scan,
+                ("trackers", "trackers_exodus", "trackers_trackercontrol")),
+    ScannerSpec("mediation", mediation.scan, ("mediation",)),
     ScannerSpec("privacy", privacy.scan, ("privacy",)),
-    ScannerSpec("protection", protection.scan, ("protections",)),
+    ScannerSpec("protection", protection.scan, ("protections", "protections_apkid")),
     ScannerSpec("secret", secret.scan, ("secrets",)),
     ScannerSpec("native", native.scan),
     ScannerSpec("dex", dex.scan),
+    ScannerSpec("resources", resources.scan),
     ScannerSpec("endpoint", endpoint.scan),
     # gametype resolves a networked, TTL-bound Play genre -> never cached (the
     # dumps/gametype.json sidecar already memoizes the fetch within a workspace).
@@ -65,8 +76,24 @@ SCANNERS: tuple[ScannerSpec, ...] = (
     # only on the apk input hash, so always run it until those sidecars are part of the key.
     ScannerSpec("dumpcs", dumpcs.scan, dumpcs.const_dumpcs_bundles, cacheable=False),
 )
-# Unity deep helper runs only when the engine scanner flagged Unity.
-UNITY_SPEC = ScannerSpec("unity", unity.scan)
+# Unity deep helpers run only when the engine scanner flagged Unity. unity_rules consumes
+# the `unity` bundle (cache-keyed on its version); unity.scan and unity_assets.scan are
+# code-only (keyed on the dumpa version).
+UNITY_SPECS: tuple[ScannerSpec, ...] = (
+    ScannerSpec("unity", unity.scan),
+    ScannerSpec("unity_rules", unity_rules.scan, ("unity",)),
+    ScannerSpec("unity_assets", unity_assets.scan),
+)
+# Cocos2d-x deep helper runs only when the engine scanner flagged Cocos2d-x. It writes
+# decrypted bundle artifacts, so keep it uncached until those sidecars are part of the key.
+COCOS_SPECS: tuple[ScannerSpec, ...] = (
+    ScannerSpec("cocos", cocos.scan, cacheable=False),
+)
+# Godot deep helper runs only when the engine scanner flagged Godot. It extracts PCK
+# resources, so keep it uncached until those sidecars are part of the key.
+GODOT_SPECS: tuple[ScannerSpec, ...] = (
+    ScannerSpec("godot", godot.scan, cacheable=False),
+)
 
 _CONFIDENCE_RANK = {Confidence.HIGH: 3, Confidence.MEDIUM: 2, Confidence.LOW: 1}
 
@@ -112,6 +139,10 @@ def enrich_native_rvas(findings: list[Finding], ws: Workspace) -> list[Finding]:
     return out
 
 
+const_dex_xref_tool = "dex-string-xref"
+_DEX_XREF_MAX = 8                       # cap referencers enumerated in evidence
+
+
 def enrich_dex_locations(findings: list[Finding], ws: Workspace) -> list[Finding]:
     """Backfill Location.dex_class/.dex_method on any finding located by offset in a .dex.
 
@@ -132,6 +163,7 @@ def enrich_dex_locations(findings: list[Finding], ws: Workspace) -> list[Finding
     out: list[Finding] = []
     for finding in findings:
         new_locs: list[Location] | None = None
+        new_evidence: list[Evidence] | None = None
         for i, loc in enumerate(finding.locations):
             if (loc.dex_class is not None or loc.file_offset is None
                     or not loc.file_path or not loc.file_path.endswith(".dex")):
@@ -140,14 +172,85 @@ def enrich_dex_locations(findings: list[Finding], ws: Workspace) -> list[Finding
             if dex_file is None:
                 continue
             hit = dex_file.locate(loc.file_offset)
-            if hit is None:
+            if hit is not None:
+                dex_class, dex_method = hit
+                if new_locs is None:
+                    new_locs = list(finding.locations)
+                new_locs[i] = dataclasses.replace(loc, dex_class=dex_class,
+                                                  dex_method=dex_method)
                 continue
-            dex_class, dex_method = hit
-            if new_locs is None:
-                new_locs = list(finding.locations)
-            new_locs[i] = dataclasses.replace(loc, dex_class=dex_class, dex_method=dex_method)
-        out.append(dataclasses.replace(finding, locations=new_locs)
-                   if new_locs is not None else finding)
+            # No structural owner: the offset is in a plain string constant. Resolve the
+            # method(s) whose const-string loads it.
+            refs = dex_file.locate_string_xref(loc.file_offset)
+            if not refs:
+                continue
+            if len(refs) == 1:
+                cls, meth = refs[0]
+                if new_locs is None:
+                    new_locs = list(finding.locations)
+                new_locs[i] = dataclasses.replace(loc, dex_class=cls, dex_method=meth)
+            else:
+                # Loaded from several methods: naming one owner would mislead, so surface
+                # all referencers as evidence instead.
+                if new_evidence is None:
+                    new_evidence = []
+                shown = ", ".join(f"{c}#{m}" for c, m in refs[:_DEX_XREF_MAX])
+                more = "" if len(refs) <= _DEX_XREF_MAX else f" (+{len(refs) - _DEX_XREF_MAX} more)"
+                new_evidence.append(Evidence(
+                    description=f"string constant loaded by {len(refs)} methods",
+                    snippet=shown + more, tool=const_dex_xref_tool))
+        if new_locs is None and new_evidence is None:
+            out.append(finding)
+        else:
+            out.append(dataclasses.replace(
+                finding,
+                locations=new_locs if new_locs is not None else finding.locations,
+                evidence=(finding.evidence + new_evidence) if new_evidence is not None
+                else finding.evidence))
+    return out
+
+
+const_resource_attribution_tool = "resource-attribution"
+_ARSC_REL = "resources.arsc"
+
+
+def enrich_resource_names(findings: list[Finding], ws: Workspace) -> list[Finding]:
+    """Attribute findings located by offset inside resources.arsc to the owning resource.
+
+    Twin of enrich_dex_locations: a content scanner records (file_path="resources.arsc",
+    file_offset) for a URL/key it matched in the binary table; map that offset through the
+    parsed table to the resource (`@string/<name>`) whose value contains it, recorded as
+    Evidence. The table is parsed once; findings with no arsc-offset location, or whose
+    offset lands outside any string value, pass through unchanged. Idempotent — re-running
+    on an already-attributed finding adds nothing.
+    """
+    if not any(loc.file_path == _ARSC_REL and loc.file_offset is not None
+               for f in findings for loc in f.locations):
+        return findings
+    table: ArscTable | None = parse_arsc_file(ws.extracted_dir / _ARSC_REL)
+    if table is None:
+        return findings
+
+    out: list[Finding] = []
+    for finding in findings:
+        names: list[str] = []
+        for loc in finding.locations:
+            if loc.file_path != _ARSC_REL or loc.file_offset is None:
+                continue
+            hit = table.locate(loc.file_offset)
+            if hit is not None and hit[0] not in names:
+                names.append(hit[0])
+        if not names:
+            out.append(finding)
+            continue
+        evidence = list(finding.evidence)
+        for name in names:
+            ev = Evidence(description=f"in resource @string/{name}",
+                          snippet=name, tool=const_resource_attribution_tool)
+            if not _has_equivalent_evidence(evidence, ev):
+                evidence.append(ev)
+        out.append(dataclasses.replace(finding, evidence=evidence)
+                   if len(evidence) != len(finding.evidence) else finding)
     return out
 
 
@@ -279,6 +382,42 @@ def enrich_domain_attribution(findings: list[Finding], ws: Workspace) -> list[Fi
     return out
 
 
+def enrich_endpoint_purpose(findings: list[Finding], ws: Workspace) -> list[Finding]:
+    """Tag each `endpoint` finding with a functional `purpose` and dedupe by host. Idempotent.
+
+    Two jobs, both additive/order-preserving:
+    - classify (host + the `paths` attribute) -> a `purpose` attribute via the endpoints
+      bundle, set only when matched and absent;
+    - dedupe endpoint findings by subject (first wins). The endpoint scanner runs before the
+      engine deep helpers, so the loose-tree finding wins over a Godot-emitted duplicate; a
+      host seen only inside a PCK keeps its single finding. `ws` is unused (table is built from
+      in-repo bundles), kept for signature parity with the sibling enrich passes.
+    """
+    table = load_endpoint_rules()
+    out: list[Finding] = []
+    seen: set[str] = set()
+    for f in findings:
+        if f.kind != "endpoint":
+            out.append(f)
+            continue
+        subject = f.subject.lower()
+        if subject in seen:
+            continue                     # dedupe: first endpoint finding per host wins
+        seen.add(subject)
+        if "purpose" in f.attributes or len(table) == 0:
+            out.append(f)
+            continue
+        paths = tuple(p for p in f.attributes.get("paths", "").split("; ") if p)
+        purpose = table.classify(f.subject, paths)
+        if purpose is None:
+            out.append(f)
+            continue
+        attrs = dict(f.attributes)
+        attrs["purpose"] = purpose
+        out.append(dataclasses.replace(f, attributes=attrs))
+    return out
+
+
 def _run_spec(ws: Workspace, spec: ScannerSpec, meta: WorkspaceMeta | None) -> list[Finding]:
     """Run one scanner, serving from / writing to the content-hash cache when possible.
 
@@ -303,19 +442,29 @@ def run_all(ws: Workspace, *, use_cache: bool = True) -> list[Finding]:
 
     Per-scanner findings are memoized under a content-hash key (input + dumpa + rule-bundle
     versions); pass use_cache=False to force a fresh scan. `enrich_native_rvas`,
-    `enrich_dex_locations`, and `enrich_domain_attribution` run on the assembled list every
-    time — cheap deterministic post-passes, so they stay uncached. Attribution runs last so it
-    sees every endpoint/tracker finding.
+    `enrich_dex_locations`, `enrich_resource_names`, `enrich_domain_attribution`, and
+    `enrich_endpoint_purpose` run on the assembled list every time — cheap deterministic
+    post-passes, so they stay uncached. Domain attribution then endpoint-purpose run last so
+    they see every endpoint/tracker finding (including engine-helper-emitted endpoints).
     """
     meta = ws.read_meta() if use_cache else None
     findings: list[Finding] = []
     for spec in SCANNERS:
         findings.extend(_run_spec(ws, spec, meta))
     if any(f.kind == "engine" and f.subject == "Unity" for f in findings):
-        findings.extend(_run_spec(ws, UNITY_SPEC, meta))
+        for spec in UNITY_SPECS:
+            findings.extend(_run_spec(ws, spec, meta))
+    if any(f.kind == "engine" and f.subject == "Cocos2d-x" for f in findings):
+        for spec in COCOS_SPECS:
+            findings.extend(_run_spec(ws, spec, meta))
+    if any(f.kind == "engine" and f.subject == "Godot" for f in findings):
+        for spec in GODOT_SPECS:
+            findings.extend(_run_spec(ws, spec, meta))
     findings = enrich_native_rvas(findings, ws)
     findings = enrich_dex_locations(findings, ws)
-    return enrich_domain_attribution(findings, ws)
+    findings = enrich_resource_names(findings, ws)
+    findings = enrich_domain_attribution(findings, ws)
+    return enrich_endpoint_purpose(findings, ws)
 
 
 def primary_engine(findings: list[Finding]) -> str | None:

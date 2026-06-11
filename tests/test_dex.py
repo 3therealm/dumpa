@@ -61,6 +61,41 @@ def test_locate_plain_string_is_none(tmp_path: Path) -> None:
     assert dex.locate(start) is None
 
 
+def test_string_xref_resolves_loading_method(tmp_path: Path) -> None:
+    data, info = build_dex()
+    dex = parse_dex(_write(tmp_path, data))
+    assert dex is not None
+    start, end = info["str_content"][info["ref_const"]]
+    assert dex.locate_string_xref(start) == (("com.x.A", "foo"),)
+    assert dex.locate_string_xref(end - 1) == (("com.x.A", "foo"),)
+    # locate() still finds no structural owner for a plain string constant.
+    assert dex.locate(start) is None
+
+
+def test_string_xref_unreferenced_is_empty(tmp_path: Path) -> None:
+    data, info = build_dex()
+    dex = parse_dex(_write(tmp_path, data))
+    assert dex is not None
+    start, _ = info["str_content"]["hello"]            # never loaded by code
+    assert dex.locate_string_xref(start) == ()
+
+
+def test_string_xref_skips_payload_bytes(tmp_path: Path) -> None:
+    """A fill-array-data-payload whose body contains a const-string-looking byte run must
+    be skipped whole — its bytes must not be misread into a bogus xref."""
+    import struct
+    body = (struct.pack("<HH", 0x001A, 6)                       # const-string v0, string@6
+            + struct.pack("<HHI", 0x0300, 1, 4)                 # fill-array-data-payload
+            + struct.pack("<HH", 0x001A, 5))                    # payload data: looks like @5
+    data, info = build_dex(insns=body)
+    dex = parse_dex(_write(tmp_path, data))
+    assert dex is not None
+    ref_start, _ = info["str_content"][info["ref_const"]]
+    hello_start, _ = info["str_content"]["hello"]
+    assert dex.locate_string_xref(ref_start) == (("com.x.A", "foo"),)   # the real load
+    assert dex.locate_string_xref(hello_start) == ()                    # payload byte ignored
+
+
 def test_locate_gap_is_none(tmp_path: Path) -> None:
     data, _ = build_dex()
     dex = parse_dex(_write(tmp_path, data))

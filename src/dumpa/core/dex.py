@@ -2,23 +2,31 @@
 
 Reads the DEX header and the string / type / field / method / class_def pools straight
 from the binary with the stdlib alone (`struct`) — same no-extra-deps ethos as `core.elf`
-and `core.axml`. It is *structural only*: it never decodes a single Dalvik instruction.
-It reads `code_item` headers to size each method's byte span, but the instruction bytes
-themselves stay untouched.
+and `core.axml`. It is *almost* structural-only: it reads `code_item` headers to size each
+method's byte span, and decodes exactly two Dalvik instructions — `const-string` (0x1a)
+and `const-string/jumbo` (0x1b) — to build a string-constant cross-reference. Every other
+opcode is advanced past by width alone; their operands are never interpreted.
 
-It powers two things: a per-file class/method/field inventory (the `dex` scanner) and a
+It powers three things: a per-file class/method/field inventory (the `dex` scanner); a
 file-offset -> (class, method) map (`DexFile.locate`), so a finding located by byte offset
-inside a `.dex` — e.g. a tracker class-path string a content scanner matched — can also
-report the class (and, when the offset lands in bytecode, the method) that owns it.
+inside a `.dex` — e.g. a tracker class-path string a content scanner matched — can report
+the owning class (and method, when the offset lands in bytecode); and a string-constant
+xref (`DexFile.locate_string_xref`), so an offset inside an *arbitrary* string constant —
+a hardcoded secret, endpoint URL, or tracker domain — resolves to the method(s) whose
+`const-string` loads it.
 
-What `locate` resolves without bytecode:
+What `locate` resolves:
   * offset inside a `code_item`     -> (owning class, method)        — exact
   * offset inside a class descriptor string -> (the class it names, None)
 
-Tying a *string constant* back to the method whose `const-string` loads it needs an
-instruction-level xref, which is deferred with the rest of bytecode decoding; such offsets
-resolve to None here. Any inconsistency raises `DexError`, caught at the `parse_dex`
-boundary so callers degrade to "no DEX facts", never crash.
+What `locate_string_xref` adds:
+  * offset inside any string_data range -> the methods that `const-string`-load it
+
+The const-string walker advances by an opcode-width table and skips the three inline
+payload pseudo-instructions whole (so payload bytes are never misread as a `const-string`);
+it bails out of a method on any truncation / unused opcode / overrunning payload, keeping
+what it found. Any inconsistency raises `DexError`, caught at the `parse_dex` boundary so
+callers degrade to "no DEX facts", never crash.
 
 References: Android DEX format (header_item / string_data_item / type_id_item /
 field_id_item / method_id_item / class_def_item / class_data_item / code_item).
@@ -71,6 +79,8 @@ class DexFile:
     # Sorted, non-overlapping spans for offset -> owner resolution.
     code_spans: tuple[tuple[int, int, str, str], ...]   # (start, end, class, method)
     desc_spans: tuple[tuple[int, int, str], ...]        # (start, end, dotted class)
+    # Sorted spans over string_data of const-string-referenced strings.
+    xref_spans: tuple[tuple[int, int, tuple[tuple[str, str], ...]], ...] = ()
 
     def locate(self, offset: int) -> tuple[str, str | None] | None:
         """Map a file byte offset to (dotted_class, method_name|None), or None.
@@ -91,6 +101,19 @@ class DexFile:
             if start <= offset < end:
                 return (cls, None)
         return None
+
+    def locate_string_xref(self, offset: int) -> tuple[tuple[str, str], ...]:
+        """Methods that `const-string`-load the string whose string_data range covers
+        `offset`. Empty when the offset is in no referenced string. Each entry is a
+        (dotted_class, method) pair; multiple entries mean the string is loaded in more
+        than one place."""
+        starts = [s[0] for s in self.xref_spans]
+        i = bisect.bisect_right(starts, offset) - 1
+        if 0 <= i < len(self.xref_spans):
+            start, end, refs = self.xref_spans[i]
+            if start <= offset < end:
+                return refs
+        return ()
 
 
 def parse_dex(path: Path) -> DexFile | None:
@@ -136,6 +159,162 @@ def _uleb128(buf: bytes, pos: int) -> tuple[int, int]:
     raise DexError("uleb128 too long")
 
 
+# --- const-string cross-reference -------------------------------------------------------
+#
+# To find `const-string`/`const-string/jumbo` ops we only need to *advance* across every
+# other instruction, so a width table (in 16-bit code units) suffices — operands are never
+# interpreted. Width 0 marks an unused/invalid opcode: hitting one means the cursor is lost,
+# so the walker bails. The three inline payload pseudo-instructions are not opcodes (their
+# first code unit is 0x01xx/0x02xx/0x03xx) and are sized by formula, not this table.
+
+_CONST_STRING = 0x1A            # 21c, 2 units: string idx = u16 at +1
+_CONST_STRING_JUMBO = 0x1B      # 31c, 3 units: string idx = u32 at +1
+_PACKED_SWITCH_PAYLOAD = 0x0100
+_SPARSE_SWITCH_PAYLOAD = 0x0200
+_FILL_ARRAY_DATA_PAYLOAD = 0x0300
+
+
+def _build_opcode_widths() -> bytes:
+    w = bytearray(256)          # default 0 = unused/invalid -> bail
+
+    def span(lo: int, hi: int, units: int) -> None:
+        for op in range(lo, hi + 1):
+            w[op] = units
+
+    span(0x00, 0x01, 1)         # nop, move
+    span(0x02, 0x02, 2)         # move/from16
+    span(0x03, 0x03, 3)         # move/16
+    span(0x04, 0x04, 1)         # move-wide
+    span(0x05, 0x05, 2)         # move-wide/from16
+    span(0x06, 0x06, 3)         # move-wide/16
+    span(0x07, 0x07, 1)         # move-object
+    span(0x08, 0x08, 2)         # move-object/from16
+    span(0x09, 0x09, 3)         # move-object/16
+    span(0x0A, 0x11, 1)         # move-result*/exception, return*
+    span(0x12, 0x12, 1)         # const/4
+    span(0x13, 0x13, 2)         # const/16
+    span(0x14, 0x14, 3)         # const
+    span(0x15, 0x16, 2)         # const/high16, const-wide/16
+    span(0x17, 0x17, 3)         # const-wide/32
+    span(0x18, 0x18, 5)         # const-wide
+    span(0x19, 0x19, 2)         # const-wide/high16
+    span(0x1A, 0x1A, 2)         # const-string
+    span(0x1B, 0x1B, 3)         # const-string/jumbo
+    span(0x1C, 0x1C, 2)         # const-class
+    span(0x1D, 0x1E, 1)         # monitor-enter/exit
+    span(0x1F, 0x20, 2)         # check-cast, instance-of
+    span(0x21, 0x21, 1)         # array-length
+    span(0x22, 0x23, 2)         # new-instance, new-array
+    span(0x24, 0x26, 3)         # filled-new-array[/range], fill-array-data
+    span(0x27, 0x28, 1)         # throw, goto
+    span(0x29, 0x29, 2)         # goto/16
+    span(0x2A, 0x2C, 3)         # goto/32, packed/sparse-switch
+    span(0x2D, 0x31, 2)         # cmp*
+    span(0x32, 0x3D, 2)         # if-* / if-*z
+    # 0x3E..0x43 unused -> 0
+    span(0x44, 0x51, 2)         # aget*/aput*
+    span(0x52, 0x5F, 2)         # iget*/iput*
+    span(0x60, 0x6D, 2)         # sget*/sput*
+    span(0x6E, 0x72, 3)         # invoke-*
+    # 0x73 unused -> 0
+    span(0x74, 0x78, 3)         # invoke-*/range
+    # 0x79..0x7A unused -> 0
+    span(0x7B, 0x8F, 1)         # unary ops
+    span(0x90, 0xAF, 2)         # binop
+    span(0xB0, 0xCF, 1)         # binop/2addr
+    span(0xD0, 0xD7, 2)         # binop/lit16
+    span(0xD8, 0xE2, 2)         # binop/lit8
+    # 0xE3..0xF9 unused -> 0
+    span(0xFA, 0xFB, 4)         # invoke-polymorphic[/range]
+    span(0xFC, 0xFD, 3)         # invoke-custom[/range]
+    span(0xFE, 0xFF, 2)         # const-method-handle, const-method-type
+    return bytes(w)
+
+
+_OPCODE_WIDTHS = _build_opcode_widths()
+
+
+def _u16(insns: bytes, unit: int) -> int:
+    return insns[unit * 2] | (insns[unit * 2 + 1] << 8)
+
+
+def _scan_const_strings(insns: bytes, nstrings: int) -> list[int]:
+    """Walk one method's insns[] and return the string-pool indices its const-string ops
+    load. Forward-only and bounded; bails (keeping what it found) on truncation, an unused
+    opcode, or an overrunning payload — never raises. Payloads are skipped whole so their
+    arbitrary bytes are never misread as a const-string."""
+    out: list[int] = []
+    n = len(insns) // 2
+    i = 0
+    while i < n:
+        unit = _u16(insns, i)
+        if unit == _PACKED_SWITCH_PAYLOAD:
+            if i + 2 > n:
+                break
+            width = _u16(insns, i + 1) * 2 + 4
+        elif unit == _SPARSE_SWITCH_PAYLOAD:
+            if i + 2 > n:
+                break
+            width = _u16(insns, i + 1) * 4 + 2
+        elif unit == _FILL_ARRAY_DATA_PAYLOAD:
+            if i + 4 > n:
+                break
+            element_width = _u16(insns, i + 1)
+            size = _u16(insns, i + 2) | (_u16(insns, i + 3) << 16)
+            width = (size * element_width + 1) // 2 + 4
+        else:
+            op = unit & 0xFF
+            width = _OPCODE_WIDTHS[op]
+            if width == 0:
+                break
+            if op == _CONST_STRING and i + 2 <= n:
+                idx = _u16(insns, i + 1)
+                if 0 <= idx < nstrings:
+                    out.append(idx)
+            elif op == _CONST_STRING_JUMBO and i + 3 <= n:
+                idx = _u16(insns, i + 1) | (_u16(insns, i + 2) << 16)
+                if 0 <= idx < nstrings:
+                    out.append(idx)
+        if i + width > n:
+            break
+        i += width
+    return out
+
+
+def _build_xref_spans(
+    f: BinaryIO,
+    code_spans: list[tuple[int, int, str, str]],
+    str_content: list[tuple[int, int]],
+    nstrings: int,
+) -> tuple[tuple[int, int, tuple[tuple[str, str], ...]], ...]:
+    """Second pass over method code: map each const-string-referenced string index to the
+    (class, method) loaders, then to its string_data byte range. Only referenced strings
+    get a span, so memory tracks code references, not the whole string pool."""
+    refs: dict[int, set[tuple[str, str]]] = {}
+    for start, end, cls, meth in code_spans:
+        insns_start = start + _CODE_ITEM_HEADER
+        length = end - insns_start
+        if length <= 0:
+            continue
+        try:
+            f.seek(insns_start)
+            insns = f.read(length)
+        except OSError:
+            continue
+        for idx in _scan_const_strings(insns, nstrings):
+            refs.setdefault(idx, set()).add((cls, meth))
+
+    spans: list[tuple[int, int, tuple[tuple[str, str], ...]]] = []
+    for idx, methods in refs.items():
+        if not (0 <= idx < len(str_content)):
+            continue
+        cstart, cend = str_content[idx]
+        if cend > cstart:
+            spans.append((cstart, cend, tuple(sorted(methods))))
+    spans.sort(key=lambda s: s[0])
+    return tuple(spans)
+
+
 def _parse(f: BinaryIO) -> DexFile:
     head = f.read(_HEADER_SIZE)
     if len(head) < _HEADER_SIZE or head[:4] != _DEX_MAGIC:
@@ -169,8 +348,13 @@ def _parse(f: BinaryIO) -> DexFile:
     )
     desc_spans = _build_desc_spans(type_desc, strings, str_content)
     code_spans.sort(key=lambda s: s[0])
+    # const-string operands are little-endian code units; skip the xref on the (essentially
+    # theoretical) reverse-endian dex rather than misread them into bogus attributions.
+    xref_spans = (_build_xref_spans(f, code_spans, str_content, len(strings))
+                  if en == "<" else ())
     return DexFile(version=version, classes=tuple(classes),
-                   code_spans=tuple(code_spans), desc_spans=tuple(desc_spans))
+                   code_spans=tuple(code_spans), desc_spans=tuple(desc_spans),
+                   xref_spans=xref_spans)
 
 
 def _parse_version(raw: bytes) -> int:

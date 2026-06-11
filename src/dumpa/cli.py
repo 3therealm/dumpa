@@ -14,6 +14,7 @@ import typer
 from dumpa.commands import analyze as analyze_cmd
 from dumpa.commands import clean as clean_cmd
 from dumpa.commands import convert as convert_cmd
+from dumpa.commands import decompile as decompile_cmd
 from dumpa.commands import diff as diff_cmd
 from dumpa.commands import doctor as doctor_cmd
 from dumpa.commands import dump_il2cpp as dump_il2cpp_cmd
@@ -25,6 +26,7 @@ from dumpa.commands import rewrite as rewrite_cmd
 from dumpa.commands import rules as rules_cmd
 from dumpa.commands import unpack as unpack_cmd
 from dumpa.commands import update_signatures as update_signatures_cmd
+from dumpa.commands import xref as xref_cmd
 from dumpa.commands.base import run_command
 from dumpa.core.logging import configure_logging
 
@@ -141,12 +143,37 @@ def analyze(
         False, "--no-dump", help="Skip auto-dumping il2cpp (dump.cs) during analysis."),
     no_network: bool = typer.Option(
         False, "--no-network", help="Disable the networked Play store genre lookup."),
+    jadx: bool = typer.Option(
+        False, "--jadx", help="Also run a full JADX decompile into <workspace>/decompiled (heavy; opt-in)."),
+    xref: bool = typer.Option(
+        False, "--xref", help="Also build the cross-reference index into <workspace>/dumps/xref.json."),
     signing: str | None = typer.Option(None, "--signing", help=_SIGNING_HELP),
 ) -> None:
     """Extract an APK/XAPK once into a reproducible workspace."""
     run_command(lambda: analyze_cmd.analyze(
         input_file, workspace=workspace, force=force, signing=signing,
-        use_cache=not no_cache, no_dump=no_dump, no_network=no_network))
+        use_cache=not no_cache, no_dump=no_dump, no_network=no_network, jadx=jadx, xref=xref))
+
+
+@app.command()
+def decompile(
+    apk_file: Path | None = typer.Argument(
+        None, exists=True, dir_okay=False, readable=True,
+        help="APK to decompile (optional when --workspace is populated).",
+    ),
+    target_class: str | None = typer.Option(
+        None, "--class", help="Decompile a single class, e.g. com.foo.Bar (the cheap path)."),
+    all_classes: bool = typer.Option(
+        False, "--all", help="Decompile the whole APK (heavy; explicit opt-in)."),
+    out: Path | None = typer.Option(
+        None, "--out", help="Output dir (default: <workspace>/decompiled or <apk-stem>-decompiled)."),
+    workspace: Path | None = typer.Option(
+        None, "--workspace", help="Read app.apk from this workspace; write into it."),
+) -> None:
+    """Read-only JADX decompile of an APK (requires --class or --all)."""
+    run_command(lambda: decompile_cmd.decompile(
+        apk_file, target_class=target_class, all_classes=all_classes,
+        out_dir=out, workspace=workspace))
 
 
 @app.command()
@@ -185,12 +212,48 @@ def export(
 
 
 @app.command()
+def evidence(
+    workspace: Path = typer.Argument(
+        ..., exists=True, file_okay=False, readable=True,
+        help="Workspace directory produced by `dumpa analyze`.",
+    ),
+    out: Path | None = typer.Option(
+        None, "--out", help="Output directory (default: <workspace>/evidence)."),
+    no_cache: bool = typer.Option(
+        False, "--no-cache", help="Rebuild from a fresh scan instead of cached findings/report.json."),
+) -> None:
+    """Write a portable evidence bundle (manifest + snippets + index) for a workspace."""
+    run_command(lambda: export_cmd.evidence(workspace, out=out, use_cache=not no_cache))
+
+
+@app.command()
 def diff(
     old: Path = typer.Argument(..., exists=True, readable=True, help="Old .apk/.xapk or workspace dir."),
     new: Path = typer.Argument(..., exists=True, readable=True, help="New .apk/.xapk or workspace dir."),
 ) -> None:
     """Show what changed between two apps (trackers, protections, engine, ...)."""
     run_command(lambda: diff_cmd.diff(old, new))
+
+
+@app.command()
+def xref(
+    workspace: Path = typer.Argument(
+        ..., exists=True, readable=True, help="Workspace dir or .apk/.xapk."),
+    entity: str | None = typer.Argument(
+        None, help="Trace one entity (domain/class/string/symbol); omit to list correlations."),
+    min_layers: int = typer.Option(
+        2, "--min-layers", help="List entities spanning at least this many layers."),
+    case_insensitive: bool = typer.Option(
+        False, "--case-insensitive", help="Fold case when matching the queried entity."),
+    json_: bool = typer.Option(False, "--json", help="Emit JSON instead of text."),
+    out: Path | None = typer.Option(None, "--out", help="Write output to a file."),
+    no_cache: bool = typer.Option(
+        False, "--no-cache", help="Rebuild the index instead of reusing dumps/xref.json."),
+) -> None:
+    """Cross-reference an entity across manifest, smali, native, dump.cs, resources, assets."""
+    run_command(lambda: xref_cmd.xref(
+        workspace, entity=entity, min_layers=min_layers,
+        case_insensitive=case_insensitive, json_=json_, out=out, use_cache=not no_cache))
 
 
 @app.command(name="load")
@@ -215,15 +278,21 @@ def clean(
 
 @app.command(name="update-signatures")
 def update_signatures(
+    db: str = typer.Option(
+        "exodus", "--db",
+        help="Signature database: exodus | trackercontrol (trackers) | apkid (protections)."),
     source: str | None = typer.Option(
-        None, "--source", help="Exodus trackers API URL (default: the official endpoint)."),
+        None, "--source", help="Override the database URL (default: the DB's official endpoint)."),
     out: Path | None = typer.Option(
         None, "--out", dir_okay=False,
         help="Write the bundle here (default: the user rules dir; point at the in-repo "
              "bundle to regenerate the vendored snapshot)."),
 ) -> None:
-    """Refresh imported tracker signatures from Exodus Privacy (explicit, networked)."""
-    run_command(lambda: update_signatures_cmd.update_signatures(source=source, out=out))
+    """Refresh an imported signature bundle from an upstream DB (explicit, networked).
+
+    `apkid` writes the `protections_apkid` bundle; the others write `trackers_*`.
+    """
+    run_command(lambda: update_signatures_cmd.update_signatures(db=db, source=source, out=out))
 
 
 rules_app = typer.Typer(

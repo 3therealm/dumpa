@@ -1,0 +1,85 @@
+# Endpoint purpose seed: classifies an observed endpoint by FUNCTION (what it is for),
+# not ownership. Consumed by core.endpoints + the enrich_endpoint_purpose pass to tag each
+# `endpoint` finding with a `purpose` attribute.
+#
+# Complements data/domains.toml: that maps host -> owner/category (tracker taxonomy); this
+# maps (host, url-paths) -> purpose (firebase / remote-config / cdn / ad-auction / push /
+# crash-reporting), and works even for hosts with no ownership entry.
+#
+# Curation rules:
+#   - `hosts` are BARE hosts (no scheme/path/wildcard); each passes validate_host and matches
+#     on a label boundary (host == entry or host endswith "." + entry). Longest entry wins.
+#   - `url_patterns` are regexes tested against the URL path/query; they are tried before host
+#     rules (more specific). Keep them anchored enough to avoid false positives.
+#   - Unlike domains.toml, SHARED_INFRA hosts (cloudfront.net, fastly.net, ...) ARE allowed
+#     here: a CDN purpose is exactly what they signal, and purpose never attributes ownership.
+
+[bundle]
+name = "endpoints"
+version = "2026.06.1"
+updated = "2026-06-09"
+source = "curated"
+
+# --- ad auction / real-time bidding (path is the strong signal) -------------------------
+[[endpoint]]
+purpose = "ad-auction"
+url_patterns = [
+  "/openrtb2/auction",
+  "/openrtb2(/|$)",
+  "(^|/)rtb(/|$)",
+  "(^|/)auction(/|$)",
+  "(^|/)hb(/|$)",          # header bidding
+  "(^|/)prebid(/|$)",
+]
+
+# --- remote config (fetch of feature flags / config blobs) ------------------------------
+[[endpoint]]
+purpose = "remote-config"
+hosts = [
+  "firebaseremoteconfig.googleapis.com",
+  "firebaseremoteconfigrealtime.googleapis.com",
+  "config.uca.cloud.unity3d.com",
+  "remote-config-proxy-prod.ads.mopub.com",
+]
+url_patterns = ["(^|/)remoteconfig(/|$)", "(^|/)remote-config(/|$)"]
+
+# --- push messaging ---------------------------------------------------------------------
+[[endpoint]]
+purpose = "push"
+hosts = ["fcm.googleapis.com"]
+url_patterns = ["(^|/)fcm/send", "(^|/)gcm/send", "(^|/)c2dm(/|$)"]
+
+# --- crash / error reporting ------------------------------------------------------------
+[[endpoint]]
+purpose = "crash-reporting"
+hosts = [
+  "crashlytics.com",
+  "sentry.io",
+  "bugsnag.com",
+  "sessions.bugsnag.com",
+  "notify.bugsnag.com",
+]
+
+# --- firebase (realtime DB / installations / app-state) ---------------------------------
+[[endpoint]]
+purpose = "firebase"
+hosts = [
+  "firebaseio.com",
+  "firebaseinstallations.googleapis.com",
+  "firebasedatabase.app",
+]
+
+# --- content delivery networks ----------------------------------------------------------
+[[endpoint]]
+purpose = "cdn"
+hosts = [
+  "cloudfront.net",
+  "akamaihd.net",
+  "akamaized.net",
+  "fastly.net",
+  "gvt1.com",
+  "gvt2.com",
+  "unity3dusercontent.com",
+  "jsdelivr.net",
+  "cdn.jsdelivr.net",
+]

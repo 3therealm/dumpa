@@ -124,6 +124,40 @@ def test_markdown_renders_key_fields() -> None:
     assert "v2+v3" in md
 
 
+def test_tracker_product_and_purpose_defaults() -> None:
+    from dumpa.core.report import tracker_product, tracker_purpose
+    # Firebase-family subject -> product family from the subject map; purpose from category.
+    fa = Finding(kind="tracker", subject="Firebase Analytics", confidence=Confidence.HIGH,
+                 attributes={"category": "analytics", "owner": "Google"})
+    assert tracker_product(fa) == "Firebase"
+    assert tracker_purpose(fa) == "measure app usage & behavior"
+    # Standalone SDK -> product falls back to the subject (the SDK is its own product).
+    amp = Finding(kind="tracker", subject="Amplitude", confidence=Confidence.HIGH,
+                  attributes={"category": "analytics"})
+    assert tracker_product(amp) == "Amplitude"
+
+
+def test_tracker_product_and_purpose_overrides() -> None:
+    from dumpa.core.report import tracker_product, tracker_purpose
+    f = Finding(kind="tracker", subject="Custom SDK", confidence=Confidence.HIGH,
+                attributes={"category": "ads", "product": "MyProduct", "purpose": "custom use"})
+    assert tracker_product(f) == "MyProduct"
+    assert tracker_purpose(f) == "custom use"
+
+
+def test_markdown_renders_product_and_purpose() -> None:
+    report = Report(
+        dumpa_version="0.1.0", created="t", input_path="/x.apk",
+        facts=AppFacts(input_sha256="a" * 64, input_size=1024),
+        findings=[Finding(kind="tracker", subject="Firebase Analytics",
+                          confidence=Confidence.HIGH,
+                          attributes={"category": "analytics", "owner": "Google"})],
+    )
+    md = render_markdown(report)
+    assert "(Firebase)" in md                       # product family, distinct from subject
+    assert "measure app usage & behavior" in md     # category-default purpose
+
+
 def test_markdown_no_findings() -> None:
     report = _sample()
     bare = Report(

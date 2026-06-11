@@ -30,7 +30,7 @@ from dumpa.core.workspace import Workspace
 logger = logging.getLogger("dumpa")
 
 const_tracker_bundle = "trackers"
-const_exodus_bundle = "trackers_exodus"
+const_imported_bundles = ("trackers_exodus", "trackers_trackercontrol")
 
 _CONFIDENCE_RANK = {Confidence.HIGH: 3, Confidence.MEDIUM: 2, Confidence.LOW: 1}
 
@@ -58,20 +58,21 @@ def _merge_by_subject(findings: list[Finding]) -> list[Finding]:
     return [merged[s] for s in order]
 
 
-def _dedup_exodus(exodus: RuleBundle, curated: RuleBundle) -> RuleBundle:
-    """Drop Exodus subjects whose signature already covers a curated class-path literal.
+def _dedup_imported(imported: RuleBundle, curated: RuleBundle) -> RuleBundle:
+    """Drop imported subjects whose signature already covers a curated class-path literal.
 
-    Curated rules carry literal class paths in `strings`; if an Exodus rule's regex matches
-    any of them, the two target the same SDK -> curated wins, so every Exodus rule for that
+    Curated rules carry literal class paths in `strings`; if an imported rule's regex matches
+    any of them, the two target the same SDK -> curated wins, so every imported rule for that
     subject is removed. APK-independent (computed over rule data), so it does not affect the
-    content-hash cache. A broad Exodus regex could over-match an unrelated curated literal,
-    which only ever favours the authoritative curated rule — acceptable.
+    content-hash cache. A broad regex could over-match an unrelated curated literal, which
+    only ever favours the authoritative curated rule — acceptable. (Host-only signatures,
+    e.g. TrackerControl, never match a class-path literal, so this naturally no-ops there.)
     """
     literals = [s.encode() for r in curated.rules for s in r.strings]
     if not literals:
-        return exodus
+        return imported
     drop: set[str] = set()
-    for rule in exodus.rules:
+    for rule in imported.rules:
         for pattern in rule.regex:
             try:
                 rx = re.compile(pattern.encode())
@@ -81,9 +82,9 @@ def _dedup_exodus(exodus: RuleBundle, curated: RuleBundle) -> RuleBundle:
                 drop.add(rule.subject)
                 break
     if not drop:
-        return exodus
-    kept = tuple(r for r in exodus.rules if r.subject not in drop)
-    return dataclasses.replace(exodus, rules=kept)
+        return imported
+    kept = tuple(r for r in imported.rules if r.subject not in drop)
+    return dataclasses.replace(imported, rules=kept)
 
 
 def scan(ws: Workspace) -> list[Finding]:
@@ -93,9 +94,10 @@ def scan(ws: Workspace) -> list[Finding]:
     manifest = load_manifest(ws)
     curated = load_builtin(const_tracker_bundle)
     findings = apply_bundle(curated, ws.extracted_dir, manifest)
-    try:
-        exodus = _dedup_exodus(load_builtin(const_exodus_bundle), curated)
-        findings += apply_bundle(exodus, ws.extracted_dir, manifest)
-    except ConfigError:
-        logger.debug("trackers-exodus bundle unavailable; using curated only", exc_info=True)
+    for name in const_imported_bundles:
+        try:
+            imported = _dedup_imported(load_builtin(name), curated)
+            findings += apply_bundle(imported, ws.extracted_dir, manifest)
+        except ConfigError:
+            logger.debug("imported bundle %r unavailable; skipping", name, exc_info=True)
     return _merge_by_subject(findings)

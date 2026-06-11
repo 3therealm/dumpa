@@ -1,0 +1,273 @@
+{
+  "facts": {
+    "abis": [
+      "arm64-v8a",
+      "armeabi-v7a",
+      "x86",
+      "x86_64"
+    ],
+    "engine": null,
+    "exported_component_count": 1,
+    "game_types": [],
+    "input_sha256": "689904596b7fa211032d8e22f3c5dadf747eaea91c944710d867973f938055c6",
+    "package": "io.anuke.mindustry",
+    "permissions": [
+      "android.permission.INTERNET",
+      "android.permission.READ_EXTERNAL_STORAGE",
+      "android.permission.WRITE_EXTERNAL_STORAGE"
+    ],
+    "version_name": "8-official-158.1"
+  },
+  "findings": {
+    "capability": [
+      [
+        "Read external storage",
+        "high",
+        "present"
+      ],
+      [
+        "Write external storage",
+        "high",
+        "present"
+      ]
+    ],
+    "data-access": [
+      [
+        "Clipboard access",
+        "medium",
+        "referenced"
+      ]
+    ],
+    "dex": [
+      [
+        "classes.dex",
+        "high",
+        "present"
+      ]
+    ],
+    "endpoint": [
+      [
+        "android.googlesource.com",
+        "low",
+        "present"
+      ],
+      [
+        "anuke.itch.io",
+        "low",
+        "present"
+      ],
+      [
+        "api.github.com",
+        "low",
+        "present"
+      ],
+      [
+        "cdn.jsdelivr.net",
+        "low",
+        "present"
+      ],
+      [
+        "discord.com",
+        "low",
+        "present"
+      ],
+      [
+        "discord.gg",
+        "low",
+        "present"
+      ],
+      [
+        "f-droid.org",
+        "low",
+        "present"
+      ],
+      [
+        "github.com",
+        "low",
+        "present"
+      ],
+      [
+        "mindustrygame.github.io",
+        "low",
+        "present"
+      ],
+      [
+        "play.google.com",
+        "low",
+        "present"
+      ],
+      [
+        "raw.githubusercontent.com",
+        "low",
+        "present"
+      ],
+      [
+        "schemas.android.com",
+        "low",
+        "present"
+      ],
+      [
+        "trello.com",
+        "low",
+        "present"
+      ],
+      [
+        "www.reddit.com",
+        "low",
+        "present"
+      ]
+    ],
+    "ip-endpoint": [
+      [
+        "227.2.7.7",
+        "low",
+        "present"
+      ]
+    ],
+    "manifest": [
+      [
+        "allowBackup=true",
+        "medium",
+        "present"
+      ],
+      [
+        "exported activity: mindustry.android.AndroidLauncher",
+        "high",
+        "present"
+      ]
+    ],
+    "native": [
+      [
+        "arm64-v8a/libarc-freetype.so",
+        "high",
+        "present"
+      ],
+      [
+        "arm64-v8a/libarc.so",
+        "high",
+        "present"
+      ],
+      [
+        "armeabi-v7a/libarc-freetype.so",
+        "high",
+        "present"
+      ],
+      [
+        "armeabi-v7a/libarc.so",
+        "high",
+        "present"
+      ],
+      [
+        "x86/libarc-freetype.so",
+        "high",
+        "present"
+      ],
+      [
+        "x86/libarc.so",
+        "high",
+        "present"
+      ],
+      [
+        "x86_64/libarc-freetype.so",
+        "high",
+        "present"
+      ],
+      [
+        "x86_64/libarc.so",
+        "high",
+        "present"
+      ]
+    ],
+    "native-strings": [
+      [
+        "arm64-v8a/libarc-freetype.so",
+        "high",
+        "present"
+      ],
+      [
+        "arm64-v8a/libarc.so",
+        "high",
+        "present"
+      ],
+      [
+        "armeabi-v7a/libarc-freetype.so",
+        "high",
+        "present"
+      ],
+      [
+        "armeabi-v7a/libarc.so",
+        "high",
+        "present"
+      ],
+      [
+        "x86/libarc-freetype.so",
+        "high",
+        "present"
+      ],
+      [
+        "x86/libarc.so",
+        "high",
+        "present"
+      ],
+      [
+        "x86_64/libarc-freetype.so",
+        "high",
+        "present"
+      ],
+      [
+        "x86_64/libarc.so",
+        "high",
+        "present"
+      ]
+    ],
+    "native-symbol": [
+      [
+        "arm64-v8a/libarc-freetype.so",
+        "high",
+        "present"
+      ],
+      [
+        "arm64-v8a/libarc.so",
+        "high",
+        "present"
+      ],
+      [
+        "armeabi-v7a/libarc-freetype.so",
+        "high",
+        "present"
+      ],
+      [
+        "armeabi-v7a/libarc.so",
+        "high",
+        "present"
+      ],
+      [
+        "x86/libarc-freetype.so",
+        "high",
+        "present"
+      ],
+      [
+        "x86/libarc.so",
+        "high",
+        "present"
+      ],
+      [
+        "x86_64/libarc-freetype.so",
+        "high",
+        "present"
+      ],
+      [
+        "x86_64/libarc.so",
+        "high",
+        "present"
+      ]
+    ],
+    "resource-table": [
+      [
+        "io.anuke.mindustry",
+        "low",
+        "present"
+      ]
+    ]
+  }
+}

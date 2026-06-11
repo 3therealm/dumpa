@@ -40,6 +40,58 @@ PERMISSION_CAPABILITIES: dict[str, tuple[str, str]] = {
 }
 
 
+const_ad_id_permission = "com.google.android.gms.permission.AD_ID"
+const_ad_id_attribution_kind = "ad-id-attribution"
+
+# Tracker subjects (as in rules/trackers.toml) for SDKs that declare AD_ID in their own
+# manifest, so the permission is merged into the final APK at build time even if the app
+# never declares it. Static merge inference: if the SDK and the AD_ID permission both
+# appear, the SDK is a likely source. Value = why (a short note kept for the curated map).
+AD_ID_SOURCES: dict[str, str] = {
+    "Google AdMob / Mobile Ads": "Google Mobile Ads SDK declares AD_ID",
+    "Firebase Analytics": "Firebase/GMS measurement declares AD_ID",
+    "Google Analytics": "GMS analytics declares AD_ID",
+    "Meta Audience Network": "Meta Audience Network declares AD_ID",
+    "AppLovin MAX": "AppLovin declares AD_ID",
+    "Unity Ads": "Unity Ads declares AD_ID",
+    "Unity LevelPlay / ironSource": "ironSource/LevelPlay declares AD_ID",
+    "Vungle / Liftoff": "Vungle/Liftoff declares AD_ID",
+    "AppsFlyer": "AppsFlyer attribution reads AD_ID",
+    "Adjust": "Adjust attribution reads AD_ID",
+}
+
+
+def attribute_ad_id(findings: list[Finding]) -> list[Finding]:
+    """Attribute a merged AD_ID permission to the SDK(s) that likely introduced it.
+
+    Manifest-merge inference (Phase 6): the `AD_ID` permission is often added not by the app
+    but by an ad/attribution SDK whose own manifest declares it. When an AD_ID capability
+    finding is present, name every detected tracker in `AD_ID_SOURCES` as a likely source.
+    Emits at most one `ad-id-attribution` finding (state present, medium confidence — a static
+    merge inference, not proof the app authored the permission). Empty when AD_ID is absent.
+    """
+    has_ad_id = any(f.kind == const_capability_kind
+                    and f.attributes.get("permission") == const_ad_id_permission
+                    for f in findings)
+    if not has_ad_id:
+        return []
+    sources = sorted({f.subject for f in findings
+                      if f.kind == "tracker" and f.subject in AD_ID_SOURCES})
+    source_text = ", ".join(sources) if sources else "unknown (no known AD_ID-injecting SDK detected)"
+    evidence = [Evidence(
+        description=f"{const_ad_id_permission} present; likely contributed via manifest merge by: {source_text}",
+        tool="privacy",
+    )]
+    return [Finding(
+        kind=const_ad_id_attribution_kind,
+        subject="Advertising ID (AD_ID) source",
+        confidence=Confidence.MEDIUM,
+        state=FindingState.PRESENT,
+        attributes={"source": source_text},
+        evidence=evidence,
+    )]
+
+
 def permission_findings(permissions: list[str]) -> list[Finding]:
     """Map an app's declared permissions to data-access capability findings."""
     findings: list[Finding] = []

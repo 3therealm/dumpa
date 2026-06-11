@@ -17,6 +17,11 @@ from dumpa.core.tools import ResolvedTool
 # and "V3.0 Signer: certificate SHA-256 digest:" once a v3 block is present; match both.
 _CERT_SHA256_RE = re.compile(r'certificate SHA-256 digest:\s*([0-9a-fA-F]+)')
 _SCHEME_RE = re.compile(r'Verified using (v\d) scheme[^:]*:\s*(true|false)', re.IGNORECASE)
+# apksigner prints "Signer #1 certificate DN: CN=Android Debug, O=Android, C=US".
+_CERT_DN_RE = re.compile(r'certificate DN:\s*(.+)')
+# The Android debug keystore mints a per-machine key (so the SHA-256 is not fixed) but
+# always uses this distinguished name; matching the RDN set detects debug-signed apks.
+_DEBUG_DN_PARTS = frozenset({"cn=android debug", "o=android", "c=us"})
 
 
 @dataclass(frozen=True)
@@ -24,6 +29,7 @@ class SignerInfo:
     """Signer facts parsed from `apksigner verify --print-certs` output."""
     cert_sha256: str | None
     schemes: tuple[str, ...]   # the vN schemes that verified true, e.g. ('v2', 'v3')
+    is_debug: bool = False     # signed with the canonical Android debug certificate DN
 
 
 def parse_verify_output(text: str) -> SignerInfo:
@@ -34,7 +40,16 @@ def parse_verify_output(text: str) -> SignerInfo:
         for m in _SCHEME_RE.finditer(text)
         if m.group(2).lower() == 'true'
     )
-    return SignerInfo(cert_sha256=cert_match.group(1) if cert_match else None, schemes=schemes)
+    dn_match = _CERT_DN_RE.search(text)
+    is_debug = False
+    if dn_match:
+        # RDN-set comparison is order- and spacing-insensitive (apksigner's ordering varies).
+        parts = {p.strip().lower() for p in dn_match.group(1).split(',')}
+        is_debug = parts >= _DEBUG_DN_PARTS
+    return SignerInfo(
+        cert_sha256=cert_match.group(1) if cert_match else None,
+        schemes=schemes, is_debug=is_debug,
+    )
 
 
 def sign(tool: ResolvedTool, apk: Path, *, keystore: Path, key_alias: str,

@@ -50,3 +50,30 @@ def test_parse_v3_signer_label() -> None:
     info = parse_verify_output(_V3_SIGNED)
     assert info.cert_sha256 == "e594f8b2b2e4edb9c6d2921d81327d8fbedadc4b2dff9e0d5190e784a0e31bc1"
     assert info.schemes == ("v1", "v2", "v3")
+
+
+_RELEASE = """\
+Verified using v2 scheme (APK Signature Scheme v2): true
+Signer #1 certificate DN: CN=Acme Games Ltd, O=Acme, L=London, C=GB
+Signer #1 certificate SHA-256 digest: abc123
+"""
+
+
+def test_debug_cert_detected() -> None:
+    """The canonical Android debug DN flags the signer as a debug cert."""
+    assert parse_verify_output(_SIGNED).is_debug is True
+    assert parse_verify_output(_V3_SIGNED).is_debug is True
+
+
+def test_release_cert_not_debug() -> None:
+    assert parse_verify_output(_RELEASE).is_debug is False
+
+
+def test_empty_not_debug() -> None:
+    assert parse_verify_output("").is_debug is False
+
+
+def test_debug_dn_order_and_spacing_insensitive() -> None:
+    """RDN-set comparison ignores ordering and extra spacing in the DN line."""
+    text = "Signer #1 certificate DN: C=US,  O=Android , CN=Android Debug\n"
+    assert parse_verify_output(text).is_debug is True

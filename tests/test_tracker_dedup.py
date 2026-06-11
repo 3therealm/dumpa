@@ -1,6 +1,6 @@
 """Tracker scanner: curated/Exodus coexistence — class-path dedup, loader override, floor.
 
-`_dedup_exodus` drops imported subjects the curated bundle already covers; the user-dir
+`_dedup_imported` drops imported subjects the curated bundle already covers; the user-dir
 override lets `dumpa update-signatures` shadow the vendored snapshot; and the vendored
 floor actually fires on an Exodus-only signature.
 """
@@ -18,7 +18,7 @@ def _bundle(rules_toml: str, tmp_path: Path, name: str = "b"):
 
 
 def test_dedup_drops_covered_subject(tmp_path: Path) -> None:
-    from dumpa.scanners.tracker import _dedup_exodus
+    from dumpa.scanners.tracker import _dedup_imported
     curated = _bundle(
         '[[rule]]\nkind="tracker"\nsubject="Firebase"\nconfidence="high"\n'
         'strings=["com/google/firebase/analytics"]\n', tmp_path, "curated")
@@ -27,19 +27,19 @@ def test_dedup_drops_covered_subject(tmp_path: Path) -> None:
         'regex=["com.google.firebase.analytics"]\n\n'
         '[[rule]]\nkind="tracker"\nsubject="Branch"\nconfidence="medium"\n'
         'regex=["io.branch.referral"]\n', tmp_path, "exodus")
-    kept = _dedup_exodus(exodus, curated)               # type: ignore[arg-type]
+    kept = _dedup_imported(exodus, curated)               # type: ignore[arg-type]
     assert {r.subject for r in kept.rules} == {"Branch"}   # Firebase Analytics dropped
 
 
 def test_dedup_keeps_when_no_overlap(tmp_path: Path) -> None:
-    from dumpa.scanners.tracker import _dedup_exodus
+    from dumpa.scanners.tracker import _dedup_imported
     curated = _bundle(
         '[[rule]]\nkind="tracker"\nsubject="Unity Ads"\nconfidence="high"\n'
         'strings=["com/unity3d/ads"]\n', tmp_path, "curated")
     exodus = _bundle(
         '[[rule]]\nkind="tracker"\nsubject="Branch"\nconfidence="medium"\n'
         'regex=["io.branch.referral"]\n', tmp_path, "exodus")
-    kept = _dedup_exodus(exodus, curated)               # type: ignore[arg-type]
+    kept = _dedup_imported(exodus, curated)               # type: ignore[arg-type]
     assert {r.subject for r in kept.rules} == {"Branch"}
 
 
@@ -70,3 +70,20 @@ def test_vendored_floor_fires_on_exodus_only_signature(tmp_path: Path, monkeypat
     kochava = [f for f in findings if f.subject == "Kochava"]
     assert len(kochava) == 1
     assert kochava[0].confidence.value == "medium"
+
+
+def test_trackercontrol_floor_fires_on_host_signature(tmp_path: Path, monkeypatch) -> None:
+    # Keep the override out of the way so the in-repo vendored snapshot is what loads.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty"))
+    from dumpa.core.workspace import Workspace
+    from dumpa.scanners.tracker import scan
+    ws = Workspace(root=tmp_path / "ws")
+    ws.extracted_dir.mkdir(parents=True)
+    # RevenueCat's host is in the trackercontrol seed; not a curated/exodus subject.
+    (ws.extracted_dir / "classes.dex").write_bytes(b"x https://api.revenuecat.com/v1 x")
+    findings = scan(ws)
+    rc = [f for f in findings if f.subject == "RevenueCat"]
+    assert len(rc) == 1
+    assert rc[0].confidence.value == "medium"
+    assert rc[0].attributes.get("owner") == "RevenueCat"
+    assert "category" not in rc[0].attributes          # xray carries no purpose category
