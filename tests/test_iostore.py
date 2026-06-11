@@ -1,18 +1,36 @@
-"""UE5 IoStore `.utoc` header parser: enumerate-only, extraction deferred."""
+"""UE5 IoStore `.utoc`/`.ucas` parser + non-Oodle extractor."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from _iostore_build import FLAG_COMPRESSED, FLAG_ENCRYPTED, FLAG_INDEXED, build_toc
+import pytest
+from _iostore_build import (
+    FLAG_COMPRESSED,
+    FLAG_ENCRYPTED,
+    FLAG_INDEXED,
+    build_iostore,
+    build_toc,
+)
 
 from dumpa.core import iostore
+
+_FILES = {
+    "Config/DefaultEngine.ini": b"[URL]\nServer=https://api.example.test/v1\n",
+    "Content/data.json": b'{"endpoint":"https://cdn.example.test/assets"}',
+}
+_AES_KEY = bytes(range(32))
 
 
 def _write(tmp_path: Path, data: bytes) -> Path:
     p = tmp_path / "global.utoc"
     p.write_bytes(data)
     return p
+
+
+def _write_pair(tmp_path: Path, utoc: bytes, ucas: bytes) -> Path:
+    (tmp_path / "global.ucas").write_bytes(ucas)
+    return _write(tmp_path, utoc)
 
 
 def test_header_parse(tmp_path: Path) -> None:
@@ -42,3 +60,76 @@ def test_extract_is_deferred(tmp_path: Path) -> None:
 
 def test_not_a_toc_returns_none(tmp_path: Path) -> None:
     assert iostore.parse_toc(_write(tmp_path, b"not an iostore toc header")) is None
+
+
+# --- full parse + non-Oodle extraction ---------------------------------------
+
+def test_uncompressed_parse_and_extract(tmp_path: Path) -> None:
+    utoc, ucas = build_iostore(_FILES)
+    path = _write_pair(tmp_path, utoc, ucas)
+    toc = iostore.parse_toc(path)
+    assert toc is not None
+    assert {tf.path for tf in toc.files} == set(_FILES)        # directory index -> real paths
+    out = tmp_path / "out"
+    assert iostore.extract(path, toc, out) == 2
+    assert (out / "Config/DefaultEngine.ini").read_bytes() == _FILES["Config/DefaultEngine.ini"]
+    assert (out / "Content/data.json").read_bytes() == _FILES["Content/data.json"]
+
+
+def test_zlib_parse_and_extract(tmp_path: Path) -> None:
+    utoc, ucas = build_iostore(_FILES, compress="zlib")
+    path = _write_pair(tmp_path, utoc, ucas)
+    toc = iostore.parse_toc(path)
+    assert toc is not None
+    assert toc.compression_methods == ["Zlib"]                  # real method name surfaced
+    out = tmp_path / "out"
+    assert iostore.extract(path, toc, out) == 2
+    assert (out / "Content/data.json").read_bytes() == _FILES["Content/data.json"]
+
+
+def test_lz4_parse_and_extract(tmp_path: Path) -> None:
+    pytest.importorskip("lz4")
+    utoc, ucas = build_iostore(_FILES, compress="lz4")
+    path = _write_pair(tmp_path, utoc, ucas)
+    toc = iostore.parse_toc(path)
+    assert toc is not None
+    out = tmp_path / "out"
+    assert iostore.extract(path, toc, out) == 2
+    assert (out / "Content/data.json").read_bytes() == _FILES["Content/data.json"]
+
+
+def test_oodle_listed_but_deferred(tmp_path: Path) -> None:
+    utoc, ucas = build_iostore(_FILES, compress="oodle")
+    path = _write_pair(tmp_path, utoc, ucas)
+    toc = iostore.parse_toc(path)
+    assert toc is not None
+    assert toc.compression_methods == ["Oodle"]
+    assert {tf.path for tf in toc.files} == set(_FILES)          # paths still recovered
+    out = tmp_path / "out"
+    assert iostore.extract(path, toc, out) == 0                  # Oodle blocks deferred
+    assert not out.exists() or not any(out.rglob("*.*"))
+
+
+def test_encrypted_extract_with_key(tmp_path: Path) -> None:
+    pytest.importorskip("cryptography")
+    utoc, ucas = build_iostore(_FILES, compress="zlib", encrypt=True, aes_key=_AES_KEY)
+    path = _write_pair(tmp_path, utoc, ucas)
+    # no key: the directory index is opaque -> no paths, nothing extracted
+    blind = iostore.parse_toc(path)
+    assert blind is not None and blind.files == []
+    assert iostore.extract(path, blind, tmp_path / "blind") == 0
+    # with key: directory index decrypts + chunks decrypt + extract
+    toc = iostore.parse_toc(path, aes_key=_AES_KEY)
+    assert toc is not None
+    assert {tf.path for tf in toc.files} == set(_FILES)
+    out = tmp_path / "out"
+    assert iostore.extract(path, toc, out, aes_key=_AES_KEY) == 2
+    assert (out / "Content/data.json").read_bytes() == _FILES["Content/data.json"]
+
+
+def test_extract_without_ucas_returns_zero(tmp_path: Path) -> None:
+    utoc, _ucas = build_iostore(_FILES)            # write the .utoc but not the .ucas
+    path = _write(tmp_path, utoc)
+    toc = iostore.parse_toc(path)
+    assert toc is not None
+    assert iostore.extract(path, toc, tmp_path / "out") == 0

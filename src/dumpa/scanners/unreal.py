@@ -1,26 +1,25 @@
 """Unreal Engine deep-helper scanner: pak/IoStore discovery, extraction, endpoint scan.
 
 Beyond "this is Unreal" (the engine scanner's job), this locates the game's packaged
-containers — UE4 `.pak` files and UE5 IoStore `.utoc`/`.ucas` — reports the pak version and
-packed-file inventory, extracts the harvestable subset of pak entries into
-`dumps/unreal/pak/`, and harvests endpoint URLs from the extracted config/text. A provenance
-sidecar records what was found and what was deferred.
+containers — UE4 `.pak` files and UE5 IoStore `.utoc`/`.ucas` — reports versions + packed-file
+inventory, extracts the harvestable subset into `dumps/unreal/pak/` and `dumps/unreal/iostore/`,
+and harvests endpoint URLs from the extracted config/text. A provenance sidecar records what
+was found and what was deferred.
 
-The zero-dep boundary is loud and deliberate (see `core.unrealpak` / `core.iostore`):
-  * UE4 pak entries that are uncompressed or Zlib/Gzip-compressed AND unencrypted -> extracted.
-  * Oodle/LZ4 blocks, AES-encrypted entries/indexes, the UE4.25+ path-hash index, and ALL
-    UE5 IoStore chunk data -> detected and reported, never extracted. For a typical shipping
-    UE5 title (Oodle + AES) enumeration-without-extraction is the expected result, not a bug.
+Extraction (paks + IoStore) covers uncompressed, Zlib/Gzip, and LZ4 content, and AES-encrypted
+entries/indexes + the UE4.25+ path-hash index when a caller key + the `dumpa[unreal]` extra
+(cryptography + lz4) are present. The remaining boundary is **Oodle** (no open decompressor) —
+a typical shipping UE5 title is overwhelmingly Oodle, so enumeration-without-full-extraction is
+the expected result there, not a bug.
 
 A caller may supply an AES key (`DUMPA_UNREAL_AES` / `[unreal] aes_key`); its presence is
-recorded as provenance but the secret bytes are not persisted. The key is unused — stdlib
-has no AES, so decryption awaits a future `dumpa[unreal]` optional extra (mirrors the
-`dumpa[unity]`/UnityPy precedent).
+recorded as provenance but the secret bytes are not persisted. It is used (with the extra) to
+decrypt pak entries/indexes and IoStore directory indexes + chunks.
 
 Runs only behind the Unreal engine gate (UNREAL_SPECS) and self-gates on a container/native
 lib being present, so it is a no-op everywhere else.
 
-Deferred: Oodle/LZ4 decompression, AES decryption, UE4.25+ path-hash index, IoStore extraction.
+Deferred: Oodle decompression, and IoStore non-encoded/perfect-hash edge cases.
 """
 
 from __future__ import annotations
@@ -83,6 +82,13 @@ def _pak_dump_dir(ws: Workspace, rel: str) -> tuple[Path, str]:
     """Return a collision-resistant dump directory for an extracted/-relative pak path."""
     rel_no_ext = Path(rel).with_suffix("")
     dump_rel = Path("unreal") / "pak" / rel_no_ext
+    return ws.dumps_dir / dump_rel, dump_rel.as_posix()
+
+
+def _toc_dump_dir(ws: Workspace, rel: str) -> tuple[Path, str]:
+    """Return a collision-resistant dump directory for an extracted/-relative .utoc path."""
+    rel_no_ext = Path(rel).with_suffix("")
+    dump_rel = Path("unreal") / "iostore" / rel_no_ext
     return ws.dumps_dir / dump_rel, dump_rel.as_posix()
 
 
@@ -151,25 +157,32 @@ def scan(ws: Workspace) -> list[Finding]:
                              "deferred_reason": None})
 
     for t in tocs:
-        toc = iostore.parse_toc(t)
+        toc = iostore.parse_toc(t, aes_key=config.unreal_aes)
         rel = _rel(t, ex)
         if toc is None:
             continue
-        flags = []
-        if toc.compressed:
-            flags.append("compressed")
-        if toc.encrypted:
-            flags.append("encrypted")
+        methods = ", ".join(m for m in toc.compression_methods) or "none"
+        out_dir, dump_rel = _toc_dump_dir(ws, rel)
+        n = iostore.extract(t, toc, out_dir, aes_key=config.unreal_aes)
+        if n:
+            extracted_dirs.append(out_dir)
+        deferred = (len(toc.files) - n) if toc.files else toc.entry_count
+        detail = (f"UE5 IoStore container; methods: {methods}; extracted {n}"
+                  + (f", {deferred} deferred (Oodle/AES/unindexed)" if deferred > 0 else ""))
         findings.append(_f(
-            f"Unreal IoStore: {rel} ({toc.entry_count} chunks)", Confidence.MEDIUM,
-            FindingState.PRESENT,
-            "UE5 IoStore container; chunk extraction deferred (Oodle/AES)",
-            ", ".join(flags), [Location(file_path=rel)],
+            f"Unreal IoStore: {rel} ({toc.entry_count} chunks, {len(toc.files)} files)",
+            Confidence.MEDIUM, FindingState.PRESENT, detail,
+            ", ".join(f for f in ("compressed", "encrypted")
+                      if getattr(toc, f)), [Location(file_path=rel)],
             {"toc_version": str(toc.version), "chunks": str(toc.entry_count),
-             "encrypted": str(toc.encrypted), "compressed": str(toc.compressed)}))
+             "files": str(len(toc.files)), "extracted": str(n),
+             "methods": methods, "encrypted": str(toc.encrypted),
+             "compressed": str(toc.compressed)}))
         sidecar_tocs.append({"source": rel, "version": toc.version,
-                             "chunks": toc.entry_count, "encrypted": toc.encrypted,
-                             "compressed": toc.compressed, "extracted": 0})
+                             "chunks": toc.entry_count, "files": len(toc.files),
+                             "methods": list(toc.compression_methods),
+                             "encrypted": toc.encrypted, "compressed": toc.compressed,
+                             "extracted": n})
 
     findings += _aes_key_finding(config.unreal_aes, paks, tocs)
     findings += _endpoint_findings(extracted_dirs, ws)
@@ -188,17 +201,17 @@ def scan(ws: Workspace) -> list[Finding]:
 
 
 def _aes_key_finding(aes_key: bytes | None, paks: list[Path], tocs: list[Path]) -> list[Finding]:
-    """Surface a caller-supplied AES key: used for pak entries when the extra is present.
+    """Surface a caller-supplied AES key: used for decryption when the extra is present.
 
-    With `dumpa[unreal]` installed the key decrypts AES pak entries; without it (or for the
-    still-deferred encrypted index / IoStore chunks) the key is recorded but unused.
+    With `dumpa[unreal]` installed the key decrypts AES pak entries/indexes and IoStore
+    directory indexes + chunks (non-Oodle); without it the key is recorded but unused.
     """
     if aes_key is None or (not paks and not tocs):
         return []
     if unrealcrypto.aes_available():
-        subject = "Unreal AES key provided (used for pak entry decryption)"
-        detail = ("AES key supplied via config; used to decrypt encrypted pak entries "
-                  "(encrypted index / IoStore chunks remain deferred)")
+        subject = "Unreal AES key provided (used for decryption)"
+        detail = ("AES key supplied via config; used to decrypt pak entries/indexes and "
+                  "IoStore directory indexes + non-Oodle chunks")
     else:
         subject = "Unreal AES key provided (decryption deferred)"
         detail = "AES key supplied via config; decryption needs the dumpa[unreal] extra"

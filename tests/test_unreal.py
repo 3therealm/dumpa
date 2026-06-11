@@ -77,7 +77,7 @@ def test_unreal_sidecar_does_not_persist_aes_key(
     assert "aes_key_hex" not in data
     assert "41414141" not in raw
     # the key-provided finding fires regardless of whether the dumpa[unreal] extra is present
-    # (its subject differs: "used for pak entry decryption" vs "decryption deferred")
+    # (its subject differs: "used for decryption" vs "decryption deferred")
     assert any(f.subject.startswith("Unreal AES key provided") for f in findings)
 
 
@@ -110,6 +110,22 @@ def test_iostore_toc_enumerated(tmp_path: Path) -> None:
     toc_f = next(f for f in findings if f.subject.startswith("Unreal IoStore"))
     assert "7 chunks" in toc_f.subject
     assert toc_f.attributes["encrypted"] == "True"
+
+
+def test_iostore_extracted_via_scanner(tmp_path: Path) -> None:
+    from _iostore_build import build_iostore
+    ws = _ws(tmp_path)
+    utoc, ucas = build_iostore({"Content/cfg.ini": b"url=https://api.iostore.example/v1"},
+                               compress="zlib")
+    _touch(ws.extracted_dir, "base/global.utoc", utoc)
+    _touch(ws.extracted_dir, "base/global.ucas", ucas)
+
+    findings = unreal.scan(ws)
+
+    out = ws.dumps_dir / "unreal" / "iostore" / "base" / "global" / "Content/cfg.ini"
+    assert out.read_bytes() == b"url=https://api.iostore.example/v1"
+    # the endpoint harvested from the extracted IoStore config flows through the shared tail
+    assert any(f.kind == "endpoint" and f.subject == "api.iostore.example" for f in findings)
 
 
 def test_non_unreal_app_is_noop(tmp_path: Path) -> None:
@@ -158,7 +174,7 @@ def test_encrypted_pak_extracted_with_caller_key(
 
     out = ws.dumps_dir / "unreal" / "pak" / "base" / "Game" / "Content/notes.txt"
     assert out.read_bytes() == b"hello"                    # decrypted + extracted
-    assert any(f.subject == "Unreal AES key provided (used for pak entry decryption)"
+    assert any(f.subject == "Unreal AES key provided (used for decryption)"
                for f in findings)
     # the endpoint harvested from the now-decrypted config flows through the shared tail
     assert any(f.kind == "endpoint" and f.subject == "api.mygame.example" for f in findings)
