@@ -837,10 +837,10 @@ def render_markdown(report: Report) -> str:
             for x in sorted(by_cat[category], key=lambda i: i.subject):
                 lines.append(f"- {x.subject} ({x.state.value}, confidence: {x.confidence.value})")
             lines.append("")
-    for a in ad_id_attrs:
-        source = a.attributes.get("source", "unknown")
+    for ad_attr in ad_id_attrs:
+        source = ad_attr.attributes.get("source", "unknown")
         lines.append(f"- AD_ID likely added by: {source} "
-                     f"(confidence: {a.confidence.value})")
+                     f"(confidence: {ad_attr.confidence.value})")
         lines.append("")
 
     lines.append("## Data Safety")
@@ -865,10 +865,10 @@ def render_markdown(report: Report) -> str:
         lines.append("_none_")
     else:
         for x in sorted(endpoints, key=lambda i: i.subject):
-            purpose = x.attributes.get("purpose")
+            endpoint_purpose = x.attributes.get("purpose")
             country = x.attributes.get("country")
             asn = x.attributes.get("asn")
-            tag = f" [{purpose}]" if purpose else ""
+            tag = f" [{endpoint_purpose}]" if endpoint_purpose else ""
             geo = " — " + ", ".join(p for p in (country, asn) if p) if (country or asn) else ""
             lines.append(f"- {x.subject}{tag}{geo}")
     lines.append("")
@@ -903,10 +903,10 @@ def render_markdown(report: Report) -> str:
         lines.append("_none_")
     else:
         for dx in sorted(dexes, key=lambda i: i.subject):
-            a = dx.attributes
-            lines.append(f"- {dx.subject}: {a.get('class_count', '0')} classes, "
-                         f"{a.get('method_count', '0')} methods, "
-                         f"{a.get('field_count', '0')} fields")
+            dex_attrs = dx.attributes
+            lines.append(f"- {dx.subject}: {dex_attrs.get('class_count', '0')} classes, "
+                         f"{dex_attrs.get('method_count', '0')} methods, "
+                         f"{dex_attrs.get('field_count', '0')} fields")
     lines.append("")
 
     lines.append("## Findings")
@@ -1157,10 +1157,10 @@ def render_html(report: Report) -> str:
     else:
         out.append("<table>")
         for dx in sorted(dexes, key=lambda i: i.subject):
-            a = dx.attributes
-            detail = (f"{a.get('class_count', '0')} classes, "
-                      f"{a.get('method_count', '0')} methods, "
-                      f"{a.get('field_count', '0')} fields")
+            dex_attrs = dx.attributes
+            detail = (f"{dex_attrs.get('class_count', '0')} classes, "
+                      f"{dex_attrs.get('method_count', '0')} methods, "
+                      f"{dex_attrs.get('field_count', '0')} fields")
             out.append(f"<tr><td><code>{_h(dx.subject)}</code></td><td>{_h(detail)}</td></tr>")
         out.append("</table>")
 

@@ -50,7 +50,7 @@ def _endpoint_findings(walked: list[tuple[int, int, str]], rel: str) -> list[Fin
     hosts: dict[str, tuple[int, list[str]]] = {}
     for _field, offset, text in walked:
         for host, url in harvest_urls(text.encode("utf-8", "replace")):
-            off, samples = hosts.setdefault(host, (offset, []))
+            _off, samples = hosts.setdefault(host, (offset, []))
             if url not in samples and len(samples) < const_max_samples_per_host:
                 samples.append(url)
     findings: list[Finding] = []

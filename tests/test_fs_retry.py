@@ -58,7 +58,7 @@ def test_open_resilient_retries_then_reads(tmp_path: Path, monkeypatch: pytest.M
     real_open = Path.open
     state = {"failed": False}
 
-    def flaky_open(self: Path, *a: object, **k: object):  # noqa: ANN401
+    def flaky_open(self: Path, *a: object, **k: object):
         if self.name == "data.bin" and not state["failed"]:
             state["failed"] = True
             raise OSError(errno.EMFILE, "too many open files")

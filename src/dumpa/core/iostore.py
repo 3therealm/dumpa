@@ -23,8 +23,10 @@ from __future__ import annotations
 
 import struct
 import zlib
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import BinaryIO
 
 from dumpa.core import unrealcrypto
 from dumpa.core.fs import read_bytes_resilient
@@ -52,6 +54,8 @@ _MAX_DIR = 5_000_000
 _MAX_NAME_LEN = 256
 _MAX_UTOC_BYTES = 256 << 20
 _MAX_DEPTH = 4096
+const_max_extract_file_bytes = 512 << 20
+const_max_extract_total_bytes = 1 << 30
 
 
 class _Trunc(Exception):
@@ -72,16 +76,26 @@ class _Cur:
             raise _Trunc
 
     def i32(self) -> int:
-        self._need(4); v = struct.unpack_from("<i", self.b, self.p)[0]; self.p += 4; return v
+        self._need(4)
+        v = int(struct.unpack_from("<i", self.b, self.p)[0])
+        self.p += 4
+        return v
 
     def u32(self) -> int:
-        self._need(4); v = struct.unpack_from("<I", self.b, self.p)[0]; self.p += 4; return v
+        self._need(4)
+        v = int(struct.unpack_from("<I", self.b, self.p)[0])
+        self.p += 4
+        return v
 
     def skip(self, n: int) -> None:
-        self._need(n); self.p += n
+        self._need(n)
+        self.p += n
 
     def take(self, n: int) -> bytes:
-        self._need(n); v = self.b[self.p:self.p + n]; self.p += n; return v
+        self._need(n)
+        v = self.b[self.p:self.p + n]
+        self.p += n
+        return v
 
     def fstring(self) -> str:
         self._need(4)
@@ -142,7 +156,7 @@ def _parse_header(head: bytes) -> dict[str, int] | None:
         version = head[16]
         (entry_count, comp_block_count, _cbe_size, name_count, name_len,
          block_size, dir_index_size, partition_count) = struct.unpack_from("<IIIIIIII", head, 24)
-        (container_id,) = struct.unpack_from("<Q", head, 0x38)
+        (_container_id,) = struct.unpack_from("<Q", head, 0x38)
         (flags,) = struct.unpack_from("<I", head, 0x50)
         (phf_seed_count,) = struct.unpack_from("<I", head, 0x54)
         (partition_size,) = struct.unpack_from("<Q", head, 0x58)
@@ -192,9 +206,11 @@ def _parse_body(buf: bytes, h: dict[str, int], aes_key: bytes | None
             cur.skip(hash_size * 2 + 20 * m)                # toc + block sig + per-block SHA1
         files: list[TocFile] = []
         if version >= _V_DIRECTORY_INDEX and (h["flags"] & _FLAG_INDEXED) and h["dir_index_size"] > 0:
-            dir_blob = cur.take(h["dir_index_size"])
+            raw_dir = cur.take(h["dir_index_size"])
             if h["flags"] & _FLAG_ENCRYPTED:
-                dir_blob = unrealcrypto.decrypt_aes_ecb(dir_blob, aes_key) if aes_key else None
+                dir_blob = unrealcrypto.decrypt_aes_ecb(raw_dir, aes_key) if aes_key else None
+            else:
+                dir_blob = raw_dir
             if dir_blob is not None:
                 files = _parse_directory_index(dir_blob) or []
     except _Trunc:
@@ -232,12 +248,13 @@ def _parse_directory_index(blob: bytes) -> list[TocFile] | None:
         if di in seen or depth > _MAX_DEPTH or not (0 <= di < len(dirs)):
             return
         seen.add(di)
-        dname_idx, first_child, next_sib, first_file = dirs[di]
+        dname_idx, first_child, _next_sib, first_file = dirs[di]
         pushed = False
         if dname_idx != _NONE:
             nm = name(dname_idx)
             if nm is not None:
-                stack.append(nm); pushed = True
+                stack.append(nm)
+                pushed = True
         fi = first_file
         guard = 0
         while fi != _NONE and 0 <= fi < len(file_entries) and guard < len(file_entries):
@@ -314,6 +331,7 @@ def _method_name(methods: list[str], index: int) -> str:
 
 def _decompress_block(method: str, data: bytes, usize: int) -> bytes | None:
     """Decompress one IoStore block; None for Oodle (deferred) or any failure."""
+    out: bytes | None
     try:
         if method in ("zlib",):
             out = zlib.decompress(data)
@@ -330,7 +348,8 @@ def _decompress_block(method: str, data: bytes, usize: int) -> bytes | None:
     return out
 
 
-def _read_chunk(toc: Toc, streams: list, chunk_index: int, aes_key: bytes | None) -> bytes | None:
+def _read_chunk(toc: Toc, streams: list[BinaryIO], chunk_index: int,
+                aes_key: bytes | None) -> bytes | None:
     """Decode one chunk from the .ucas partitions; None on Oodle/failure/out-of-range."""
     if not (0 <= chunk_index < len(toc.chunk_offsets)):
         return None
@@ -360,11 +379,15 @@ def _read_chunk(toc: Toc, streams: list, chunk_index: int, aes_key: bytes | None
             return None
         if len(raw) != raw_size:
             return None
+        block = raw
         if toc.encrypted:
-            raw = unrealcrypto.decrypt_aes_ecb(raw, aes_key)
-            if raw is None:
+            if aes_key is None:
                 return None
-        comp = raw[:csize]
+            decrypted = unrealcrypto.decrypt_aes_ecb(raw, aes_key)
+            if decrypted is None:
+                return None
+            block = decrypted
+        comp = block[:csize]
         if method_idx == 0:
             block_data: bytes | None = comp
         else:
@@ -381,7 +404,7 @@ def _read_chunk(toc: Toc, streams: list, chunk_index: int, aes_key: bytes | None
     return bytes(out) if len(out) == length else None
 
 
-def _partition_streams(utoc: Path, count: int):
+def _partition_streams(utoc: Path, count: int) -> list[Path]:
     """Open the .ucas partition file(s) for a .utoc; [] if the primary .ucas is missing."""
     primary = utoc.with_suffix(".ucas")
     if not primary.is_file():
@@ -395,6 +418,23 @@ def _partition_streams(utoc: Path, count: int):
     return paths
 
 
+def _write_bytes(dest: Path, data: bytes) -> int | None:
+    tmp = dest.with_name(f".{dest.name}.tmp")
+    try:
+        with tmp.open("wb") as out:
+            out.write(data)
+        tmp.replace(dest)
+        return len(data)
+    except OSError:
+        return None
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+
+
 def extract(path: Path, toc: Toc, out_dir: Path, *, aes_key: bytes | None = None) -> int:
     """Extract the directory-index files whose chunks are non-Oodle (and decryptable). Returns
     the count written; Oodle/encrypted-without-key chunks are skipped (deferred), not errors."""
@@ -406,26 +446,37 @@ def extract(path: Path, toc: Toc, out_dir: Path, *, aes_key: bytes | None = None
     if not paths:
         return 0
     written = 0
-    handles: list = []
+    total_bytes = 0
+    handles: list[BinaryIO] = []
     try:
         for p in paths:
             handles.append(p.open("rb"))
         for entry in toc.files:
+            if not (0 <= entry.chunk_index < len(toc.chunk_offsets)):
+                continue
+            _offset, length = toc.chunk_offsets[entry.chunk_index]
+            if length < 0 or length > const_max_extract_file_bytes:
+                continue
+            if total_bytes + length > const_max_extract_total_bytes:
+                break
             dest = _safe_dest(out_dir, entry.path)
             if dest is None:
                 continue
             data = _read_chunk(toc, handles, entry.chunk_index, aes_key)
             if data is None:
                 continue
+            if len(data) > const_max_extract_file_bytes or total_bytes + len(data) > const_max_extract_total_bytes:
+                break
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(data)
+            n = _write_bytes(dest, data)
+            if n is None:
+                continue
             written += 1
+            total_bytes += n
     except OSError:
         return written
     finally:
         for hd in handles:
-            try:
+            with suppress(OSError):
                 hd.close()
-            except OSError:
-                pass
     return written

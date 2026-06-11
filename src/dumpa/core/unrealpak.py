@@ -234,22 +234,38 @@ class _Cur:
             raise _Trunc
 
     def i32(self) -> int:
-        self._need(4); v = struct.unpack_from("<i", self.b, self.p)[0]; self.p += 4; return v
+        self._need(4)
+        v = int(struct.unpack_from("<i", self.b, self.p)[0])
+        self.p += 4
+        return v
 
     def u32(self) -> int:
-        self._need(4); v = struct.unpack_from("<I", self.b, self.p)[0]; self.p += 4; return v
+        self._need(4)
+        v = int(struct.unpack_from("<I", self.b, self.p)[0])
+        self.p += 4
+        return v
 
     def u64(self) -> int:
-        self._need(8); v = struct.unpack_from("<Q", self.b, self.p)[0]; self.p += 8; return v
+        self._need(8)
+        v = int(struct.unpack_from("<Q", self.b, self.p)[0])
+        self.p += 8
+        return v
 
     def i64(self) -> int:
-        self._need(8); v = struct.unpack_from("<q", self.b, self.p)[0]; self.p += 8; return v
+        self._need(8)
+        v = int(struct.unpack_from("<q", self.b, self.p)[0])
+        self.p += 8
+        return v
 
     def skip(self, n: int) -> None:
-        self._need(n); self.p += n
+        self._need(n)
+        self.p += n
 
     def take(self, n: int) -> bytes:
-        self._need(n); v = self.b[self.p:self.p + n]; self.p += n; return v
+        self._need(n)
+        v = self.b[self.p:self.p + n]
+        self.p += n
+        return v
 
     def fstring(self) -> str:
         r = _read_fstring(self.b, self.p)
@@ -674,9 +690,10 @@ def _lz4_blocks(f: BinaryIO, entry: PakEntry, data_offset: int, key: bytes) -> b
         if len(comp) != raw_size:
             return None
         if entry.encrypted:
-            comp = unrealcrypto.decrypt_aes_ecb(comp, key)
-            if comp is None:
+            decrypted = unrealcrypto.decrypt_aes_ecb(comp, key)
+            if decrypted is None:
                 return None
+            comp = decrypted
         block_usize = min(block_size, entry.uncompressed_size - written)
         out = _lz4_decompress_padded(comp, block_usize)
         if out is None:

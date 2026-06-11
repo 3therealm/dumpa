@@ -10,13 +10,13 @@ from a window around the `setXXTEAKeyAndSign` marker in `libcocos2d*.so`, then e
 trial-decrypted against a real bundle and accepted only if the output sniffs as Lua
 bytecode or printable source. If nothing confirms, bundles are reported as encrypted and
 nothing is written — never a guess. The key *source* (file:offset) is logged as evidence;
-the key bytes live only in the on-disk provenance sidecar, never in the report.
+recovered app keys live only in the on-disk provenance sidecar, never in the report.
 
 A caller may also supply the key out of band via config (`DUMPA_COCOS_KEY` or
 `[cocos] key`, decoded by `core.config`); it is tried first, still confirmation-gated by
-trial-decrypt, and reported with `key_source="caller-provided"`. Decryption is gated to
-assets of an app you own or are authorized to inspect, per the roadmap policy. Runs only
-behind the Cocos2d-x engine gate (COCOS_SPECS).
+trial-decrypt, and reported with `key_source="caller-provided"` without persisting the
+caller-supplied key bytes. Decryption is gated to assets of an app you own or are authorized
+to inspect, per the roadmap policy. Runs only behind the Cocos2d-x engine gate (COCOS_SPECS).
 
 Deferred: non-XXTEA cocos ciphers.
 """
@@ -271,15 +271,18 @@ def scan(ws: Workspace) -> list[Finding]:
         FindingState.INITIALIZED, "decrypted into dumps/cocos/decrypted/",
         decrypted[0] if decrypted else "", []))
 
-    _write_sidecar(ws, {
+    sidecar: dict[str, object] = {
         "engine": "cocos2d-x",
         "version": ver[0] if ver else None,
         "scripting": scripting[0] if scripting else None,
         "key_source": key_source,
-        "key_hex": key.hex(),
+        "key_bytes": len(key),
         "sign": sign.decode("latin-1"),
         "bundle_count": len(bundles),
         "decrypted_count": len(decrypted),
         "dumpa_version": __version__,
-    })
+    }
+    if key_source != "caller-provided":
+        sidecar["key_hex"] = key.hex()
+    _write_sidecar(ws, sidecar)
     return findings

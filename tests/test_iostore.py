@@ -76,6 +76,18 @@ def test_uncompressed_parse_and_extract(tmp_path: Path) -> None:
     assert (out / "Content/data.json").read_bytes() == _FILES["Content/data.json"]
 
 
+def test_extract_skips_chunks_over_file_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    utoc, ucas = build_iostore({"Config/DefaultEngine.ini": b"too large"})
+    path = _write_pair(tmp_path, utoc, ucas)
+    toc = iostore.parse_toc(path)
+    assert toc is not None
+    monkeypatch.setattr(iostore, "const_max_extract_file_bytes", 4)
+    out = tmp_path / "out"
+
+    assert iostore.extract(path, toc, out) == 0
+    assert not (out / "Config/DefaultEngine.ini").exists()
+
+
 def test_zlib_parse_and_extract(tmp_path: Path) -> None:
     utoc, ucas = build_iostore(_FILES, compress="zlib")
     path = _write_pair(tmp_path, utoc, ucas)

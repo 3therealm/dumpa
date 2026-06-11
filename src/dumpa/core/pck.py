@@ -21,6 +21,7 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass
 from pathlib import Path
+from typing import BinaryIO
 
 from dumpa.core.fs import open_resilient
 
@@ -28,6 +29,9 @@ const_magic = b"GDPC"
 _TRAILER = struct.Struct("<QI")     # embedded footer: u64 pack size, u32 magic
 _MAX_FILES = 5_000_000
 _MAX_PATH = 4096
+const_copy_chunk_size = 1 << 20
+const_max_extract_file_bytes = 512 << 20
+const_max_extract_total_bytes = 1 << 30
 
 
 @dataclass(frozen=True)
@@ -155,24 +159,61 @@ def _safe_dest(out_dir: Path, res_path: str) -> Path | None:
     return dest
 
 
+def _copy_exact(src: BinaryIO, dst: BinaryIO, size: int) -> int | None:
+    remaining = size
+    written = 0
+    while remaining:
+        chunk = src.read(min(const_copy_chunk_size, remaining))
+        if not chunk:
+            return None
+        dst.write(chunk)
+        remaining -= len(chunk)
+        written += len(chunk)
+    return written
+
+
+def _write_entry(f: BinaryIO, pck: Pck, entry: PckEntry, dest: Path) -> int | None:
+    if entry.size < 0 or entry.size > const_max_extract_file_bytes:
+        return None
+    tmp = dest.with_name(f".{dest.name}.tmp")
+    try:
+        with tmp.open("wb") as out:
+            f.seek(pck.base_offset + entry.offset)
+            written = _copy_exact(f, out, entry.size)
+            if written != entry.size:
+                return None
+        tmp.replace(dest)
+        return written
+    except OSError:
+        return None
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+
+
 def extract(path: Path, pck: Pck, out_dir: Path) -> int:
     """Write each packed file under out_dir. Returns the count written; 0 if encrypted/v2."""
     if pck.encrypted or pck.fmt_version >= 2:
         return 0
     written = 0
+    total_bytes = 0
     try:
         with open_resilient(path) as f:
             for e in pck.entries:
+                if e.size < 0 or total_bytes + e.size > const_max_extract_total_bytes:
+                    break
                 dest = _safe_dest(out_dir, e.path)
                 if dest is None:
                     continue
-                f.seek(pck.base_offset + e.offset)
-                data = f.read(e.size)
-                if len(data) < e.size:
-                    continue
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(data)
+                n = _write_entry(f, pck, e, dest)
+                if n is None:
+                    continue
                 written += 1
+                total_bytes += n
     except OSError:
         return written
     return written

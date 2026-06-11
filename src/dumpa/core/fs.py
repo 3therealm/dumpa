@@ -13,13 +13,11 @@ import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, BinaryIO, TypeVar
+from typing import Any, BinaryIO, cast
 
 logger = logging.getLogger("dumpa")
 
 const_dir_tmp = ".dumpa"
-
-_T = TypeVar("_T")
 
 # OS errors worth retrying: resource exhaustion under heavy parallel load (too many open
 # files / process-wide fd table full / out of memory) and interrupted syscalls. A read that
@@ -39,8 +37,8 @@ def is_transient_oserror(exc: OSError) -> bool:
     return exc.errno in _TRANSIENT_ERRNOS
 
 
-def retry_on_transient(fn: Callable[[], _T], *, attempts: int = _RETRY_ATTEMPTS,
-                       base_delay: float = _RETRY_BASE_DELAY) -> _T:
+def retry_on_transient[T](fn: Callable[[], T], *, attempts: int = _RETRY_ATTEMPTS,
+                          base_delay: float = _RETRY_BASE_DELAY) -> T:
     """Call `fn`, retrying transient OS errors with a short linear backoff.
 
     Re-raises a non-transient OSError immediately (e.g. ENOENT/EACCES — retrying would not
@@ -54,8 +52,10 @@ def retry_on_transient(fn: Callable[[], _T], *, attempts: int = _RETRY_ATTEMPTS,
         except OSError as exc:
             if attempt >= attempts or not is_transient_oserror(exc):
                 raise
+            err_no = exc.errno
+            err_name = errno.errorcode.get(err_no, err_no) if err_no is not None else "unknown"
             logger.debug("transient OS error (%s), retry %d/%d",
-                         errno.errorcode.get(exc.errno, exc.errno), attempt, attempts)
+                         err_name, attempt, attempts)
             time.sleep(base_delay * attempt)
     raise AssertionError("unreachable")  # loop returns or raises on the last attempt
 
@@ -68,7 +68,7 @@ def open_resilient(path: Path, mode: str = "rb") -> Generator[BinaryIO]:
     retrying just the open recovers the common case without re-running any partial read.
     Non-transient errors (missing file, permission) propagate to the caller unchanged.
     """
-    handle = retry_on_transient(lambda: path.open(mode))
+    handle = retry_on_transient(lambda: cast(BinaryIO, path.open(mode)))
     try:
         yield handle
     finally:

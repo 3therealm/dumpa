@@ -36,7 +36,7 @@ import importlib.resources
 import logging
 import re
 import tomllib
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
@@ -688,7 +688,7 @@ class _RegexSet:
     """
 
     def __init__(self, flagged: list[tuple[str, bool]],
-                 precompiled: list[tuple[str, re.Pattern[bytes], list[bytes] | None]] = ()) -> None:
+                 precompiled: Sequence[tuple[str, re.Pattern[bytes], list[bytes] | None]] = ()) -> None:
         self._all: set[str] = set()
         self._found: set[str] = set()
         self._real: dict[str, re.Pattern[bytes]] = {}            # anchor-gated
@@ -1030,7 +1030,7 @@ def match_symbol_rules(rules: list[Rule], bundle: RuleBundle,
         for lib in lib_list:
             scoped = _scoped_symbols(lib, rule.symbol_scope)
             matched: list[tuple[str, str, int | None]] = []     # (pattern_src, symbol, rva)
-            for pat_src, pat in zip(rule.symbols, compiled):
+            for pat_src, pat in zip(rule.symbols, compiled, strict=True):
                 hit = next(((name, rva) for name, rva in scoped if pat.search(name)), None)
                 if hit is not None:
                     matched.append((pat_src, hit[0], hit[1]))

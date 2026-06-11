@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol, cast
 
 logger = logging.getLogger("dumpa")
 
@@ -50,6 +51,14 @@ class ExtractedString:
     path_id: int            # SerializedFile object path-id (stable Unity object key)
     class_name: str         # "TextAsset" | "MonoBehaviour"
     raw: bytes | None = None  # original TextAsset body (for dumping); None for field strings
+
+
+class _UnityObjectReader(Protocol):
+    path_id: object
+
+    def read(self) -> object: ...
+
+    def read_typetree(self) -> object: ...
 
 
 def available() -> bool:
@@ -111,7 +120,7 @@ def _class_of(obj: object) -> str | None:
     """The Unity class name we care about for `obj` (an ObjectReader), or None to skip."""
     type_obj = getattr(obj, "type", None)
     name = getattr(type_obj, "name", None)
-    if name in (_TEXTASSET, _MONOBEHAVIOUR):
+    if isinstance(name, str) and name in (_TEXTASSET, _MONOBEHAVIOUR):
         return name
     return None
 
@@ -138,9 +147,10 @@ def _extract_object(obj: object, container: str, *, max_bytes_per_obj: int,
     cls = _class_of(obj)
     if cls is None:
         return []
+    reader = cast(_UnityObjectReader, obj)
     path_id = int(getattr(obj, "path_id", 0) or 0)
     if cls == _TEXTASSET:
-        data = obj.read()
+        data = reader.read()
         script = getattr(data, "m_Script", None)
         if script is None:
             return []
@@ -150,7 +160,7 @@ def _extract_object(obj: object, container: str, *, max_bytes_per_obj: int,
         return [ExtractedString(text=text, container=container, asset_name=_name_of(data, obj),
                                 path_id=path_id, class_name=cls, raw=raw)]
     # MonoBehaviour: walk the typetree for string leaves.
-    tree = obj.read_typetree()
+    tree = reader.read_typetree()
     name = tree.get("m_Name", "") if isinstance(tree, dict) else ""
     strings = _walk_strings(tree, max_strings_per_obj, max_bytes_per_obj)
     return [ExtractedString(text=s, container=container, asset_name=name if isinstance(name, str) else "",
