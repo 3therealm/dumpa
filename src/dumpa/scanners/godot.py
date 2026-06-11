@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dumpa import __version__
+from dumpa.core.fs import read_bytes_resilient
 from dumpa.core.pck import Pck, extract, find_embedded, parse_at, parse_standalone
 from dumpa.core.report import Confidence, Evidence, Finding, FindingState, Location
 from dumpa.core.workspace import Workspace
@@ -178,7 +179,7 @@ def _endpoint_findings(out_dirs: list[Path], ws: Workspace) -> list[Finding]:
             try:
                 if path.stat().st_size > _MAX_CONFIG_BYTES:
                     continue
-                data = path.read_bytes()
+                data = read_bytes_resilient(path)
             except OSError:
                 logger.debug("godot endpoint scan: cannot read %s", path, exc_info=True)
                 continue

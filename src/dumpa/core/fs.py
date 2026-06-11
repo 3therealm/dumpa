@@ -75,6 +75,12 @@ def open_resilient(path: Path, mode: str = "rb") -> Generator[BinaryIO]:
         handle.close()
 
 
+def read_bytes_resilient(path: Path) -> bytes:
+    """Read a whole file, retrying a transient OS error at open() time (see `open_resilient`)."""
+    with open_resilient(path) as f:
+        return f.read()
+
+
 def is_windows() -> bool:
     """Return True if running on Windows."""
     return platform.system() == "Windows"

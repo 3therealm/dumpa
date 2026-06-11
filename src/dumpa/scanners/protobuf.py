@@ -19,6 +19,7 @@ import logging
 from pathlib import Path
 
 from dumpa.core import protobuf as pbwire
+from dumpa.core.fs import read_bytes_resilient
 from dumpa.core.report import Confidence, Evidence, Finding, FindingState, Location
 from dumpa.core.rules import load_builtin, match_content_strings
 from dumpa.core.workspace import Workspace
@@ -75,7 +76,7 @@ def scan(ws: Workspace) -> list[Finding]:
         try:
             if path.stat().st_size > const_max_file_bytes:
                 continue
-            data = path.read_bytes()
+            data = read_bytes_resilient(path)
         except OSError:
             logger.debug("protobuf scan: cannot read %s", path, exc_info=True)
             continue

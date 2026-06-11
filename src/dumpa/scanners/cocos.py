@@ -30,6 +30,7 @@ from pathlib import Path
 
 from dumpa import __version__
 from dumpa.core.config import load_config
+from dumpa.core.fs import read_bytes_resilient
 from dumpa.core.report import Confidence, Evidence, Finding, FindingState, Location
 from dumpa.core.workspace import Workspace
 from dumpa.core.xxtea import decrypt
@@ -88,7 +89,7 @@ def _version(libs: list[Path]) -> tuple[str, str] | None:
     """Return (version, lib_name) from a cocos2d-x version string in the native lib."""
     for lib in libs:
         try:
-            data = lib.read_bytes()
+            data = read_bytes_resilient(lib)
         except OSError:
             continue
         m = _VERSION_RE.search(data)
@@ -103,7 +104,7 @@ def _candidate_keys(libs: list[Path]) -> list[bytes]:
     out: list[bytes] = []
     for lib in libs:
         try:
-            data = lib.read_bytes()
+            data = read_bytes_resilient(lib)
         except OSError:
             continue
         start = 0
@@ -231,7 +232,7 @@ def scan(ws: Workspace) -> list[Finding]:
     probe = next((b for b in bundles if b.stat().st_size <= _MAX_BUNDLE_BYTES), None)
     if candidates and probe is not None:
         try:
-            confirmed = _confirm_key(probe.read_bytes(), candidates)
+            confirmed = _confirm_key(read_bytes_resilient(probe), candidates)
         except OSError:
             confirmed = None
 
@@ -252,7 +253,7 @@ def scan(ws: Workspace) -> list[Finding]:
         if b.stat().st_size > _MAX_BUNDLE_BYTES:
             continue
         try:
-            out = decrypt(b.read_bytes()[len(sign):], key)
+            out = decrypt(read_bytes_resilient(b)[len(sign):], key)
         except OSError:
             continue
         if out is None:
