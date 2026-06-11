@@ -42,6 +42,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 
 from dumpa.core.errors import ConfigError
+from dumpa.core.fs import open_resilient
 from dumpa.core.report import Confidence, Evidence, Finding, FindingState, Location
 
 if TYPE_CHECKING:
@@ -786,7 +787,7 @@ def _scan_content(files: list[Path], literals: dict[str, bytes],
                 logger.debug("content scan: skipping oversized %s", path)
                 continue
             rel = path.relative_to(extracted_dir).as_posix()
-            with path.open("rb") as f:
+            with open_resilient(path) as f:
                 tail = b""
                 base = 0
                 while True:
@@ -813,8 +814,13 @@ def _scan_content(files: list[Path], literals: dict[str, bytes],
                     for key, m in rset.scan(tail, at_eof=True):
                         _record_regex_hit(found, key, m, rel, window_start)
                         rset.discard(key)
+        except FileNotFoundError:
+            continue                     # vanished between glob and read — tolerate quietly
         except OSError:
-            logger.debug("content scan: cannot read %s", path, exc_info=True)
+            # Existing file unreadable after the open retries (a transient EMFILE/ENFILE
+            # would have been retried away): surface it so an incomplete scan is visible.
+            logger.warning("content scan: failed to read %s; result may be incomplete",
+                           path, exc_info=True)
             continue
     return found
 

@@ -162,3 +162,27 @@ def test_url_ipv6_host_not_double_counted(tmp_path: Path) -> None:
     # captured once as a URL host (canonical IPv6), not again as a bare ip-endpoint
     assert "2001:db8::1" in {f.subject for f in findings if f.kind == "endpoint"}
     assert _ips(findings) == {}
+
+
+def test_scan_recovers_from_transient_open_fault(tmp_path: Path, monkeypatch) -> None:
+    """A load-induced EMFILE at open() is retried, not swallowed — the host is still found."""
+    import errno
+
+    from dumpa.core import fs
+
+    ws = _ws(tmp_path)
+    (ws.extracted_dir / "config.json").write_bytes(b'{"u":"https://kept.example.com"}')
+    monkeypatch.setattr(fs.time, "sleep", lambda _s: None)
+    real_open = Path.open
+    state = {"failed": False}
+
+    def flaky_open(self, *a, **k):
+        if self.name == "config.json" and not state["failed"]:
+            state["failed"] = True
+            raise OSError(errno.EMFILE, "too many open files")
+        return real_open(self, *a, **k)
+
+    monkeypatch.setattr(Path, "open", flaky_open)
+    hosts = {f.subject for f in endpoint.scan(ws) if f.kind == "endpoint"}
+    assert state["failed"]                         # the first open really faulted
+    assert "kept.example.com" in hosts             # ...and the retry recovered the file
