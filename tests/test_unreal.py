@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import pytest
 from _unrealpak_build import build_pak, build_pak_encrypted_index
 
+from dumpa.core.config import const_env_unreal_aes
 from dumpa.core.workspace import Workspace, make_meta
 from dumpa.scanners import run_all, unreal
 
@@ -42,8 +45,38 @@ def test_standalone_pak_listed_and_extracted(tmp_path: Path) -> None:
     assert "Unreal Engine pak version 8" in subjects
     assert any(s.startswith("Unreal pak: base/Game.pak") for s in subjects)
     assert any(s.startswith("Unreal pak extracted (2)") for s in subjects)
-    assert (ws.dumps_dir / "unreal" / "pak" / "Game" / "Content/notes.txt").read_bytes() == b"hello"
+    assert (ws.dumps_dir / "unreal" / "pak" / "base" / "Game" / "Content/notes.txt").read_bytes() == b"hello"
     assert (ws.dumps_dir / "unreal" / ".dumpa-unreal.json").is_file()
+
+
+def test_same_stem_paks_extract_to_distinct_dirs(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    _touch(ws.extracted_dir, "base/Game.pak", build_pak({"Content/base.txt": b"base"}))
+    _touch(ws.extracted_dir, "dlc/Game.pak", build_pak({"Content/dlc.txt": b"dlc"}))
+
+    unreal.scan(ws)
+
+    root = ws.dumps_dir / "unreal" / "pak"
+    assert (root / "base" / "Game" / "Content/base.txt").read_bytes() == b"base"
+    assert (root / "dlc" / "Game" / "Content/dlc.txt").read_bytes() == b"dlc"
+
+
+def test_unreal_sidecar_does_not_persist_aes_key(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ws = _ws(tmp_path)
+    _touch(ws.extracted_dir, "base/Game.pak", build_pak(_FILES))
+    monkeypatch.setenv(const_env_unreal_aes, "hex:" + "41" * 16)
+
+    findings = unreal.scan(ws)
+
+    sidecar = ws.dumps_dir / "unreal" / ".dumpa-unreal.json"
+    raw = sidecar.read_text()
+    data = json.loads(raw)
+    assert data["aes_key_provided"] is True
+    assert data["aes_key_bytes"] == 16
+    assert "aes_key_hex" not in data
+    assert "41414141" not in raw
+    assert any(f.subject == "Unreal AES key provided (decryption deferred)" for f in findings)
 
 
 def test_endpoints_harvested_from_pak_config(tmp_path: Path) -> None:
@@ -100,7 +133,7 @@ def test_cached_run_all_recreates_extracted_resources(tmp_path: Path) -> None:
     ws = _ws(tmp_path)
     _mark_reusable(ws)
     _touch(ws.extracted_dir, "base/Game.pak", build_pak(_FILES))
-    out = ws.dumps_dir / "unreal" / "pak" / "Game" / "Content/notes.txt"
+    out = ws.dumps_dir / "unreal" / "pak" / "base" / "Game" / "Content/notes.txt"
 
     run_all(ws)
     assert out.read_bytes() == b"hello"

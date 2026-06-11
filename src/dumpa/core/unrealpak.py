@@ -46,6 +46,9 @@ _MAX_FOOTER_TAIL = 4096         # bytes read from EOF to locate + parse the foot
 _MAX_ENTRIES = 5_000_000
 _MAX_PATH = 4096
 _MAX_BLOCKS = 1_000_000
+const_copy_chunk_size = 1 << 20
+const_max_extract_file_bytes = 512 << 20
+const_max_extract_total_bytes = 1 << 30
 
 # Compression-method names we can decompress with the stdlib; everything else defers.
 _ZLIB_NAMES = frozenset({"zlib"})
@@ -292,19 +295,16 @@ def _safe_dest(out_dir: Path, rel_path: str) -> Path | None:
     return dest
 
 
-def _decompress(comp: str, payload: bytes) -> bytes | None:
-    try:
-        if comp == "zlib":
-            return zlib.decompress(payload)
-        if comp == "gzip":
-            return zlib.decompress(payload, zlib.MAX_WBITS | 16)
-    except zlib.error:
-        return None
+def _wbits(comp: str) -> int | None:
+    if comp == "zlib":
+        return zlib.MAX_WBITS
+    if comp == "gzip":
+        return zlib.MAX_WBITS | 16
     return None
 
 
-def _entry_payload(f: BinaryIO, entry: PakEntry, version: int) -> bytes | None:
-    """Read + decompress one entry's bytes; None if the inline header is malformed."""
+def _payload_offset(f: BinaryIO, entry: PakEntry, version: int) -> int | None:
+    """Return the payload offset for one entry; None if the inline header is malformed."""
     # Each file is written as [inline FPakEntry][data]; re-read the inline header to find
     # where the payload begins.
     f.seek(entry.offset)
@@ -313,26 +313,106 @@ def _entry_payload(f: BinaryIO, entry: PakEntry, version: int) -> bytes | None:
     if inline is None:
         return None
     _e, header_size, _raw = inline
-    data_offset = entry.offset + header_size
-    if entry.compression == "none":
-        f.seek(data_offset)
-        data = f.read(entry.size)
-        return data if len(data) == entry.size else None
-    if entry.compression in ("zlib", "gzip"):
-        if not entry.blocks:
-            f.seek(data_offset)
-            return _decompress(entry.compression, f.read(entry.size))
-        out = bytearray()
-        for start, end in entry.blocks:
-            if end < start or end - start > entry.size + (1 << 20):
+    return entry.offset + header_size
+
+
+def _copy_exact(src: BinaryIO, dst: BinaryIO, size: int) -> int | None:
+    remaining = size
+    written = 0
+    while remaining:
+        chunk = src.read(min(const_copy_chunk_size, remaining))
+        if not chunk:
+            return None
+        dst.write(chunk)
+        remaining -= len(chunk)
+        written += len(chunk)
+    return written
+
+
+def _decompress_range_to_file(comp: str, src: BinaryIO, compressed_size: int,
+                              dst: BinaryIO, max_output: int) -> int | None:
+    wbits = _wbits(comp)
+    if wbits is None or compressed_size < 0 or max_output < 0:
+        return None
+    dec = zlib.decompressobj(wbits)
+    remaining = compressed_size
+    written = 0
+    try:
+        while remaining:
+            chunk = src.read(min(const_copy_chunk_size, remaining))
+            if not chunk:
                 return None
-            f.seek(start)
-            chunk = _decompress(entry.compression, f.read(end - start))
-            if chunk is None:
+            remaining -= len(chunk)
+            data = chunk
+            while data:
+                allowed = max_output - written
+                out = dec.decompress(data, allowed + 1)
+                data = dec.unconsumed_tail
+                if len(out) > allowed:
+                    return None
+                if out:
+                    dst.write(out)
+                    written += len(out)
+        tail = dec.flush(max_output - written + 1)
+    except zlib.error:
+        return None
+    if len(tail) > max_output - written:
+        return None
+    if tail:
+        dst.write(tail)
+        written += len(tail)
+    return written if dec.eof else None
+
+
+def _write_entry_payload(f: BinaryIO, entry: PakEntry, version: int, dest: Path) -> int | None:
+    """Stream one entry to dest; None if malformed, too large, or unsupported."""
+    if entry.size < 0 or entry.uncompressed_size < 0:
+        return None
+    if entry.uncompressed_size > const_max_extract_file_bytes:
+        return None
+    data_offset = _payload_offset(f, entry, version)
+    if data_offset is None:
+        return None
+
+    tmp = dest.with_name(f".{dest.name}.tmp")
+    try:
+        with tmp.open("wb") as out:
+            if entry.compression == "none":
+                if entry.size > const_max_extract_file_bytes:
+                    return None
+                f.seek(data_offset)
+                written = _copy_exact(f, out, entry.size)
+            elif entry.compression in ("zlib", "gzip"):
+                if not entry.blocks:
+                    f.seek(data_offset)
+                    written = _decompress_range_to_file(
+                        entry.compression, f, entry.size, out, entry.uncompressed_size)
+                else:
+                    written = 0
+                    for start, end in entry.blocks:
+                        if end < start or end - start > entry.size + (1 << 20):
+                            return None
+                        f.seek(start)
+                        n = _decompress_range_to_file(
+                            entry.compression, f, end - start, out,
+                            entry.uncompressed_size - written)
+                        if n is None:
+                            return None
+                        written += n
+                if written != entry.uncompressed_size:
+                    return None
+            else:
                 return None
-            out += chunk
-        return bytes(out)
-    return None
+        tmp.replace(dest)
+        return written
+    except OSError:
+        return None
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
 
 
 def extract(path: Path, pak: Pak, out_dir: Path) -> int:
@@ -344,20 +424,23 @@ def extract(path: Path, pak: Pak, out_dir: Path) -> int:
     if pak.deferred_reason is not None:
         return 0
     written = 0
+    total_bytes = 0
     try:
         with path.open("rb") as f:
             for e in pak.entries:
                 if e.encrypted or e.compression not in ("none", "zlib", "gzip"):
                     continue
+                if e.uncompressed_size < 0 or total_bytes + e.uncompressed_size > const_max_extract_total_bytes:
+                    break
                 dest = _safe_dest(out_dir, e.path)
                 if dest is None:
                     continue
-                data = _entry_payload(f, e, pak.version)
-                if data is None:
-                    continue
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(data)
+                n = _write_entry_payload(f, e, pak.version, dest)
+                if n is None:
+                    continue
                 written += 1
+                total_bytes += n
     except OSError:
         return written
     return written

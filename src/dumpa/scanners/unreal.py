@@ -12,10 +12,10 @@ The zero-dep boundary is loud and deliberate (see `core.unrealpak` / `core.iosto
     UE5 IoStore chunk data -> detected and reported, never extracted. For a typical shipping
     UE5 title (Oodle + AES) enumeration-without-extraction is the expected result, not a bug.
 
-A caller may supply an AES key (`DUMPA_UNREAL_AES` / `[unreal] aes_key`); it is recorded as
-provenance but unused — stdlib has no AES, so decryption awaits a future `dumpa[unreal]`
-optional extra (mirrors the `dumpa[unity]`/UnityPy precedent). The key bytes live only in the
-on-disk sidecar, never in the report.
+A caller may supply an AES key (`DUMPA_UNREAL_AES` / `[unreal] aes_key`); its presence is
+recorded as provenance but the secret bytes are not persisted. The key is unused — stdlib
+has no AES, so decryption awaits a future `dumpa[unreal]` optional extra (mirrors the
+`dumpa[unity]`/UnityPy precedent).
 
 Runs only behind the Unreal engine gate (UNREAL_SPECS) and self-gates on a container/native
 lib being present, so it is a no-op everywhere else.
@@ -32,6 +32,7 @@ from pathlib import Path
 from dumpa import __version__
 from dumpa.core import iostore, unrealpak
 from dumpa.core.config import load_config
+from dumpa.core.fs import read_bytes_resilient
 from dumpa.core.report import Confidence, Evidence, Finding, FindingState, Location
 from dumpa.core.workspace import Workspace
 from dumpa.scanners.endpoint import harvest_urls
@@ -78,6 +79,13 @@ def _write_sidecar(ws: Workspace, payload: dict[str, object]) -> None:
         logger.warning("could not write unreal provenance sidecar", exc_info=True)
 
 
+def _pak_dump_dir(ws: Workspace, rel: str) -> tuple[Path, str]:
+    """Return a collision-resistant dump directory for an extracted/-relative pak path."""
+    rel_no_ext = Path(rel).with_suffix("")
+    dump_rel = Path("unreal") / "pak" / rel_no_ext
+    return ws.dumps_dir / dump_rel, dump_rel.as_posix()
+
+
 def scan(ws: Workspace) -> list[Finding]:
     """Report Unreal containers and extract the harvestable pak subset (no-op if not Unreal)."""
     ex = ws.extracted_dir
@@ -94,6 +102,7 @@ def scan(ws: Workspace) -> list[Finding]:
     sidecar_paks: list[dict[str, object]] = []
     sidecar_tocs: list[dict[str, object]] = []
     version_reported = False
+    config = load_config()
 
     for p in paks:
         pak = unrealpak.parse_standalone(p)
@@ -122,7 +131,7 @@ def scan(ws: Workspace) -> list[Finding]:
             FindingState.PRESENT, "packaged asset container", "; ".join(sample),
             [Location(file_path=rel)], {"file_count": str(len(pak.entries))}))
 
-        out_dir = ws.dumps_dir / "unreal" / "pak" / Path(rel).stem
+        out_dir, dump_rel = _pak_dump_dir(ws, rel)
         n = unrealpak.extract(p, pak, out_dir)
         if n:
             extracted_dirs.append(out_dir)
@@ -130,7 +139,7 @@ def scan(ws: Workspace) -> list[Finding]:
                       if e.encrypted or e.compression not in ("none", "zlib", "gzip"))
         findings.append(_f(
             f"Unreal pak extracted ({n})", Confidence.HIGH, FindingState.INITIALIZED,
-            f"from {rel} into dumps/unreal/pak/{Path(rel).stem}/"
+            f"from {rel} into dumps/{dump_rel}/"
             + (f"; {skipped} entries deferred (Oodle/encrypted)" if skipped else ""),
             rel, [], {"extracted": str(n), "deferred_entries": str(skipped)}))
         sidecar_paks.append({"source": rel, "version": pak.version,
@@ -158,24 +167,25 @@ def scan(ws: Workspace) -> list[Finding]:
                              "chunks": toc.entry_count, "encrypted": toc.encrypted,
                              "compressed": toc.compressed, "extracted": 0})
 
-    findings += _aes_key_finding(ws, paks, tocs)
+    findings += _aes_key_finding(config.unreal_aes, paks, tocs)
     findings += _endpoint_findings(extracted_dirs, ws)
 
     if sidecar_paks or sidecar_tocs:
+        aes_key = config.unreal_aes
         _write_sidecar(ws, {
             "engine": "unreal",
             "paks": sidecar_paks,
             "tocs": sidecar_tocs,
-            "aes_key_provided": load_config().unreal_aes is not None,
-            "aes_key_hex": (load_config().unreal_aes or b"").hex() or None,
+            "aes_key_provided": aes_key is not None,
+            "aes_key_bytes": len(aes_key) if aes_key is not None else None,
             "dumpa_version": __version__,
         })
     return findings
 
 
-def _aes_key_finding(ws: Workspace, paks: list[Path], tocs: list[Path]) -> list[Finding]:
+def _aes_key_finding(aes_key: bytes | None, paks: list[Path], tocs: list[Path]) -> list[Finding]:
     """Surface a caller-supplied AES key as recorded-but-unused (decryption is deferred)."""
-    if load_config().unreal_aes is None or (not paks and not tocs):
+    if aes_key is None or (not paks and not tocs):
         return []
     return [_f(
         "Unreal AES key provided (decryption deferred)", Confidence.MEDIUM,
@@ -202,7 +212,7 @@ def _endpoint_findings(out_dirs: list[Path], ws: Workspace) -> list[Finding]:
             try:
                 if path.stat().st_size > _MAX_CONFIG_BYTES:
                     continue
-                data = path.read_bytes()
+                data = read_bytes_resilient(path)
             except OSError:
                 logger.debug("unreal endpoint scan: cannot read %s", path, exc_info=True)
                 continue

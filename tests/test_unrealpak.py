@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from _unrealpak_build import (
     build_pak,
     build_pak_encrypted_index,
@@ -42,6 +43,18 @@ def test_uncompressed_extract_roundtrip(tmp_path: Path) -> None:
     assert unrealpak.extract(path, pak, out) == 2
     assert (out / "Config/DefaultEngine.ini").read_bytes() == _FILES["Config/DefaultEngine.ini"]
     assert (out / "Content/data.json").read_bytes() == _FILES["Content/data.json"]
+
+
+def test_extract_skips_entries_over_file_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = _write(tmp_path, build_pak({"small.txt": b"ok", "large.txt": b"too large"}))
+    pak = unrealpak.parse_standalone(path)
+    assert pak is not None
+    monkeypatch.setattr(unrealpak, "const_max_extract_file_bytes", 4)
+    out = tmp_path / "out"
+
+    assert unrealpak.extract(path, pak, out) == 1
+    assert (out / "small.txt").read_bytes() == b"ok"
+    assert not (out / "large.txt").exists()
 
 
 def test_zlib_extract_roundtrip(tmp_path: Path) -> None:
