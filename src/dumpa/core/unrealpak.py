@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO
 
+from dumpa.core import unrealcrypto
+
 const_magic = 0x5A6F12E1
 _MAGIC_LE = struct.pack("<I", const_magic)
 
@@ -364,12 +366,115 @@ def _decompress_range_to_file(comp: str, src: BinaryIO, compressed_size: int,
     return written if dec.eof else None
 
 
-def _write_entry_payload(f: BinaryIO, entry: PakEntry, version: int, dest: Path) -> int | None:
+def _align16(n: int) -> int:
+    """Round up to the AES block size (encrypted regions are padded to 16 bytes)."""
+    return (n + 15) & ~15
+
+
+def _read_decrypt(f: BinaryIO, offset: int, raw_size: int, key: bytes) -> bytes | None:
+    """Read `raw_size` (block-aligned) bytes at `offset` and AES-ECB decrypt them."""
+    if raw_size <= 0 or raw_size % 16 != 0:
+        return None
+    f.seek(offset)
+    data = f.read(raw_size)
+    if len(data) != raw_size:
+        return None
+    return unrealcrypto.decrypt_aes_ecb(data, key)
+
+
+def _zlib_block_inmem(comp: bytes, wbits: int, max_output: int) -> bytes | None:
+    """Inflate one in-memory (decrypted) block, bounded by `max_output`; trailing pad ignored."""
+    if max_output < 0:
+        return None
+    try:
+        dec = zlib.decompressobj(wbits)
+        out = dec.decompress(comp, max_output)
+        if dec.unconsumed_tail:                 # produced more than allowed -> bomb
+            return None
+        out += dec.flush()
+    except zlib.error:
+        return None
+    return out if dec.eof and len(out) <= max_output else None
+
+
+def _decrypted_payload(f: BinaryIO, entry: PakEntry, data_offset: int,
+                       key: bytes) -> bytes | None:
+    """Decrypt (and decompress) one AES-encrypted entry into memory.
+
+    Encrypted entries are bounded by the file cap, so they are handled in memory rather than
+    streamed: each on-disk region is padded to the 16-byte block, decrypted, then trimmed
+    (uncompressed) or inflated block-by-block (zlib/gzip — zlib stops at its stream end and
+    ignores the trailing AES padding).
+    """
+    if entry.compression == "none":
+        raw = _read_decrypt(f, data_offset, _align16(entry.size), key)
+        if raw is None or len(raw) < entry.size:
+            return None
+        return raw[:entry.size]
+    wbits = _wbits(entry.compression)
+    if wbits is None:
+        return None
+    if not entry.blocks:
+        enc = _read_decrypt(f, data_offset, _align16(entry.size), key)
+        if enc is None:
+            return None
+        return _zlib_block_inmem(enc, wbits, entry.uncompressed_size)
+    chunks: list[bytes] = []
+    total = 0
+    for start, end in entry.blocks:
+        if end < start or end - start > entry.size + (1 << 20):
+            return None
+        enc = _read_decrypt(f, start, end - start, key)
+        if enc is None:
+            return None
+        out = _zlib_block_inmem(enc, wbits, entry.uncompressed_size - total)
+        if out is None:
+            return None
+        chunks.append(out)
+        total += len(out)
+    return b"".join(chunks) if total == entry.uncompressed_size else None
+
+
+def _write_encrypted_entry(f: BinaryIO, entry: PakEntry, version: int, dest: Path,
+                           key: bytes) -> int | None:
+    """Decrypt one entry into memory and write it to dest. None if unsupported/malformed."""
+    if entry.uncompressed_size > const_max_extract_file_bytes:
+        return None
+    if entry.compression not in ("none", "zlib", "gzip"):
+        return None                             # Oodle/LZ4 encrypted: deferred
+    data_offset = _payload_offset(f, entry, version)
+    if data_offset is None:
+        return None
+    plain = _decrypted_payload(f, entry, data_offset, key)
+    if plain is None:
+        return None
+    tmp = dest.with_name(f".{dest.name}.tmp")
+    try:
+        with tmp.open("wb") as out:
+            out.write(plain)
+        tmp.replace(dest)
+        return len(plain)
+    except OSError:
+        return None
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+
+
+def _write_entry_payload(f: BinaryIO, entry: PakEntry, version: int, dest: Path,
+                         aes_key: bytes | None = None) -> int | None:
     """Stream one entry to dest; None if malformed, too large, or unsupported."""
     if entry.size < 0 or entry.uncompressed_size < 0:
         return None
     if entry.uncompressed_size > const_max_extract_file_bytes:
         return None
+    if entry.encrypted:
+        if aes_key is None or not unrealcrypto.aes_available():
+            return None
+        return _write_encrypted_entry(f, entry, version, dest, aes_key)
     data_offset = _payload_offset(f, entry, version)
     if data_offset is None:
         return None
@@ -415,20 +520,24 @@ def _write_entry_payload(f: BinaryIO, entry: PakEntry, version: int, dest: Path)
             pass
 
 
-def extract(path: Path, pak: Pak, out_dir: Path) -> int:
+def extract(path: Path, pak: Pak, out_dir: Path, *, aes_key: bytes | None = None) -> int:
     """Write each harvestable file under out_dir. Returns the count written.
 
-    Skips deferred paks entirely and, within a parsed pak, skips entries that are encrypted
-    or use a non-stdlib codec (Oodle/LZ4) — those are surfaced by the scanner, not extracted.
+    Skips deferred paks entirely and, within a parsed pak, skips entries that use a non-stdlib
+    codec (Oodle/LZ4). AES-encrypted entries are extracted when a caller `aes_key` is supplied
+    and the `dumpa[unreal]` extra (cryptography) is installed; otherwise they are deferred.
     """
     if pak.deferred_reason is not None:
         return 0
+    can_decrypt = aes_key is not None and unrealcrypto.aes_available()
     written = 0
     total_bytes = 0
     try:
         with path.open("rb") as f:
             for e in pak.entries:
-                if e.encrypted or e.compression not in ("none", "zlib", "gzip"):
+                if e.compression not in ("none", "zlib", "gzip"):
+                    continue
+                if e.encrypted and not can_decrypt:
                     continue
                 if e.uncompressed_size < 0 or total_bytes + e.uncompressed_size > const_max_extract_total_bytes:
                     break
@@ -436,7 +545,7 @@ def extract(path: Path, pak: Pak, out_dir: Path) -> int:
                 if dest is None:
                     continue
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                n = _write_entry_payload(f, e, pak.version, dest)
+                n = _write_entry_payload(f, e, pak.version, dest, aes_key=aes_key)
                 if n is None:
                     continue
                 written += 1

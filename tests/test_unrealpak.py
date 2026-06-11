@@ -126,3 +126,50 @@ def test_path_traversal_rejected(tmp_path: Path) -> None:
 
 def test_not_a_pak_returns_none(tmp_path: Path) -> None:
     assert unrealpak.parse_standalone(_write(tmp_path, b"not a pak file at all")) is None
+
+
+# --- AES-encrypted entries (dumpa[unreal] extra) -----------------------------
+
+_AES_KEY = bytes(range(32))
+
+
+def test_encrypted_uncompressed_extract_with_key(tmp_path: Path) -> None:
+    pytest.importorskip("cryptography")
+    path = _write(tmp_path, build_pak(_FILES, encrypt_entries=True, aes_key=_AES_KEY))
+    pak = unrealpak.parse_standalone(path)
+    assert pak is not None
+    assert all(e.encrypted for e in pak.entries)
+    out = tmp_path / "out"
+    assert unrealpak.extract(path, pak, out, aes_key=_AES_KEY) == 2
+    assert (out / "Config/DefaultEngine.ini").read_bytes() == _FILES["Config/DefaultEngine.ini"]
+    assert (out / "Content/data.json").read_bytes() == _FILES["Content/data.json"]
+
+
+def test_encrypted_zlib_extract_with_key(tmp_path: Path) -> None:
+    pytest.importorskip("cryptography")
+    path = _write(tmp_path, build_pak(_FILES, compress="zlib", encrypt_entries=True, aes_key=_AES_KEY))
+    pak = unrealpak.parse_standalone(path)
+    assert pak is not None
+    out = tmp_path / "out"
+    assert unrealpak.extract(path, pak, out, aes_key=_AES_KEY) == 2
+    assert (out / "Content/data.json").read_bytes() == _FILES["Content/data.json"]
+
+
+def test_encrypted_entries_deferred_without_key(tmp_path: Path) -> None:
+    pytest.importorskip("cryptography")
+    path = _write(tmp_path, build_pak(_FILES, encrypt_entries=True, aes_key=_AES_KEY))
+    pak = unrealpak.parse_standalone(path)
+    assert pak is not None
+    out = tmp_path / "out"
+    assert unrealpak.extract(path, pak, out) == 0          # no key -> deferred, nothing written
+    assert not out.exists() or not any(out.rglob("*.*"))
+
+
+def test_encrypted_zlib_wrong_key_extracts_nothing(tmp_path: Path) -> None:
+    pytest.importorskip("cryptography")
+    path = _write(tmp_path, build_pak(_FILES, compress="zlib", encrypt_entries=True, aes_key=_AES_KEY))
+    pak = unrealpak.parse_standalone(path)
+    assert pak is not None
+    out = tmp_path / "out"
+    # a wrong key yields garbage that fails to inflate -> entry skipped, not mis-extracted
+    assert unrealpak.extract(path, pak, out, aes_key=b"\xff" * 32) == 0

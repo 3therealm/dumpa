@@ -30,7 +30,7 @@ import logging
 from pathlib import Path
 
 from dumpa import __version__
-from dumpa.core import iostore, unrealpak
+from dumpa.core import iostore, unrealcrypto, unrealpak
 from dumpa.core.config import load_config
 from dumpa.core.fs import read_bytes_resilient
 from dumpa.core.report import Confidence, Evidence, Finding, FindingState, Location
@@ -103,6 +103,7 @@ def scan(ws: Workspace) -> list[Finding]:
     sidecar_tocs: list[dict[str, object]] = []
     version_reported = False
     config = load_config()
+    can_decrypt = config.unreal_aes is not None and unrealcrypto.aes_available()
 
     for p in paks:
         pak = unrealpak.parse_standalone(p)
@@ -132,11 +133,12 @@ def scan(ws: Workspace) -> list[Finding]:
             [Location(file_path=rel)], {"file_count": str(len(pak.entries))}))
 
         out_dir, dump_rel = _pak_dump_dir(ws, rel)
-        n = unrealpak.extract(p, pak, out_dir)
+        n = unrealpak.extract(p, pak, out_dir, aes_key=config.unreal_aes)
         if n:
             extracted_dirs.append(out_dir)
         skipped = sum(1 for e in pak.entries
-                      if e.encrypted or e.compression not in ("none", "zlib", "gzip"))
+                      if e.compression not in ("none", "zlib", "gzip")
+                      or (e.encrypted and not can_decrypt))
         findings.append(_f(
             f"Unreal pak extracted ({n})", Confidence.HIGH, FindingState.INITIALIZED,
             f"from {rel} into dumps/{dump_rel}/"
@@ -184,14 +186,22 @@ def scan(ws: Workspace) -> list[Finding]:
 
 
 def _aes_key_finding(aes_key: bytes | None, paks: list[Path], tocs: list[Path]) -> list[Finding]:
-    """Surface a caller-supplied AES key as recorded-but-unused (decryption is deferred)."""
+    """Surface a caller-supplied AES key: used for pak entries when the extra is present.
+
+    With `dumpa[unreal]` installed the key decrypts AES pak entries; without it (or for the
+    still-deferred encrypted index / IoStore chunks) the key is recorded but unused.
+    """
     if aes_key is None or (not paks and not tocs):
         return []
-    return [_f(
-        "Unreal AES key provided (decryption deferred)", Confidence.MEDIUM,
-        FindingState.PRESENT,
-        "AES key supplied via config; decryption needs the dumpa[unreal] extra (no stdlib AES)",
-        "caller-provided", [], {"key_source": "caller-provided"})]
+    if unrealcrypto.aes_available():
+        subject = "Unreal AES key provided (used for pak entry decryption)"
+        detail = ("AES key supplied via config; used to decrypt encrypted pak entries "
+                  "(encrypted index / IoStore chunks remain deferred)")
+    else:
+        subject = "Unreal AES key provided (decryption deferred)"
+        detail = "AES key supplied via config; decryption needs the dumpa[unreal] extra"
+    return [_f(subject, Confidence.MEDIUM, FindingState.PRESENT,
+               detail, "caller-provided", [], {"key_source": "caller-provided"})]
 
 
 def _endpoint_findings(out_dirs: list[Path], ws: Workspace) -> list[Finding]:

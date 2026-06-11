@@ -76,7 +76,9 @@ def test_unreal_sidecar_does_not_persist_aes_key(
     assert data["aes_key_bytes"] == 16
     assert "aes_key_hex" not in data
     assert "41414141" not in raw
-    assert any(f.subject == "Unreal AES key provided (decryption deferred)" for f in findings)
+    # the key-provided finding fires regardless of whether the dumpa[unreal] extra is present
+    # (its subject differs: "used for pak entry decryption" vs "decryption deferred")
+    assert any(f.subject.startswith("Unreal AES key provided") for f in findings)
 
 
 def test_endpoints_harvested_from_pak_config(tmp_path: Path) -> None:
@@ -141,3 +143,22 @@ def test_cached_run_all_recreates_extracted_resources(tmp_path: Path) -> None:
     out.unlink()
     run_all(ws)
     assert out.read_bytes() == b"hello"
+
+
+def test_encrypted_pak_extracted_with_caller_key(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("cryptography")
+    key = bytes(range(32))
+    monkeypatch.setenv(const_env_unreal_aes, "0x" + key.hex())
+    ws = _ws(tmp_path)
+    _touch(ws.extracted_dir, "base/Game.pak",
+           build_pak(_FILES, encrypt_entries=True, aes_key=key))
+
+    findings = unreal.scan(ws)
+
+    out = ws.dumps_dir / "unreal" / "pak" / "base" / "Game" / "Content/notes.txt"
+    assert out.read_bytes() == b"hello"                    # decrypted + extracted
+    assert any(f.subject == "Unreal AES key provided (used for pak entry decryption)"
+               for f in findings)
+    # the endpoint harvested from the now-decrypted config flows through the shared tail
+    assert any(f.kind == "endpoint" and f.subject == "api.mygame.example" for f in findings)

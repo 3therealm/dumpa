@@ -53,14 +53,24 @@ def _methods_table() -> bytes:
     return out
 
 
+def _aes_encrypt(data: bytes, key: bytes) -> bytes:
+    """AES-256-ECB encrypt `data`, zero-padded up to the 16-byte block (mirrors UE paks)."""
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    padded = data + b"\x00" * ((-len(data)) % 16)
+    enc = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
+    return enc.update(padded) + enc.finalize()
+
+
 def build_pak(files: dict[str, bytes], *, version: int = 8, mount: str = "../../../Game/",
               compress: str | None = None, encrypt_entries: bool = False,
-              method_override: int | None = None) -> bytes:
+              method_override: int | None = None, aes_key: bytes | None = None) -> bytes:
     """Build a standalone v8 `.pak`.
 
     `compress=None` stores files uncompressed; `compress="zlib"`/`"gzip"` deflates each
     into a single block. `method_override` forces the CompressionMethodIndex (e.g. 3 = Oodle)
-    to exercise the deferral path. `encrypt_entries` sets each entry's encrypted flag.
+    to exercise the deferral path. `encrypt_entries` sets each entry's encrypted flag; pass
+    `aes_key` too to actually AES-256-ECB encrypt each payload (padded to the 16-byte block,
+    with the stored size left unpadded — exactly how UE writes encrypted entries).
     """
     method_index = 0
     if compress == "zlib":
@@ -79,12 +89,15 @@ def build_pak(files: dict[str, bytes], *, version: int = 8, mount: str = "../../
             payload = _gzip(raw)
         else:
             payload = raw
+        stored_size = len(payload)              # FPakEntry.size: the unpadded (compressed) size
+        if encrypt_entries and aes_key is not None:
+            payload = _aes_encrypt(payload, aes_key)    # on-disk bytes: padded + encrypted
         record_offset = len(data)
         block_count = 1 if method_index != 0 else 0
         header_size = _entry_size(method_index, block_count)
         payload_off = record_offset + header_size
         blocks = [(payload_off, payload_off + len(payload))] if method_index != 0 else []
-        entry = _entry(record_offset, len(payload), len(raw), method_index, blocks, encrypt_entries)
+        entry = _entry(record_offset, stored_size, len(raw), method_index, blocks, encrypt_entries)
         assert len(entry) == header_size
         data += entry + payload
         index_entries.append((path, entry))
