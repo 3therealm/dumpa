@@ -1,0 +1,212 @@
+# Ad-mediation adapter rules (content matchers over dex class paths).
+#
+# A mediation SDK (AppLovin MAX, ironSource/LevelPlay, Google AdMob mediation) ships a
+# per-network *adapter* class so it can orchestrate that network's ads. Detecting the
+# adapter class is concrete evidence of one edge in the mediation graph: this mediator
+# routes to that network. `mediator` and `network` name the two endpoints; the
+# ad-mediation graph (`core.report.mediation_graph`) joins these edges into a per-mediator
+# view. `strings` are class-path fragments as they appear in classes*.dex type descriptors.
+#
+# Curated starter set (mirrors trackers.toml's "curated floor" stance); importer-driven
+# expansion of the adapter catalog is future work.
+
+[bundle]
+name = "mediation"
+version = "2026.06.1"
+source = "dumpa built-in (curated)"
+updated = "2026-06-09"
+
+# --- AppLovin MAX adapters (com/applovin/mediation/adapters/<Network>MediationAdapter) ---
+
+[[rule]]
+kind = "mediation-adapter"
+subject = "AppLovin MAX -> Google AdMob adapter"
+category = "ad mediation adapter"
+mediator = "AppLovin MAX"
+network = "Google AdMob"
+confidence = "high"
+strings = ["com/applovin/mediation/adapters/GoogleMediationAdapter"]
+
+[[rule]]
+kind = "mediation-adapter"
+subject = "AppLovin MAX -> Vungle / Liftoff adapter"
+category = "ad mediation adapter"
+mediator = "AppLovin MAX"
+network = "Vungle / Liftoff"
+confidence = "high"
+strings = ["com/applovin/mediation/adapters/VungleMediationAdapter"]
+
+[[rule]]
+kind = "mediation-adapter"
+subject = "AppLovin MAX -> Mintegral adapter"
+category = "ad mediation adapter"
+mediator = "AppLovin MAX"
+network = "Mintegral"
+confidence = "high"
+strings = ["com/applovin/mediation/adapters/MintegralMediationAdapter"]
+
+[[rule]]
+kind = "mediation-adapter"
+subject = "AppLovin MAX -> Unity Ads adapter"
+category = "ad mediation adapter"
+mediator = "AppLovin MAX"
+network = "Unity Ads"
+confidence = "high"
+strings = ["com/applovin/mediation/adapters/UnityMediationAdapter"]
+
+[[rule]]
+kind = "mediation-adapter"
+subject = "AppLovin MAX -> Chartboost adapter"
+category = "ad mediation adapter"
+mediator = "AppLovin MAX"
+network = "Chartboost"
+confidence = "high"
+strings = ["com/applovin/mediation/adapters/ChartboostMediationAdapter"]
+
+[[rule]]
+kind = "mediation-adapter"
+subject = "AppLovin MAX -> Meta Audience Network adapter"
+category = "ad mediation adapter"
+mediator = "AppLovin MAX"
+network = "Meta Audience Network"
+confidence = "high"
+strings = ["com/applovin/mediation/adapters/FacebookMediationAdapter"]
+
+[[rule]]
+kind = "mediation-adapter"
+subject = "AppLovin MAX -> InMobi adapter"
+category = "ad mediation adapter"
+mediator = "AppLovin MAX"
+network = "InMobi"
+confidence = "high"
+strings = ["com/applovin/mediation/adapters/InMobiMediationAdapter"]
+
+[[rule]]
+kind = "mediation-adapter"
+subject = "AppLovin MAX -> Pangle adapter"
+category = "ad mediation adapter"
+mediator = "AppLovin MAX"
+network = "Pangle"
+confidence = "high"
+strings = ["com/applovin/mediation/adapters/ByteDanceMediationAdapter"]
+
+# --- Google AdMob mediation adapters (com/google/ads/mediation/<network>/) ---
+
+[[rule]]
+kind = "mediation-adapter"
+subject = "Google AdMob -> AppLovin adapter"
+category = "ad mediation adapter"
+mediator = "Google AdMob"
+network = "AppLovin"
+confidence = "high"
+strings = ["com/google/ads/mediation/applovin"]
+
+[[rule]]
+kind = "mediation-adapter"
+subject = "Google AdMob -> Vungle / Liftoff adapter"
+category = "ad mediation adapter"
+mediator = "Google AdMob"
+network = "Vungle / Liftoff"
+confidence = "high"
+strings = ["com/google/ads/mediation/vungle"]
+
+[[rule]]
+kind = "mediation-adapter"
+subject = "Google AdMob -> Mintegral adapter"
+category = "ad mediation adapter"
+mediator = "Google AdMob"
+network = "Mintegral"
+confidence = "high"
+strings = ["com/google/ads/mediation/mintegral"]
+
+[[rule]]
+kind = "mediation-adapter"
+subject = "Google AdMob -> Unity Ads adapter"
+category = "ad mediation adapter"
+mediator = "Google AdMob"
+network = "Unity Ads"
+confidence = "high"
+strings = ["com/google/ads/mediation/unity"]
+
+[[rule]]
+kind = "mediation-adapter"
+subject = "Google AdMob -> Meta Audience Network adapter"
+category = "ad mediation adapter"
+mediator = "Google AdMob"
+network = "Meta Audience Network"
+confidence = "high"
+strings = ["com/google/ads/mediation/facebook"]
+
+[[rule]]
+kind = "mediation-adapter"
+subject = "Google AdMob -> Pangle adapter"
+category = "ad mediation adapter"
+mediator = "Google AdMob"
+network = "Pangle"
+confidence = "high"
+strings = ["com/google/ads/mediation/pangle"]
+
+# --- Unity LevelPlay / ironSource adapters (com/ironsource/adapters/<network>/) ---
+
+[[rule]]
+kind = "mediation-adapter"
+subject = "Unity LevelPlay / ironSource -> Google AdMob adapter"
+category = "ad mediation adapter"
+mediator = "Unity LevelPlay / ironSource"
+network = "Google AdMob"
+confidence = "high"
+strings = ["com/ironsource/adapters/admob"]
+
+[[rule]]
+kind = "mediation-adapter"
+subject = "Unity LevelPlay / ironSource -> AppLovin adapter"
+category = "ad mediation adapter"
+mediator = "Unity LevelPlay / ironSource"
+network = "AppLovin"
+confidence = "high"
+strings = ["com/ironsource/adapters/applovin"]
+
+[[rule]]
+kind = "mediation-adapter"
+subject = "Unity LevelPlay / ironSource -> Vungle / Liftoff adapter"
+category = "ad mediation adapter"
+mediator = "Unity LevelPlay / ironSource"
+network = "Vungle / Liftoff"
+confidence = "high"
+strings = ["com/ironsource/adapters/vungle"]
+
+[[rule]]
+kind = "mediation-adapter"
+subject = "Unity LevelPlay / ironSource -> Unity Ads adapter"
+category = "ad mediation adapter"
+mediator = "Unity LevelPlay / ironSource"
+network = "Unity Ads"
+confidence = "high"
+strings = ["com/ironsource/adapters/unityads"]
+
+[[rule]]
+kind = "mediation-adapter"
+subject = "Unity LevelPlay / ironSource -> Meta Audience Network adapter"
+category = "ad mediation adapter"
+mediator = "Unity LevelPlay / ironSource"
+network = "Meta Audience Network"
+confidence = "high"
+strings = ["com/ironsource/adapters/facebook"]
+
+[[rule]]
+kind = "mediation-adapter"
+subject = "Unity LevelPlay / ironSource -> Mintegral adapter"
+category = "ad mediation adapter"
+mediator = "Unity LevelPlay / ironSource"
+network = "Mintegral"
+confidence = "high"
+strings = ["com/ironsource/adapters/mintegral"]
+
+[[rule]]
+kind = "mediation-adapter"
+subject = "Unity LevelPlay / ironSource -> Pangle adapter"
+category = "ad mediation adapter"
+mediator = "Unity LevelPlay / ironSource"
+network = "Pangle"
+confidence = "high"
+strings = ["com/ironsource/adapters/pangle"]

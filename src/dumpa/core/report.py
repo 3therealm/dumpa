@@ -353,6 +353,93 @@ def density_score(report: Report) -> dict[str, float]:
     return out
 
 
+# Likely data use per tracker taxonomy (the Phase 5 SDK data-use mapping). A per-SDK
+# `data_use` rule attribute overrides this default; otherwise the category answers
+# "what does an SDK of this kind likely collect/use".
+TRACKER_DATA_USE_BY_CATEGORY: dict[str, str] = {
+    "ads": "device & ad IDs, ad interactions",
+    "ad mediation": "device & ad IDs, ad interactions",
+    "ad mediation adapter": "device & ad IDs, ad interactions",
+    "analytics": "app activity, device IDs",
+    "attribution": "install referrer, device IDs",
+    "crash reporting": "diagnostics, device state",
+    "remote config": "app config, device IDs",
+    "push messaging": "device tokens",
+    "A/B testing": "app activity, device IDs",
+    "social login or sharing": "account identity, social graph",
+    "anti-fraud": "device fingerprint, behavior signals",
+    "consent management": "consent state",
+}
+
+
+def tracker_data_use(finding: Finding) -> str:
+    """A tracker finding's likely data use: its `data_use` attribute, else the category default."""
+    explicit = finding.attributes.get("data_use")
+    if explicit:
+        return explicit
+    return TRACKER_DATA_USE_BY_CATEGORY.get(finding.attributes.get("category", ""), "")
+
+
+_MEDIATION_ADAPTER_KIND = "mediation-adapter"
+
+
+@dataclass(frozen=True)
+class MediationEdge:
+    """One mediator->network link. `confirmed` = a per-network adapter class was found;
+    otherwise it is a co-presence inference (the mediator and the ad network both ship,
+    but no adapter class tied them together)."""
+    network: str
+    confirmed: bool
+
+
+@dataclass(frozen=True)
+class MediationGraph:
+    """A mediation SDK and the ad networks it routes to, derived from the findings."""
+    mediator: str
+    edges: list[MediationEdge]      # sorted-distinct by network
+
+
+def mediation_graph(report: Report) -> dict[str, MediationGraph]:
+    """Build a mediator -> [networks] graph from the tracker + mediation-adapter findings.
+
+    Nodes are the mediation SDKs: every `mediation-adapter` finding's `mediator` plus every
+    tracker finding with category == "ad mediation". Edges come from two signals, strongest
+    first:
+
+    * **confirmed** — a `mediation-adapter` finding names this mediator routing to a network;
+    * **co-presence** — only when a mediator has *no* confirmed adapter, the co-present ad
+      networks (tracker findings with category in {ads, ad mediation}, minus the mediator
+      itself) are added as unconfirmed inferences.
+
+    Keyed by mediator name. A mediator with neither confirmed adapters nor any co-present ad
+    network is still returned (empty edges) so the report can show it stands alone.
+    """
+    confirmed: dict[str, set[str]] = {}
+    for f in report.findings:
+        if f.kind != _MEDIATION_ADAPTER_KIND:
+            continue
+        mediator = f.attributes.get("mediator")
+        network = f.attributes.get("network")
+        if mediator and network:
+            confirmed.setdefault(mediator, set()).add(network)
+
+    mediator_subjects = {f.subject for f in report.findings
+                         if f.kind == "tracker" and f.attributes.get("category") == _MEDIATION_CATEGORY}
+    ad_networks = sorted({f.subject for f in report.findings
+                          if f.kind == "tracker" and f.attributes.get("category") in _AD_CATEGORIES})
+
+    graph: dict[str, MediationGraph] = {}
+    for mediator in sorted(set(confirmed) | mediator_subjects):
+        if confirmed.get(mediator):
+            edges = [MediationEdge(network=n, confirmed=True)
+                     for n in sorted(confirmed[mediator])]
+        else:
+            edges = [MediationEdge(network=n, confirmed=False)
+                     for n in ad_networks if n != mediator]
+        graph[mediator] = MediationGraph(mediator=mediator, edges=edges)
+    return graph
+
+
 def report_domains(report: Report, *, trackers_only: bool = False) -> list[str]:
     """Sorted unique domain strings (string-only helper; CSV/grouped views use domain_records()).
 
@@ -586,12 +673,16 @@ def render_markdown(report: Report) -> str:
     protections = [x for x in report.findings if x.kind == "protection"]
     secrets = [x for x in report.findings if x.kind == "secret"]
     data_access = [x for x in report.findings if x.kind in ("capability", "data-access")]
+    data_safety = [x for x in report.findings if x.kind == "data-safety"]
+    data_safety_gaps = [x for x in report.findings if x.kind == "data-safety-gap"]
     endpoints = [x for x in report.findings if x.kind == "endpoint"]
     native_libs = [x for x in report.findings if x.kind == "native"]
     native_symbols = [x for x in report.findings if x.kind == "native-symbol"]
     dexes = [x for x in report.findings if x.kind == "dex"]
+    ad_id_attrs = [x for x in report.findings if x.kind == "ad-id-attribution"]
     _sectioned = ("tracker", "protection", "secret", "capability", "data-access",
-                  "endpoint", "native", "native-symbol", "dex")
+                  "data-safety", "data-safety-gap", "endpoint", "native",
+                  "native-symbol", "dex", "mediation-adapter", "ad-id-attribution")
     others = [x for x in report.findings if x.kind not in _sectioned]
 
     lines.append("## Trackers")
@@ -610,8 +701,10 @@ def render_markdown(report: Report) -> str:
             lines.append(f"### {category}")
             for t in sorted(by_category[category], key=lambda x: x.subject):
                 owner = t.attributes.get("owner")
+                data_use = tracker_data_use(t)
                 suffix = f" — {owner}" if owner else ""
-                lines.append(f"- {t.subject}{suffix} (confidence: {t.confidence.value})")
+                use = f" [data use: {data_use}]" if data_use else ""
+                lines.append(f"- {t.subject}{suffix}{use} (confidence: {t.confidence.value})")
             lines.append("")
         rollups = companies(report)
         if rollups:
@@ -619,6 +712,22 @@ def render_markdown(report: Report) -> str:
                      for r in sorted(rollups.values(), key=lambda r: r.owner)]
             lines.append(f"companies: {', '.join(parts)}")
             lines.append("")
+
+    lines.append("## Ad mediation")
+    graph = mediation_graph(report)
+    if not graph:
+        lines.append("_none_")
+        lines.append("")
+    else:
+        for mediator in sorted(graph):
+            node = graph[mediator]
+            if not node.edges:
+                lines.append(f"- {mediator} — no ad networks detected")
+                continue
+            for edge in node.edges:
+                tag = "" if edge.confirmed else " (inferred from co-presence)"
+                lines.append(f"- {mediator} → {edge.network}{tag}")
+        lines.append("")
 
     lines.append("## Protections")
     if not protections:
@@ -653,6 +762,28 @@ def render_markdown(report: Report) -> str:
             for x in sorted(by_cat[category], key=lambda i: i.subject):
                 lines.append(f"- {x.subject} ({x.state.value}, confidence: {x.confidence.value})")
             lines.append("")
+    for a in ad_id_attrs:
+        source = a.attributes.get("source", "unknown")
+        lines.append(f"- AD_ID likely added by: {source} "
+                     f"(confidence: {a.confidence.value})")
+        lines.append("")
+
+    lines.append("## Data Safety")
+    if not data_safety and not data_safety_gaps:
+        lines.append("_not listed / lookup disabled_")
+        lines.append("")
+    else:
+        for ds in data_safety:
+            lines.append(f"- declared collected: {ds.attributes.get('collected') or 'none'}")
+            lines.append(f"- declared shared: {ds.attributes.get('shared') or 'none'}")
+        if data_safety_gaps:
+            lines.append("")
+            lines.append("### Undisclosed (observed but not declared)")
+            for g in sorted(data_safety_gaps, key=lambda i: i.subject):
+                observed = g.attributes.get("observed_in", "")
+                suffix = f" — {observed}" if observed else ""
+                lines.append(f"- {g.subject}{suffix} (confidence: {g.confidence.value})")
+        lines.append("")
 
     lines.append("## Endpoints")
     if not endpoints:
@@ -786,12 +917,16 @@ def render_html(report: Report) -> str:
     protections = [x for x in report.findings if x.kind == "protection"]
     secrets = [x for x in report.findings if x.kind == "secret"]
     data_access = [x for x in report.findings if x.kind in ("capability", "data-access")]
+    data_safety = [x for x in report.findings if x.kind == "data-safety"]
+    data_safety_gaps = [x for x in report.findings if x.kind == "data-safety-gap"]
     endpoints = [x for x in report.findings if x.kind == "endpoint"]
     native_libs = [x for x in report.findings if x.kind == "native"]
     native_symbols = [x for x in report.findings if x.kind == "native-symbol"]
     dexes = [x for x in report.findings if x.kind == "dex"]
+    ad_id_attrs = [x for x in report.findings if x.kind == "ad-id-attribution"]
     _sectioned = ("tracker", "protection", "secret", "capability", "data-access",
-                  "endpoint", "native", "native-symbol", "dex")
+                  "data-safety", "data-safety-gap", "endpoint", "native",
+                  "native-symbol", "dex", "mediation-adapter", "ad-id-attribution")
     others = [x for x in report.findings if x.kind not in _sectioned]
 
     out.append("<h2>Trackers</h2>")
@@ -810,14 +945,33 @@ def render_html(report: Report) -> str:
             out.append(f"<h3>{_h(category)}</h3><table>")
             for t in sorted(by_category[category], key=lambda x: x.subject):
                 owner = t.attributes.get("owner", "")
+                data_use = tracker_data_use(t)
                 out.append(f"<tr><td>{_h(t.subject)}</td><td>{_h(owner)}</td>"
-                           f"<td>{_h(t.confidence.value)}</td></tr>")
+                           f"<td>{_h(data_use)}</td><td>{_h(t.confidence.value)}</td></tr>")
             out.append("</table>")
         rollups = companies(report)
         if rollups:
             parts = [f"{r.owner} ({len(r.trackers)})"
                      for r in sorted(rollups.values(), key=lambda r: r.owner)]
             out.append(f'<p class="meta">companies: {_h(", ".join(parts))}</p>')
+
+    out.append("<h2>Ad mediation</h2>")
+    graph = mediation_graph(report)
+    if not graph:
+        out.append('<p class="none">none</p>')
+    else:
+        out.append("<table>")
+        for mediator in sorted(graph):
+            node = graph[mediator]
+            if not node.edges:
+                out.append(f"<tr><td>{_h(mediator)}</td>"
+                           "<td><em>no ad networks detected</em></td></tr>")
+                continue
+            for edge in node.edges:
+                tag = "" if edge.confirmed else " (inferred from co-presence)"
+                out.append(f"<tr><td>{_h(mediator)} → {_h(edge.network)}</td>"
+                           f"<td>{_h(tag.strip() or 'adapter class')}</td></tr>")
+        out.append("</table>")
 
     out += _html_simple_section("Protections", protections, tag_attr="category")
     out += _html_simple_section("Secrets", secrets, tag_attr="category")
@@ -834,6 +988,29 @@ def render_html(report: Report) -> str:
             for x in sorted(by_cat[category], key=lambda i: i.subject):
                 out.append(f"<tr><td>{_h(x.subject)}</td><td>{_h(x.state.value)}</td>"
                            f"<td>{_h(x.confidence.value)}</td></tr>")
+            out.append("</table>")
+    if ad_id_attrs:
+        out.append('<p class="meta">')
+        for a in ad_id_attrs:
+            out.append(f"AD_ID likely added by: {_h(a.attributes.get('source', 'unknown'))} "
+                       f"(confidence: {_h(a.confidence.value)})<br>")
+        out.append("</p>")
+
+    out.append("<h2>Data Safety</h2>")
+    if not data_safety and not data_safety_gaps:
+        out.append('<p class="none">not listed / lookup disabled</p>')
+    else:
+        for ds in data_safety:
+            out.append('<table>'
+                       f"<tr><th>declared collected</th><td>{_h(ds.attributes.get('collected') or 'none')}</td></tr>"
+                       f"<tr><th>declared shared</th><td>{_h(ds.attributes.get('shared') or 'none')}</td></tr>"
+                       "</table>")
+        if data_safety_gaps:
+            out.append("<h3>Undisclosed (observed but not declared)</h3><table>")
+            for g in sorted(data_safety_gaps, key=lambda i: i.subject):
+                out.append(f"<tr><td>{_h(g.subject)}</td>"
+                           f"<td>{_h(g.attributes.get('observed_in', ''))}</td>"
+                           f"<td>{_h(g.confidence.value)}</td></tr>")
             out.append("</table>")
 
     out.append("<h2>Endpoints</h2>")

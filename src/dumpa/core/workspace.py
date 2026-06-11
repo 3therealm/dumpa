@@ -43,9 +43,13 @@ const_dir_smali = "smali"
 const_dir_decompiled = "decompiled"
 const_dir_native = "native"
 const_dir_dex = "dex"
+const_dir_resources = "resources"
+const_dir_evidence = "evidence"
 const_dir_playstore = "playstore"
+const_dir_datasafety = "datasafety"
 const_file_app_apk = "app.apk"
 const_file_gametype = "gametype.json"
+const_file_datasafety = "datasafety.json"
 const_file_xref = "xref.json"
 
 
@@ -137,6 +141,16 @@ class Workspace:
         return self.dumps_dir / const_dir_dex
 
     @property
+    def resources_dir(self) -> Path:
+        """Per-package resource-table enumeration sidecars (dumps/resources/)."""
+        return self.dumps_dir / const_dir_resources
+
+    @property
+    def evidence_dir(self) -> Path:
+        """Standalone, portable evidence bundle (evidence/), written by `dumpa evidence`."""
+        return self.root / const_dir_evidence
+
+    @property
     def xref_sidecar(self) -> Path:
         """Cross-reference index artifact (dumps/xref.json), built by `dumpa xref`."""
         return self.dumps_dir / const_file_xref
@@ -150,6 +164,16 @@ class Workspace:
     def playstore_cache_dir(self) -> Path:
         """Cached Play store listings, keyed by package (cache/playstore/)."""
         return self.cache_dir / const_dir_playstore
+
+    @property
+    def datasafety_sidecar(self) -> Path:
+        """Resolved Data Safety disclosure, memoized once per workspace (dumps/datasafety.json)."""
+        return self.dumps_dir / const_file_datasafety
+
+    @property
+    def datasafety_cache_dir(self) -> Path:
+        """Cached Play Data Safety pages, keyed by package (cache/datasafety/)."""
+        return self.cache_dir / const_dir_datasafety
 
     @property
     def meta_path(self) -> Path:

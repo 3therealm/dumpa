@@ -20,7 +20,8 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass, field
 
-from dumpa.core.errors import AxmlError
+from dumpa.core.errors import AxmlError, ResChunkError
+from dumpa.core.respool import decode_string_pool, u16, u32
 
 # Chunk types (ResChunk_header.type).
 _RES_STRING_POOL = 0x0001
@@ -31,9 +32,6 @@ _RES_XML_START_ELEMENT = 0x0102
 _RES_XML_END_ELEMENT = 0x0103
 _RES_XML_CDATA = 0x0104
 _RES_XML_RESOURCE_MAP = 0x0180
-
-# String pool flags.
-_UTF8_FLAG = 1 << 8
 
 # Res_value.dataType values we interpret.
 _TYPE_REFERENCE = 0x01
@@ -96,76 +94,12 @@ class AxmlDocument:
     root: AxmlElement | None
 
 
-def _u16(data: bytes, off: int) -> int:
-    if off + 2 > len(data):
-        raise AxmlError(f"truncated u16 at offset {off}")
-    return int(struct.unpack_from("<H", data, off)[0])
-
-
-def _u32(data: bytes, off: int) -> int:
-    if off + 4 > len(data):
-        raise AxmlError(f"truncated u32 at offset {off}")
-    return int(struct.unpack_from("<I", data, off)[0])
-
-
-def _utf8_len(data: bytes, pos: int) -> tuple[int, int]:
-    """Decode a UTF-8 string-pool length (1 or 2 bytes); return (length, next_pos)."""
-    if pos >= len(data):
-        raise AxmlError("truncated UTF-8 length")
-    value = data[pos]
-    pos += 1
-    if value & 0x80:
-        if pos >= len(data):
-            raise AxmlError("truncated UTF-8 length (2-byte)")
-        value = ((value & 0x7F) << 8) | data[pos]
-        pos += 1
-    return value, pos
-
-
-def _decode_string(data: bytes, pos: int, is_utf8: bool) -> str:
-    """Decode one pooled string at an absolute offset; lenient (replace) on bad bytes."""
-    if pos < 0 or pos >= len(data):
-        return ""
-    if is_utf8:
-        _chars, pos = _utf8_len(data, pos)        # character count (unused; bytes drive it)
-        nbytes, pos = _utf8_len(data, pos)
-        return data[pos:pos + nbytes].decode("utf-8", "replace")
-    units = _u16(data, pos)
-    pos += 2
-    if units & 0x8000:
-        units = ((units & 0x7FFF) << 16) | _u16(data, pos)
-        pos += 2
-    return data[pos:pos + units * 2].decode("utf-16-le", "replace")
-
-
-def _parse_string_pool(data: bytes, off: int, chunk_size: int) -> list[str]:
-    """Decode a RES_STRING_POOL chunk into its list of strings."""
-    if off + 28 > len(data):
-        raise AxmlError("truncated string pool header")
-    _type, header_size, _size, string_count, _style_count, flags, strings_start, _styles_start = (
-        struct.unpack_from("<HHIIIIII", data, off)
-    )
-    is_utf8 = bool(flags & _UTF8_FLAG)
-    offsets_at = off + header_size
-    data_at = off + strings_start
-    chunk_end = off + chunk_size
-    strings: list[str] = []
-    for i in range(string_count):
-        rel = _u32(data, offsets_at + i * 4)
-        pos = data_at + rel
-        if pos >= chunk_end:
-            strings.append("")
-            continue
-        strings.append(_decode_string(data, pos, is_utf8))
-    return strings
-
-
 def _parse_resource_map(data: bytes, off: int, chunk_size: int) -> list[int]:
     """Decode a RES_XML_RESOURCE_MAP chunk into resource-id-per-string-index."""
-    header_size = _u16(data, off + 2)
+    header_size = u16(data, off + 2)
     count = max(0, (chunk_size - header_size) // 4)
     base = off + header_size
-    return [_u32(data, base + i * 4) for i in range(count) if base + i * 4 + 4 <= len(data)]
+    return [u32(data, base + i * 4) for i in range(count) if base + i * 4 + 4 <= len(data)]
 
 
 def _string(pool: list[str], ref: int) -> str:
@@ -204,10 +138,10 @@ def _parse_start_element(data: bytes, off: int, pool: list[str], resmap: list[in
     """Decode a RES_XML_START_ELEMENT node into an AxmlElement (tag + attrs, no children)."""
     # Node header is 16 bytes (ResChunk_header + lineNumber + comment); attrExt follows.
     ext = off + 16
-    name_ref = _u32(data, ext + 4)
-    attr_start = _u16(data, ext + 8)
-    attr_size = _u16(data, ext + 10)
-    attr_count = _u16(data, ext + 12)
+    name_ref = u32(data, ext + 4)
+    attr_start = u16(data, ext + 8)
+    attr_size = u16(data, ext + 10)
+    attr_count = u16(data, ext + 12)
     tag = _string(pool, name_ref)
     element = AxmlElement(tag=tag)
     attrs_at = ext + attr_start
@@ -215,10 +149,10 @@ def _parse_start_element(data: bytes, off: int, pool: list[str], resmap: list[in
         a = attrs_at + i * attr_size
         if a + 20 > len(data):
             break
-        name_idx = _u32(data, a + 4)
-        raw_ref = _u32(data, a + 8)
+        name_idx = u32(data, a + 4)
+        raw_ref = u32(data, a + 8)
         data_type = data[a + 15]
-        data_val = _u32(data, a + 16)
+        data_val = u32(data, a + 16)
         name = _attr_name(pool, resmap, name_idx)
         if not name:
             continue
@@ -242,14 +176,25 @@ def parse_axml(data: bytes) -> AxmlDocument:
 
     off = file_header if file_header >= 8 else 8
     end = min(file_size, len(data)) if file_size else len(data)
+    try:
+        root = _walk_chunks(data, off, end, pool, resmap, root, stack, element_count)
+    except ResChunkError as exc:                     # shared-primitive failure -> AXML failure
+        raise AxmlError(str(exc)) from exc
+    return AxmlDocument(root=root)
+
+
+def _walk_chunks(data: bytes, off: int, end: int, pool: list[str], resmap: list[int],
+                 root: AxmlElement | None, stack: list[AxmlElement],
+                 element_count: int) -> AxmlElement | None:
+    """Walk the post-header chunk stream, building the element tree; return the root."""
     while off + 8 <= end:
-        chunk_type = _u16(data, off)
-        chunk_size = _u32(data, off + 4)
+        chunk_type = u16(data, off)
+        chunk_size = u32(data, off + 4)
         if chunk_size < 8 or off + chunk_size > len(data):
             raise AxmlError(f"bad chunk size {chunk_size} at offset {off}")
 
         if chunk_type == _RES_STRING_POOL:
-            pool = _parse_string_pool(data, off, chunk_size)
+            pool[:] = decode_string_pool(data, off, chunk_size)
         elif chunk_type == _RES_XML_RESOURCE_MAP:
             resmap = _parse_resource_map(data, off, chunk_size)
         elif chunk_type == _RES_XML_START_ELEMENT:
@@ -270,4 +215,4 @@ def parse_axml(data: bytes) -> AxmlDocument:
 
         off += chunk_size
 
-    return AxmlDocument(root=root)
+    return root

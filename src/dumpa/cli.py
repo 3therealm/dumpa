@@ -212,6 +212,21 @@ def export(
 
 
 @app.command()
+def evidence(
+    workspace: Path = typer.Argument(
+        ..., exists=True, file_okay=False, readable=True,
+        help="Workspace directory produced by `dumpa analyze`.",
+    ),
+    out: Path | None = typer.Option(
+        None, "--out", help="Output directory (default: <workspace>/evidence)."),
+    no_cache: bool = typer.Option(
+        False, "--no-cache", help="Rebuild from a fresh scan instead of cached findings/report.json."),
+) -> None:
+    """Write a portable evidence bundle (manifest + snippets + index) for a workspace."""
+    run_command(lambda: export_cmd.evidence(workspace, out=out, use_cache=not no_cache))
+
+
+@app.command()
 def diff(
     old: Path = typer.Argument(..., exists=True, readable=True, help="Old .apk/.xapk or workspace dir."),
     new: Path = typer.Argument(..., exists=True, readable=True, help="New .apk/.xapk or workspace dir."),
@@ -263,15 +278,17 @@ def clean(
 
 @app.command(name="update-signatures")
 def update_signatures(
+    db: str = typer.Option(
+        "exodus", "--db", help="Signature database: exodus | trackercontrol."),
     source: str | None = typer.Option(
-        None, "--source", help="Exodus trackers API URL (default: the official endpoint)."),
+        None, "--source", help="Override the database URL (default: the DB's official endpoint)."),
     out: Path | None = typer.Option(
         None, "--out", dir_okay=False,
         help="Write the bundle here (default: the user rules dir; point at the in-repo "
              "bundle to regenerate the vendored snapshot)."),
 ) -> None:
-    """Refresh imported tracker signatures from Exodus Privacy (explicit, networked)."""
-    run_command(lambda: update_signatures_cmd.update_signatures(source=source, out=out))
+    """Refresh imported tracker signatures from an upstream DB (explicit, networked)."""
+    run_command(lambda: update_signatures_cmd.update_signatures(db=db, source=source, out=out))
 
 
 rules_app = typer.Typer(

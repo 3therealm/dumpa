@@ -6,6 +6,8 @@ from pathlib import Path
 
 from _dex_build import build_dex
 
+from dumpa import scanners
+from dumpa.core.dex import DexFile
 from dumpa.core.report import Confidence, Finding, Location
 from dumpa.core.workspace import Workspace
 from dumpa.scanners import dex as dex_scanner
@@ -77,6 +79,38 @@ def test_enrich_backfills_method_from_code_offset(tmp_path: Path) -> None:
     loc = out[0].locations[0]
     assert loc.dex_class == "com.x.A"
     assert loc.dex_method == "foo"
+
+
+def test_enrich_backfills_method_from_const_string_xref(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    data, info = build_dex()
+    (ws.extracted_dir / "classes.dex").write_bytes(data)
+    start, _ = info["str_content"][info["ref_const"]]   # loaded by foo's const-string
+    finding = Finding(kind="secret", subject="token", confidence=Confidence.MEDIUM,
+                      locations=[Location(file_path="classes.dex", file_offset=start)])
+    out = enrich_dex_locations([finding], ws)
+    loc = out[0].locations[0]
+    assert loc.dex_class == "com.x.A"
+    assert loc.dex_method == "foo"
+
+
+def test_enrich_multi_referencer_adds_evidence(tmp_path: Path, monkeypatch) -> None:
+    crafted = DexFile(version=35, classes=(), code_spans=(), desc_spans=(),
+                      xref_spans=((100, 110, (("a.B", "m1"), ("c.D", "m2"))),))
+    ws = _ws(tmp_path)
+    (ws.extracted_dir / "classes.dex").write_bytes(b"placeholder")
+    monkeypatch.setattr(scanners, "parse_dex", lambda _p: crafted)
+
+    finding = Finding(kind="endpoint", subject="u", confidence=Confidence.LOW,
+                      locations=[Location(file_path="classes.dex", file_offset=105)])
+    out = enrich_dex_locations([finding], ws)
+    # No single owner asserted on the location...
+    assert out[0].locations[0].dex_method is None
+    # ...but both referencers surfaced as evidence.
+    ev = [e for e in out[0].evidence if e.tool == scanners.const_dex_xref_tool]
+    assert len(ev) == 1
+    assert "2 methods" in ev[0].description
+    assert ev[0].snippet == "a.B#m1, c.D#m2"
 
 
 def test_enrich_leaves_plain_string_unresolved(tmp_path: Path) -> None:

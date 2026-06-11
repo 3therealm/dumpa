@@ -8,7 +8,7 @@ from pathlib import Path
 from _elf_build import LOAD_VADDR_BASE, build_elf
 
 from dumpa.core.report import Confidence, Finding, Location
-from dumpa.core.rules import load_builtin
+from dumpa.core.rules import apply_bundle, load_builtin, load_bundle
 from dumpa.core.workspace import Workspace
 from dumpa.scanners import enrich_native_rvas
 from dumpa.scanners import native as native_scanner
@@ -117,3 +117,20 @@ def test_protection_clean(tmp_path: Path) -> None:
     ws = _ws(tmp_path)
     (ws.extracted_dir / "classes.dex").write_bytes(b"perfectly ordinary bytecode")
     assert protection_scanner.scan(ws) == []
+
+
+def test_hex_rule_matches_native_lib_and_backfills_rva(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    (ws.extracted_dir / "lib" / "arm64-v8a").mkdir(parents=True)
+    data, payload_off = build_elf(payload=b"\xde\xad\xbe\xef\x11\x22")
+    (ws.extracted_dir / "lib" / "arm64-v8a" / "libp.so").write_bytes(data)
+    text = ('[bundle]\nname="t"\nversion="1"\nupdated="d"\n\n'
+            '[[rule]]\nkind="protection"\nsubject="Example stub"\nconfidence="high"\n'
+            'category="packer"\nhex=["DE AD BE EF"]\ntargets=["lib/**/*.so"]\n')
+    (tmp_path / "b.toml").write_text(text)
+    bundle = load_bundle(tmp_path / "b.toml")
+    findings = apply_bundle(bundle, ws.extracted_dir)
+    assert len(findings) == 1
+    assert findings[0].locations[0].file_offset == payload_off
+    out = enrich_native_rvas(findings, ws)
+    assert out[0].locations[0].rva == LOAD_VADDR_BASE + payload_off

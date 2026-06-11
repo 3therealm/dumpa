@@ -13,6 +13,7 @@ from collections.abc import Callable
 from pathlib import PurePosixPath
 
 from dumpa.core import cache
+from dumpa.core.arsc import ArscTable, parse_arsc_file
 from dumpa.core.dex import DexFile, parse_dex
 from dumpa.core.domains import DomainOwner, build_domain_table
 from dumpa.core.elf import ElfFile, parse_elf
@@ -28,9 +29,11 @@ from dumpa.scanners import (
     gametype,
     godot,
     manifest_privacy,
+    mediation,
     native,
     privacy,
     protection,
+    resources,
     secret,
     tracker,
     unity,
@@ -56,11 +59,13 @@ SCANNERS: tuple[ScannerSpec, ...] = (
     ScannerSpec("engine", engine.scan, ("engines",)),
     ScannerSpec("manifest_privacy", manifest_privacy.scan, ("manifest",)),
     ScannerSpec("tracker", tracker.scan, ("trackers", "trackers_exodus")),
+    ScannerSpec("mediation", mediation.scan, ("mediation",)),
     ScannerSpec("privacy", privacy.scan, ("privacy",)),
     ScannerSpec("protection", protection.scan, ("protections",)),
     ScannerSpec("secret", secret.scan, ("secrets",)),
     ScannerSpec("native", native.scan),
     ScannerSpec("dex", dex.scan),
+    ScannerSpec("resources", resources.scan),
     ScannerSpec("endpoint", endpoint.scan),
     # gametype resolves a networked, TTL-bound Play genre -> never cached (the
     # dumps/gametype.json sidecar already memoizes the fetch within a workspace).
@@ -132,6 +137,10 @@ def enrich_native_rvas(findings: list[Finding], ws: Workspace) -> list[Finding]:
     return out
 
 
+const_dex_xref_tool = "dex-string-xref"
+_DEX_XREF_MAX = 8                       # cap referencers enumerated in evidence
+
+
 def enrich_dex_locations(findings: list[Finding], ws: Workspace) -> list[Finding]:
     """Backfill Location.dex_class/.dex_method on any finding located by offset in a .dex.
 
@@ -152,6 +161,7 @@ def enrich_dex_locations(findings: list[Finding], ws: Workspace) -> list[Finding
     out: list[Finding] = []
     for finding in findings:
         new_locs: list[Location] | None = None
+        new_evidence: list[Evidence] | None = None
         for i, loc in enumerate(finding.locations):
             if (loc.dex_class is not None or loc.file_offset is None
                     or not loc.file_path or not loc.file_path.endswith(".dex")):
@@ -160,14 +170,85 @@ def enrich_dex_locations(findings: list[Finding], ws: Workspace) -> list[Finding
             if dex_file is None:
                 continue
             hit = dex_file.locate(loc.file_offset)
-            if hit is None:
+            if hit is not None:
+                dex_class, dex_method = hit
+                if new_locs is None:
+                    new_locs = list(finding.locations)
+                new_locs[i] = dataclasses.replace(loc, dex_class=dex_class,
+                                                  dex_method=dex_method)
                 continue
-            dex_class, dex_method = hit
-            if new_locs is None:
-                new_locs = list(finding.locations)
-            new_locs[i] = dataclasses.replace(loc, dex_class=dex_class, dex_method=dex_method)
-        out.append(dataclasses.replace(finding, locations=new_locs)
-                   if new_locs is not None else finding)
+            # No structural owner: the offset is in a plain string constant. Resolve the
+            # method(s) whose const-string loads it.
+            refs = dex_file.locate_string_xref(loc.file_offset)
+            if not refs:
+                continue
+            if len(refs) == 1:
+                cls, meth = refs[0]
+                if new_locs is None:
+                    new_locs = list(finding.locations)
+                new_locs[i] = dataclasses.replace(loc, dex_class=cls, dex_method=meth)
+            else:
+                # Loaded from several methods: naming one owner would mislead, so surface
+                # all referencers as evidence instead.
+                if new_evidence is None:
+                    new_evidence = []
+                shown = ", ".join(f"{c}#{m}" for c, m in refs[:_DEX_XREF_MAX])
+                more = "" if len(refs) <= _DEX_XREF_MAX else f" (+{len(refs) - _DEX_XREF_MAX} more)"
+                new_evidence.append(Evidence(
+                    description=f"string constant loaded by {len(refs)} methods",
+                    snippet=shown + more, tool=const_dex_xref_tool))
+        if new_locs is None and new_evidence is None:
+            out.append(finding)
+        else:
+            out.append(dataclasses.replace(
+                finding,
+                locations=new_locs if new_locs is not None else finding.locations,
+                evidence=(finding.evidence + new_evidence) if new_evidence is not None
+                else finding.evidence))
+    return out
+
+
+const_resource_attribution_tool = "resource-attribution"
+_ARSC_REL = "resources.arsc"
+
+
+def enrich_resource_names(findings: list[Finding], ws: Workspace) -> list[Finding]:
+    """Attribute findings located by offset inside resources.arsc to the owning resource.
+
+    Twin of enrich_dex_locations: a content scanner records (file_path="resources.arsc",
+    file_offset) for a URL/key it matched in the binary table; map that offset through the
+    parsed table to the resource (`@string/<name>`) whose value contains it, recorded as
+    Evidence. The table is parsed once; findings with no arsc-offset location, or whose
+    offset lands outside any string value, pass through unchanged. Idempotent — re-running
+    on an already-attributed finding adds nothing.
+    """
+    if not any(loc.file_path == _ARSC_REL and loc.file_offset is not None
+               for f in findings for loc in f.locations):
+        return findings
+    table: ArscTable | None = parse_arsc_file(ws.extracted_dir / _ARSC_REL)
+    if table is None:
+        return findings
+
+    out: list[Finding] = []
+    for finding in findings:
+        names: list[str] = []
+        for loc in finding.locations:
+            if loc.file_path != _ARSC_REL or loc.file_offset is None:
+                continue
+            hit = table.locate(loc.file_offset)
+            if hit is not None and hit[0] not in names:
+                names.append(hit[0])
+        if not names:
+            out.append(finding)
+            continue
+        evidence = list(finding.evidence)
+        for name in names:
+            ev = Evidence(description=f"in resource @string/{name}",
+                          snippet=name, tool=const_resource_attribution_tool)
+            if not _has_equivalent_evidence(evidence, ev):
+                evidence.append(ev)
+        out.append(dataclasses.replace(finding, evidence=evidence)
+                   if len(evidence) != len(finding.evidence) else finding)
     return out
 
 
@@ -323,9 +404,9 @@ def run_all(ws: Workspace, *, use_cache: bool = True) -> list[Finding]:
 
     Per-scanner findings are memoized under a content-hash key (input + dumpa + rule-bundle
     versions); pass use_cache=False to force a fresh scan. `enrich_native_rvas`,
-    `enrich_dex_locations`, and `enrich_domain_attribution` run on the assembled list every
-    time — cheap deterministic post-passes, so they stay uncached. Attribution runs last so it
-    sees every endpoint/tracker finding.
+    `enrich_dex_locations`, `enrich_resource_names`, and `enrich_domain_attribution` run on
+    the assembled list every time — cheap deterministic post-passes, so they stay uncached.
+    Domain attribution runs last so it sees every endpoint/tracker finding.
     """
     meta = ws.read_meta() if use_cache else None
     findings: list[Finding] = []
@@ -342,6 +423,7 @@ def run_all(ws: Workspace, *, use_cache: bool = True) -> list[Finding]:
             findings.extend(_run_spec(ws, spec, meta))
     findings = enrich_native_rvas(findings, ws)
     findings = enrich_dex_locations(findings, ws)
+    findings = enrich_resource_names(findings, ws)
     return enrich_domain_attribution(findings, ws)
 
 
