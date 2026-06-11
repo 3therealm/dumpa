@@ -171,6 +171,48 @@
         "present"
       ]
     ],
+    "native-strings": [
+      [
+        "arm64-v8a/libarc-freetype.so",
+        "high",
+        "present"
+      ],
+      [
+        "arm64-v8a/libarc.so",
+        "high",
+        "present"
+      ],
+      [
+        "armeabi-v7a/libarc-freetype.so",
+        "high",
+        "present"
+      ],
+      [
+        "armeabi-v7a/libarc.so",
+        "high",
+        "present"
+      ],
+      [
+        "x86/libarc-freetype.so",
+        "high",
+        "present"
+      ],
+      [
+        "x86/libarc.so",
+        "high",
+        "present"
+      ],
+      [
+        "x86_64/libarc-freetype.so",
+        "high",
+        "present"
+      ],
+      [
+        "x86_64/libarc.so",
+        "high",
+        "present"
+      ]
+    ],
     "native-symbol": [
       [
         "arm64-v8a/libarc-freetype.so",

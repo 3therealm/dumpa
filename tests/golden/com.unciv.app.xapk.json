@@ -224,6 +224,13 @@
         "present"
       ]
     ],
+    "native-strings": [
+      [
+        "armeabi-v7a/libgdx.so",
+        "high",
+        "present"
+      ]
+    ],
     "native-symbol": [
       [
         "armeabi-v7a/libgdx.so",

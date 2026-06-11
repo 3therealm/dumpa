@@ -42,6 +42,7 @@ const_dir_cache = "cache"
 const_dir_smali = "smali"
 const_dir_decompiled = "decompiled"
 const_dir_native = "native"
+const_dir_native_strings = "native-strings"
 const_dir_dex = "dex"
 const_dir_resources = "resources"
 const_dir_evidence = "evidence"
@@ -134,6 +135,11 @@ class Workspace:
     def native_dir(self) -> Path:
         """Per-library native symbol/section sidecars (dumps/native/)."""
         return self.dumps_dir / const_dir_native
+
+    @property
+    def native_strings_dir(self) -> Path:
+        """Per-library native string dumps (dumps/native-strings/)."""
+        return self.dumps_dir / const_dir_native_strings
 
     @property
     def dex_dir(self) -> Path:

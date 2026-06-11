@@ -602,6 +602,28 @@
         "present"
       ]
     ],
+    "native-strings": [
+      [
+        "arm64-v8a/libc++_shared.so",
+        "high",
+        "present"
+      ],
+      [
+        "arm64-v8a/libgodot_android.so",
+        "high",
+        "present"
+      ],
+      [
+        "armeabi-v7a/libc++_shared.so",
+        "high",
+        "present"
+      ],
+      [
+        "armeabi-v7a/libgodot_android.so",
+        "high",
+        "present"
+      ]
+    ],
     "native-symbol": [
       [
         "arm64-v8a/libc++_shared.so",
