@@ -173,3 +173,35 @@ def test_encrypted_zlib_wrong_key_extracts_nothing(tmp_path: Path) -> None:
     out = tmp_path / "out"
     # a wrong key yields garbage that fails to inflate -> entry skipped, not mis-extracted
     assert unrealpak.extract(path, pak, out, aes_key=b"\xff" * 32) == 0
+
+
+# --- LZ4 entries (dumpa[unreal] extra) ---------------------------------------
+
+def test_lz4_method_detected(tmp_path: Path) -> None:
+    pytest.importorskip("lz4")
+    pak = unrealpak.parse_standalone(_write(tmp_path, build_pak(_FILES, compress="lz4")))
+    assert pak is not None
+    assert all(e.compression == "lz4" for e in pak.entries)
+    assert all(e.compression_block_size > 0 for e in pak.entries)
+
+
+def test_lz4_extract_roundtrip(tmp_path: Path) -> None:
+    pytest.importorskip("lz4")
+    path = _write(tmp_path, build_pak(_FILES, compress="lz4"))
+    pak = unrealpak.parse_standalone(path)
+    assert pak is not None
+    out = tmp_path / "out"
+    assert unrealpak.extract(path, pak, out) == 2
+    assert (out / "Content/data.json").read_bytes() == _FILES["Content/data.json"]
+
+
+def test_encrypted_lz4_extract_with_key(tmp_path: Path) -> None:
+    pytest.importorskip("lz4")
+    pytest.importorskip("cryptography")
+    path = _write(tmp_path, build_pak(_FILES, compress="lz4", encrypt_entries=True, aes_key=_AES_KEY))
+    pak = unrealpak.parse_standalone(path)
+    assert pak is not None
+    out = tmp_path / "out"
+    # the encrypted LZ4 block is decrypted, then trimmed within the pad window before inflate
+    assert unrealpak.extract(path, pak, out, aes_key=_AES_KEY) == 2
+    assert (out / "Config/DefaultEngine.ini").read_bytes() == _FILES["Config/DefaultEngine.ini"]

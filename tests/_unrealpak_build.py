@@ -17,7 +17,7 @@ import zlib
 
 _MAGIC = 0x5A6F12E1
 _HASH = b"\x00" * 20
-_COMP_NAMES = ("Zlib", "Gzip", "Oodle")     # 1-based: index 1=Zlib, 2=Gzip, 3=Oodle
+_COMP_NAMES = ("Zlib", "Gzip", "Oodle", "LZ4")  # 1-based: 1=Zlib 2=Gzip 3=Oodle 4=LZ4
 _BLOCK_SIZE = 65536
 
 
@@ -77,6 +77,8 @@ def build_pak(files: dict[str, bytes], *, version: int = 8, mount: str = "../../
         method_index = 1
     elif compress == "gzip":
         method_index = 2
+    elif compress == "lz4":
+        method_index = 4
     if method_override is not None:
         method_index = method_override
 
@@ -87,6 +89,8 @@ def build_pak(files: dict[str, bytes], *, version: int = 8, mount: str = "../../
             payload = zlib.compress(raw)
         elif method_index == 2:
             payload = _gzip(raw)
+        elif method_index == 4:
+            payload = _lz4(raw)
         else:
             payload = raw
         stored_size = len(payload)              # FPakEntry.size: the unpadded (compressed) size
@@ -140,3 +144,9 @@ def _footer(version: int, index_offset: int, index_size: int, *, index_encrypted
 def _gzip(raw: bytes) -> bytes:
     co = zlib.compressobj(9, zlib.DEFLATED, zlib.MAX_WBITS | 16)
     return co.compress(raw) + co.flush()
+
+
+def _lz4(raw: bytes) -> bytes:
+    """LZ4 *block*-format compress (no size prefix), as UE stores compression blocks."""
+    import lz4.block
+    return lz4.block.compress(raw, store_size=False)

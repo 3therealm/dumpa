@@ -66,6 +66,7 @@ class PakEntry:
     compression: str        # "none" | "zlib" | "gzip" | the raw method name (deferred)
     encrypted: bool
     blocks: list[tuple[int, int]] = field(default_factory=list)  # (start, end) absolute offsets
+    compression_block_size: int = 0   # uncompressed bytes per block (LZ4 needs it per-block)
 
 
 @dataclass(frozen=True)
@@ -149,9 +150,11 @@ def _read_entry(buf: bytes, pos: int, version: int,
         return None
     (encrypted_flag,) = struct.unpack_from("<B", buf, pos)
     pos += 1
-    pos += 4                                            # CompressionBlockSize (u32), unused here
+    (block_size,) = struct.unpack_from("<I", buf, pos)  # CompressionBlockSize (uncompressed/block)
+    pos += 4
     entry = PakEntry(path="", offset=offset, size=size, uncompressed_size=usize,
-                     compression=comp, encrypted=bool(encrypted_flag), blocks=blocks)
+                     compression=comp, encrypted=bool(encrypted_flag), blocks=blocks,
+                     compression_block_size=block_size)
     return (entry, pos, comp)
 
 
@@ -265,7 +268,8 @@ def _parse_legacy_index(version: int, index: bytes, methods: list[str],
         entries.append(PakEntry(
             path=name, offset=entry.offset, size=entry.size,
             uncompressed_size=entry.uncompressed_size, compression=entry.compression,
-            encrypted=entry.encrypted, blocks=entry.blocks))
+            encrypted=entry.encrypted, blocks=entry.blocks,
+            compression_block_size=entry.compression_block_size))
     return Pak(version, mount_point, entries, False, key_guid, methods, None)
 
 
@@ -435,25 +439,64 @@ def _decrypted_payload(f: BinaryIO, entry: PakEntry, data_offset: int,
     return b"".join(chunks) if total == entry.uncompressed_size else None
 
 
-def _write_encrypted_entry(f: BinaryIO, entry: PakEntry, version: int, dest: Path,
-                           key: bytes) -> int | None:
-    """Decrypt one entry into memory and write it to dest. None if unsupported/malformed."""
-    if entry.uncompressed_size > const_max_extract_file_bytes:
+def _lz4_decompress_padded(comp: bytes, uncompressed_size: int) -> bytes | None:
+    """LZ4-block decompress `comp`, tolerating up to 15 bytes of trailing AES padding.
+
+    Unencrypted blocks carry the exact compressed length (trim 0); an encrypted block is
+    padded to the 16-byte boundary before encryption, and lz4 rejects trailing bytes, so the
+    real length is recovered by trimming within the pad window (the first length that inflates
+    to exactly `uncompressed_size` wins).
+    """
+    for trim in range(16):
+        cand = comp[:len(comp) - trim] if trim else comp
+        if not cand:
+            break
+        out = unrealcrypto.decompress_lz4_block(cand, uncompressed_size)
+        if out is not None:
+            return out
+    return None
+
+
+def _lz4_blocks(f: BinaryIO, entry: PakEntry, data_offset: int, key: bytes) -> bytes | None:
+    """Decode an LZ4 entry to bytes, decrypting each block first when the entry is encrypted.
+
+    LZ4 needs the per-block uncompressed size (CompressionBlockSize); held in memory (bounded
+    by the file cap) like the encrypted path, since LZ4 blocks are not stream-decodable.
+    """
+    block_size = entry.compression_block_size or entry.uncompressed_size
+    if block_size <= 0:
         return None
-    if entry.compression not in ("none", "zlib", "gzip"):
-        return None                             # Oodle/LZ4 encrypted: deferred
-    data_offset = _payload_offset(f, entry, version)
-    if data_offset is None:
-        return None
-    plain = _decrypted_payload(f, entry, data_offset, key)
-    if plain is None:
-        return None
+    blocks = entry.blocks or [(data_offset, data_offset + entry.size)]
+    chunks: list[bytes] = []
+    written = 0
+    for start, end in blocks:
+        if end < start or end - start > entry.size + (1 << 20):
+            return None
+        f.seek(start)
+        comp = f.read(end - start)
+        if len(comp) != end - start:
+            return None
+        if entry.encrypted:
+            comp = unrealcrypto.decrypt_aes_ecb(comp, key)
+            if comp is None:
+                return None
+        block_usize = min(block_size, entry.uncompressed_size - written)
+        out = _lz4_decompress_padded(comp, block_usize)
+        if out is None:
+            return None
+        chunks.append(out)
+        written += len(out)
+    return b"".join(chunks) if written == entry.uncompressed_size else None
+
+
+def _write_bytes(dest: Path, data: bytes) -> int | None:
+    """Atomically write `data` to dest via a sibling temp file; None on OS error."""
     tmp = dest.with_name(f".{dest.name}.tmp")
     try:
         with tmp.open("wb") as out:
-            out.write(plain)
+            out.write(data)
         tmp.replace(dest)
-        return len(plain)
+        return len(data)
     except OSError:
         return None
     finally:
@@ -464,6 +507,22 @@ def _write_encrypted_entry(f: BinaryIO, entry: PakEntry, version: int, dest: Pat
             pass
 
 
+def _write_encrypted_entry(f: BinaryIO, entry: PakEntry, version: int, dest: Path,
+                           key: bytes) -> int | None:
+    """Decrypt one entry into memory and write it to dest. None if unsupported/malformed."""
+    if entry.uncompressed_size > const_max_extract_file_bytes:
+        return None
+    if entry.compression not in ("none", "zlib", "gzip"):
+        return None                             # Oodle encrypted: deferred (LZ4 handled earlier)
+    data_offset = _payload_offset(f, entry, version)
+    if data_offset is None:
+        return None
+    plain = _decrypted_payload(f, entry, data_offset, key)
+    if plain is None:
+        return None
+    return _write_bytes(dest, plain)
+
+
 def _write_entry_payload(f: BinaryIO, entry: PakEntry, version: int, dest: Path,
                          aes_key: bytes | None = None) -> int | None:
     """Stream one entry to dest; None if malformed, too large, or unsupported."""
@@ -471,6 +530,16 @@ def _write_entry_payload(f: BinaryIO, entry: PakEntry, version: int, dest: Path,
         return None
     if entry.uncompressed_size > const_max_extract_file_bytes:
         return None
+    if entry.compression == "lz4":
+        if not unrealcrypto.lz4_available():
+            return None                         # LZ4 needs the dumpa[unreal] extra
+        if entry.encrypted and (aes_key is None or not unrealcrypto.aes_available()):
+            return None
+        data_offset = _payload_offset(f, entry, version)
+        if data_offset is None:
+            return None
+        plain = _lz4_blocks(f, entry, data_offset, aes_key or b"")
+        return _write_bytes(dest, plain) if plain is not None else None
     if entry.encrypted:
         if aes_key is None or not unrealcrypto.aes_available():
             return None
@@ -523,20 +592,24 @@ def _write_entry_payload(f: BinaryIO, entry: PakEntry, version: int, dest: Path,
 def extract(path: Path, pak: Pak, out_dir: Path, *, aes_key: bytes | None = None) -> int:
     """Write each harvestable file under out_dir. Returns the count written.
 
-    Skips deferred paks entirely and, within a parsed pak, skips entries that use a non-stdlib
-    codec (Oodle/LZ4). AES-encrypted entries are extracted when a caller `aes_key` is supplied
-    and the `dumpa[unreal]` extra (cryptography) is installed; otherwise they are deferred.
+    Skips deferred paks entirely and, within a parsed pak, skips entries using a codec without
+    an open decompressor (Oodle). LZ4 entries extract when the `dumpa[unreal]` extra (lz4) is
+    installed; AES-encrypted entries extract when a caller `aes_key` is supplied and the extra
+    (cryptography) is installed. Anything still unsupported is deferred, not extracted.
     """
     if pak.deferred_reason is not None:
         return 0
     can_decrypt = aes_key is not None and unrealcrypto.aes_available()
+    lz4_ok = unrealcrypto.lz4_available()
     written = 0
     total_bytes = 0
     try:
         with path.open("rb") as f:
             for e in pak.entries:
-                if e.compression not in ("none", "zlib", "gzip"):
-                    continue
+                if e.compression not in ("none", "zlib", "gzip", "lz4"):
+                    continue                    # Oodle etc.: deferred
+                if e.compression == "lz4" and not lz4_ok:
+                    continue                    # LZ4 needs the dumpa[unreal] extra
                 if e.encrypted and not can_decrypt:
                     continue
                 if e.uncompressed_size < 0 or total_bytes + e.uncompressed_size > const_max_extract_total_bytes:

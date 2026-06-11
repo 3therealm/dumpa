@@ -57,7 +57,12 @@ def decompress_lz4_block(data: bytes, uncompressed_size: int) -> bytes | None:
         return None
     try:
         import lz4.block
+    except ImportError:
+        return None
+    try:
         out = lz4.block.decompress(data, uncompressed_size=uncompressed_size)
-    except (ImportError, ValueError):
+    except Exception:
+        # lz4 raises LZ4BlockError (a bare Exception subclass) on corrupt/short/over-padded
+        # input — expected while trimming the AES pad window — so fail soft to None.
         return None
     return out if len(out) == uncompressed_size else None

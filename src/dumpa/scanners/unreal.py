@@ -104,6 +104,7 @@ def scan(ws: Workspace) -> list[Finding]:
     version_reported = False
     config = load_config()
     can_decrypt = config.unreal_aes is not None and unrealcrypto.aes_available()
+    lz4_ok = unrealcrypto.lz4_available()
 
     for p in paks:
         pak = unrealpak.parse_standalone(p)
@@ -137,7 +138,8 @@ def scan(ws: Workspace) -> list[Finding]:
         if n:
             extracted_dirs.append(out_dir)
         skipped = sum(1 for e in pak.entries
-                      if e.compression not in ("none", "zlib", "gzip")
+                      if e.compression not in ("none", "zlib", "gzip", "lz4")
+                      or (e.compression == "lz4" and not lz4_ok)
                       or (e.encrypted and not can_decrypt))
         findings.append(_f(
             f"Unreal pak extracted ({n})", Confidence.HIGH, FindingState.INITIALIZED,
