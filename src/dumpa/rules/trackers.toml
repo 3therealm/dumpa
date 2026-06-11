@@ -11,9 +11,9 @@
 
 [bundle]
 name = "trackers"
-version = "2026.06.1"
+version = "2026.06.2"
 source = "dumpa built-in (curated)"
-updated = "2026-06-06"
+updated = "2026-06-08"
 
 # --- Google ------------------------------------------------------------------
 
@@ -387,6 +387,109 @@ owner = "OneSignal"
 confidence = "high"
 manifest_field = "component"
 manifest = ['^com\.onesignal\.']
+
+# --- A/B testing -------------------------------------------------------------
+# (Firebase A/B Testing rides Remote Config, already detected — not duplicated here.)
+
+[[rule]]
+kind = "tracker"
+subject = "Optimizely"
+category = "A/B testing"
+owner = "Optimizely"
+confidence = "high"
+strings = ["com/optimizely"]
+
+[[rule]]
+kind = "tracker"
+subject = "LaunchDarkly"
+category = "A/B testing"
+owner = "LaunchDarkly"
+confidence = "high"
+strings = ["com/launchdarkly"]
+
+[[rule]]
+kind = "tracker"
+subject = "Amplitude Experiment"
+category = "A/B testing"
+owner = "Amplitude"
+confidence = "high"
+strings = ["com/amplitude/experiment"]
+
+# --- anti-fraud --------------------------------------------------------------
+
+[[rule]]
+kind = "tracker"
+subject = "Forter"
+category = "anti-fraud"
+owner = "Forter"
+confidence = "high"
+strings = ["com/forter"]
+
+[[rule]]
+kind = "tracker"
+subject = "Sift"
+category = "anti-fraud"
+owner = "Sift"
+confidence = "high"
+strings = ["com/sift", "com/siftscience"]
+
+[[rule]]
+kind = "tracker"
+subject = "Arkose Labs"
+category = "anti-fraud"
+owner = "Arkose Labs"
+confidence = "high"
+strings = ["com/arkoselabs"]
+
+[[rule]]
+kind = "tracker"
+subject = "FingerprintJS"
+category = "anti-fraud"
+owner = "FingerprintJS"
+confidence = "high"
+strings = ["com/fingerprintjs"]
+
+# --- consent management ------------------------------------------------------
+
+[[rule]]
+kind = "tracker"
+subject = "OneTrust"
+category = "consent management"
+owner = "OneTrust"
+confidence = "high"
+strings = ["com/onetrust"]
+
+[[rule]]
+kind = "tracker"
+subject = "Google UMP"
+category = "consent management"
+owner = "Google"
+confidence = "high"
+strings = ["com/google/android/ump"]
+
+[[rule]]
+kind = "tracker"
+subject = "Didomi"
+category = "consent management"
+owner = "Didomi"
+confidence = "high"
+strings = ["io/didomi"]
+
+[[rule]]
+kind = "tracker"
+subject = "Sourcepoint"
+category = "consent management"
+owner = "Sourcepoint"
+confidence = "high"
+strings = ["com/sourcepoint"]
+
+[[rule]]
+kind = "tracker"
+subject = "Quantcast Choice"
+category = "consent management"
+owner = "Quantcast"
+confidence = "high"
+strings = ["com/quantcast"]
 
 # --- domain matchers ---------------------------------------------------------
 # Separate same-subject rules carrying SDK domains. `_merge_by_subject` folds these

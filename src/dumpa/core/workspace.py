@@ -40,11 +40,13 @@ const_dir_dumps = "dumps"
 const_dir_reports = "reports"
 const_dir_cache = "cache"
 const_dir_smali = "smali"
+const_dir_decompiled = "decompiled"
 const_dir_native = "native"
 const_dir_dex = "dex"
 const_dir_playstore = "playstore"
 const_file_app_apk = "app.apk"
 const_file_gametype = "gametype.json"
+const_file_xref = "xref.json"
 
 
 def _empty_str_map() -> dict[str, str]:
@@ -107,6 +109,11 @@ class Workspace:
         return self.smali_dir.is_dir() and any(self.smali_dir.iterdir())
 
     @property
+    def decompiled_dir(self) -> Path:
+        """JADX read-only decompile output (decompiled/); produced by `dumpa decompile`."""
+        return self.root / const_dir_decompiled
+
+    @property
     def dumps_dir(self) -> Path:
         return self.root / const_dir_dumps
 
@@ -128,6 +135,11 @@ class Workspace:
     def dex_dir(self) -> Path:
         """Per-dex class/method/field inventory sidecars (dumps/dex/)."""
         return self.dumps_dir / const_dir_dex
+
+    @property
+    def xref_sidecar(self) -> Path:
+        """Cross-reference index artifact (dumps/xref.json), built by `dumpa xref`."""
+        return self.dumps_dir / const_file_xref
 
     @property
     def gametype_sidecar(self) -> Path:

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from dumpa.convert.pipeline import build_workspace, prepare_convert, workspace_build_options
@@ -74,11 +76,15 @@ def _report_workspace(registry: ToolRegistry, ws: Workspace, *,
     logger.info("  report:    %s", report_path)
 
 
-def report_for_input(input_path: Path) -> Report:
-    """Build a Report for an apk/xapk (ephemeral workspace) or an existing workspace dir.
+@contextmanager
+def open_for_diff(input_path: Path) -> Iterator[tuple[Workspace, Report]]:
+    """Yield a populated workspace + its report, keeping the workspace open.
 
-    Shared by `diff` and `load`: an apk/xapk is extracted into a throwaway workspace
-    and reported unsigned; a directory is treated as an existing dumpa workspace.
+    Shared by `diff`: a directory is treated as an existing dumpa workspace; an apk/xapk
+    is extracted into a throwaway workspace that stays open for the block's duration, so
+    workspace sidecars (`dumps/native/*.json`, `dumps/dump.cs`) written by `build_report`
+    are readable for the symbol/method diffs. apk/xapk inputs are reported unsigned (a diff
+    read never re-signs).
     """
     config = load_config()
     registry = build_default_registry(config.tool_paths)
@@ -88,14 +94,25 @@ def report_for_input(input_path: Path) -> Report:
         ws = Workspace(root=input_abs)
         if ws.read_meta() is None:
             raise DumpaError(f"{input_abs} is not a dumpa workspace; pass an .apk/.xapk or run analyze first")
-        return build_report(registry, ws)
+        yield ws, build_report(registry, ws)
+        return
 
     in_type = input_type(input_abs)
     if in_type == "xapk":
         prepare_convert(registry, None)
     with open_workspace(None) as ws:
         build_workspace(registry, ws, input_abs, in_type, sha256_file(input_abs), None)
-        return build_report(registry, ws)
+        yield ws, build_report(registry, ws)
+
+
+def report_for_input(input_path: Path) -> Report:
+    """Build a Report for an apk/xapk (ephemeral workspace) or an existing workspace dir.
+
+    Shared by `load`: an apk/xapk is extracted into a throwaway workspace and reported
+    unsigned; a directory is treated as an existing dumpa workspace.
+    """
+    with open_for_diff(input_path) as (_ws, report):
+        return report
 
 
 def _maybe_autodump(registry: ToolRegistry, ws: Workspace, config: Config, *, enabled: bool) -> None:
@@ -107,9 +124,39 @@ def _maybe_autodump(registry: ToolRegistry, ws: Workspace, config: Config, *, en
     autodump_workspace(registry, ws, engine_name=config.il2cpp_engine)
 
 
+def _maybe_decompile(ws_path: Path, *, enabled: bool) -> None:
+    """Run a full JADX decompile into the workspace when --jadx was passed (opt-in, heavy)."""
+    if not enabled:
+        return
+    # Lazy import: decompile imports analyze at module load, so this breaks the cycle.
+    from dumpa.commands.decompile import decompile as run_decompile
+    run_decompile(None, all_classes=True, workspace=ws_path)
+
+
+def _maybe_xref(ws: Workspace, *, enabled: bool) -> None:
+    """Build dumps/xref.json from the just-written report and log the correlation count."""
+    if not enabled:
+        return
+    import datetime
+
+    from dumpa.core.report import read_json
+    from dumpa.core.xref import build_xref, write_xref
+    report = read_json(ws.reports_dir / const_file_report_json)
+    if report is None:
+        return
+    meta = ws.read_meta()
+    sha = meta.input_sha256 if meta is not None else ""
+    built = datetime.datetime.now(datetime.UTC).isoformat()
+    index = build_xref(ws, list(report.findings), input_sha256=sha, built=built)
+    write_xref(index, ws.xref_sidecar)
+    multi = sum(1 for e in index.entities if len(e.layers) >= 2)
+    logger.info("  xref:      %d cross-layer correlations (%s)", multi, ws.xref_sidecar)
+
+
 def analyze(input_file: Path, *, workspace: Path | None = None, force: bool = False,
             signing: str | None = None, use_cache: bool = True,
-            no_dump: bool = False, no_network: bool = False) -> None:
+            no_dump: bool = False, no_network: bool = False, jadx: bool = False,
+            xref: bool = False) -> None:
     """Extract input_file into a reproducible workspace, reusing it when unchanged."""
     if no_network:
         os.environ[const_env_play_lookup] = "0"  # scanners read play_lookup from config/env
@@ -136,10 +183,13 @@ def analyze(input_file: Path, *, workspace: Path | None = None, force: bool = Fa
             _maybe_autodump(registry, ws, config, enabled=autodump_enabled)
             _report_workspace(registry, ws, signed_expected=signed_expected, input_size=size,
                               use_cache=use_cache)
-            return
+        else:
+            build_workspace(registry, ws, input_abs, in_type, input_sha, sign_config, build_options)
+            logger.info("workspace ready")
+            _maybe_autodump(registry, ws, config, enabled=autodump_enabled)
+            _report_workspace(registry, ws, signed_expected=signed_expected,
+                              input_size=input_abs.stat().st_size, use_cache=use_cache)
+        _maybe_xref(ws, enabled=xref)
+        decompile_ws = ws.root
 
-        build_workspace(registry, ws, input_abs, in_type, input_sha, sign_config, build_options)
-        logger.info("workspace ready")
-        _maybe_autodump(registry, ws, config, enabled=autodump_enabled)
-        _report_workspace(registry, ws, signed_expected=signed_expected,
-                          input_size=input_abs.stat().st_size, use_cache=use_cache)
+    _maybe_decompile(decompile_ws, enabled=jadx)
