@@ -568,6 +568,13 @@
         "present"
       ]
     ],
+    "ip-endpoint": [
+      [
+        "239.255.255.250",
+        "low",
+        "present"
+      ]
+    ],
     "manifest": [
       [
         "exported activity: com.godot.game.GodotApp",

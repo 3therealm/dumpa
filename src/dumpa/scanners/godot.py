@@ -24,6 +24,7 @@ from dumpa import __version__
 from dumpa.core.pck import Pck, extract, find_embedded, parse_at, parse_standalone
 from dumpa.core.report import Confidence, Evidence, Finding, FindingState, Location
 from dumpa.core.workspace import Workspace
+from dumpa.scanners.endpoint import harvest_urls
 
 logger = logging.getLogger("dumpa")
 
@@ -35,6 +36,12 @@ _PCK_GLOB = "**/*.pck"
 _CONFIG_NAMES = ("project.binary", "project.godot")
 _GDC_GLOB = "**/*.gdc"
 _MAX_SAMPLE = 5
+
+# Text/config resources inside an extracted PCK worth scanning for endpoint URLs.
+_TEXT_SUFFIXES = frozenset({".godot", ".cfg", ".json", ".gd", ".txt", ".tres", ".tscn",
+                            ".import", ".ini", ".xml"})
+_MAX_CONFIG_BYTES = 8 << 20
+_MAX_CONFIG_HOSTS = 50
 
 
 @dataclass
@@ -102,6 +109,7 @@ def scan(ws: Workspace) -> list[Finding]:
 
     findings: list[Finding] = []
     packs = _collect(ex)
+    extracted_dirs: list[Path] = []
 
     if packs:
         version = packs[0].pck.godot_version
@@ -132,6 +140,7 @@ def scan(ws: Workspace) -> list[Finding]:
 
         out_dir = ws.dumps_dir / "godot" / "pck" / Path(pk.rel).stem
         n = extract(pk.source, pk.pck, out_dir)
+        extracted_dirs.append(out_dir)
         findings.append(_f(
             f"Godot resources extracted ({n})", Confidence.HIGH, FindingState.INITIALIZED,
             f"from {pk.rel} into dumps/godot/pck/{Path(pk.rel).stem}/", pk.rel, []))
@@ -139,6 +148,7 @@ def scan(ws: Workspace) -> list[Finding]:
                               "encrypted": False, "extracted": n})
 
     findings += _config_findings(ex)
+    findings += _endpoint_findings(extracted_dirs, ws)
 
     if packs:
         _write_sidecar(ws, {
@@ -148,6 +158,42 @@ def scan(ws: Workspace) -> list[Finding]:
             "dumpa_version": __version__,
         })
     return findings
+
+
+def _endpoint_findings(out_dirs: list[Path], ws: Workspace) -> list[Finding]:
+    """Harvest endpoint URLs from text/config resources in the extracted PCK(s).
+
+    Closes the Godot half of the "engine configs" endpoint gap: the main endpoint scanner
+    only sees `extracted/` and so never reads PCK-internal config. Emits `endpoint`-kind
+    findings (subject = host) that flow through domain attribution + purpose enrichment + the
+    report's Endpoints section like any other endpoint; duplicates are deduped downstream.
+    """
+    hosts: dict[str, tuple[str, str]] = {}     # host -> (sample url, rel path)
+    for out_dir in out_dirs:
+        for path in sorted(out_dir.rglob("*")):
+            if len(hosts) >= _MAX_CONFIG_HOSTS:
+                break
+            if not path.is_file() or path.suffix.lower() not in _TEXT_SUFFIXES:
+                continue
+            try:
+                if path.stat().st_size > _MAX_CONFIG_BYTES:
+                    continue
+                data = path.read_bytes()
+            except OSError:
+                logger.debug("godot endpoint scan: cannot read %s", path, exc_info=True)
+                continue
+            rel = f"dumps/{path.relative_to(ws.dumps_dir).as_posix()}"
+            for host, url in harvest_urls(data):
+                if host not in hosts and len(hosts) < _MAX_CONFIG_HOSTS:
+                    hosts[host] = (url, rel)
+    out: list[Finding] = []
+    for host, (url, rel) in sorted(hosts.items()):
+        out.append(Finding(
+            kind="endpoint", subject=host, confidence=Confidence.LOW,
+            state=FindingState.PRESENT, attributes={},
+            evidence=[Evidence(description=f"URL {url}", snippet=url, tool="godot")],
+            locations=[Location(file_path=rel, domain=host)]))
+    return out
 
 
 def _config_findings(ex: Path) -> list[Finding]:

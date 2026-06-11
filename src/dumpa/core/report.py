@@ -380,6 +380,57 @@ def tracker_data_use(finding: Finding) -> str:
     return TRACKER_DATA_USE_BY_CATEGORY.get(finding.attributes.get("category", ""), "")
 
 
+# Likely purpose per tracker taxonomy (the Phase 5 SDK purpose mapping). A per-SDK
+# `purpose` rule attribute overrides this default; otherwise the category answers
+# "why does an app integrate an SDK of this kind".
+TRACKER_PURPOSE_BY_CATEGORY: dict[str, str] = {
+    "ads": "serve in-app advertising",
+    "ad mediation": "auction ad inventory across networks",
+    "ad mediation adapter": "bridge a mediator to an ad network",
+    "analytics": "measure app usage & behavior",
+    "attribution": "attribute installs & ad spend",
+    "crash reporting": "report crashes & stability",
+    "remote config": "remotely configure app behavior",
+    "push messaging": "deliver push notifications",
+    "A/B testing": "run experiments & feature flags",
+    "social login or sharing": "social sign-in & sharing",
+    "anti-fraud": "detect fraud & abuse",
+    "consent management": "collect & manage user consent",
+}
+
+# Product family per tracker subject (the Phase 5 SDK product mapping). Maps a detected
+# SDK to the marketed product it belongs to — useful where one owner ships several SDKs
+# (Google -> Firebase / AdMob / GA). A per-SDK `product` rule attribute overrides this;
+# subjects absent here fall back to the subject itself (product == SDK name).
+TRACKER_PRODUCT_BY_SUBJECT: dict[str, str] = {
+    "Firebase Analytics": "Firebase",
+    "Firebase Crashlytics": "Firebase",
+    "Firebase Cloud Messaging": "Firebase",
+    "Firebase Remote Config": "Firebase",
+    "Google Analytics": "Google Analytics",
+    "Google AdMob / Mobile Ads": "Google Mobile Ads",
+    "Google UMP": "Google User Messaging Platform",
+    "Unity LevelPlay / ironSource": "Unity LevelPlay",
+}
+
+
+def tracker_purpose(finding: Finding) -> str:
+    """A tracker finding's purpose: its `purpose` attribute, else the category default."""
+    explicit = finding.attributes.get("purpose")
+    if explicit:
+        return explicit
+    return TRACKER_PURPOSE_BY_CATEGORY.get(finding.attributes.get("category", ""), "")
+
+
+def tracker_product(finding: Finding) -> str:
+    """A tracker finding's product family: its `product` attribute, else the subject map,
+    else the subject itself (the SDK name is its own product)."""
+    explicit = finding.attributes.get("product")
+    if explicit:
+        return explicit
+    return TRACKER_PRODUCT_BY_SUBJECT.get(finding.subject, finding.subject)
+
+
 _MEDIATION_ADAPTER_KIND = "mediation-adapter"
 
 
@@ -676,12 +727,13 @@ def render_markdown(report: Report) -> str:
     data_safety = [x for x in report.findings if x.kind == "data-safety"]
     data_safety_gaps = [x for x in report.findings if x.kind == "data-safety-gap"]
     endpoints = [x for x in report.findings if x.kind == "endpoint"]
+    ip_endpoints = [x for x in report.findings if x.kind == "ip-endpoint"]
     native_libs = [x for x in report.findings if x.kind == "native"]
     native_symbols = [x for x in report.findings if x.kind == "native-symbol"]
     dexes = [x for x in report.findings if x.kind == "dex"]
     ad_id_attrs = [x for x in report.findings if x.kind == "ad-id-attribution"]
     _sectioned = ("tracker", "protection", "secret", "capability", "data-access",
-                  "data-safety", "data-safety-gap", "endpoint", "native",
+                  "data-safety", "data-safety-gap", "endpoint", "ip-endpoint", "native",
                   "native-symbol", "dex", "mediation-adapter", "ad-id-attribution")
     others = [x for x in report.findings if x.kind not in _sectioned]
 
@@ -701,10 +753,15 @@ def render_markdown(report: Report) -> str:
             lines.append(f"### {category}")
             for t in sorted(by_category[category], key=lambda x: x.subject):
                 owner = t.attributes.get("owner")
+                product = tracker_product(t)
+                purpose = tracker_purpose(t)
                 data_use = tracker_data_use(t)
                 suffix = f" — {owner}" if owner else ""
+                prod = f" ({product})" if product and product != t.subject else ""
+                why = f" — {purpose}" if purpose else ""
                 use = f" [data use: {data_use}]" if data_use else ""
-                lines.append(f"- {t.subject}{suffix}{use} (confidence: {t.confidence.value})")
+                lines.append(f"- {t.subject}{prod}{suffix}{why}{use} "
+                             f"(confidence: {t.confidence.value})")
             lines.append("")
         rollups = companies(report)
         if rollups:
@@ -790,7 +847,22 @@ def render_markdown(report: Report) -> str:
         lines.append("_none_")
     else:
         for x in sorted(endpoints, key=lambda i: i.subject):
-            lines.append(f"- {x.subject}")
+            purpose = x.attributes.get("purpose")
+            country = x.attributes.get("country")
+            asn = x.attributes.get("asn")
+            tag = f" [{purpose}]" if purpose else ""
+            geo = " — " + ", ".join(p for p in (country, asn) if p) if (country or asn) else ""
+            lines.append(f"- {x.subject}{tag}{geo}")
+    lines.append("")
+
+    lines.append("## IP endpoints")
+    if not ip_endpoints:
+        lines.append("_none_")
+    else:
+        for x in sorted(ip_endpoints, key=lambda i: i.subject):
+            scope = x.attributes.get("scope", "")
+            tag = f" [{scope}]" if scope else ""
+            lines.append(f"- {x.subject}{tag}")
     lines.append("")
 
     lines.append("## Native")
@@ -920,12 +992,13 @@ def render_html(report: Report) -> str:
     data_safety = [x for x in report.findings if x.kind == "data-safety"]
     data_safety_gaps = [x for x in report.findings if x.kind == "data-safety-gap"]
     endpoints = [x for x in report.findings if x.kind == "endpoint"]
+    ip_endpoints = [x for x in report.findings if x.kind == "ip-endpoint"]
     native_libs = [x for x in report.findings if x.kind == "native"]
     native_symbols = [x for x in report.findings if x.kind == "native-symbol"]
     dexes = [x for x in report.findings if x.kind == "dex"]
     ad_id_attrs = [x for x in report.findings if x.kind == "ad-id-attribution"]
     _sectioned = ("tracker", "protection", "secret", "capability", "data-access",
-                  "data-safety", "data-safety-gap", "endpoint", "native",
+                  "data-safety", "data-safety-gap", "endpoint", "ip-endpoint", "native",
                   "native-symbol", "dex", "mediation-adapter", "ad-id-attribution")
     others = [x for x in report.findings if x.kind not in _sectioned]
 
@@ -945,8 +1018,12 @@ def render_html(report: Report) -> str:
             out.append(f"<h3>{_h(category)}</h3><table>")
             for t in sorted(by_category[category], key=lambda x: x.subject):
                 owner = t.attributes.get("owner", "")
+                product = tracker_product(t)
+                product = "" if product == t.subject else product
+                purpose = tracker_purpose(t)
                 data_use = tracker_data_use(t)
-                out.append(f"<tr><td>{_h(t.subject)}</td><td>{_h(owner)}</td>"
+                out.append(f"<tr><td>{_h(t.subject)}</td><td>{_h(product)}</td>"
+                           f"<td>{_h(owner)}</td><td>{_h(purpose)}</td>"
                            f"<td>{_h(data_use)}</td><td>{_h(t.confidence.value)}</td></tr>")
             out.append("</table>")
         rollups = companies(report)
@@ -1018,8 +1095,23 @@ def render_html(report: Report) -> str:
         out.append('<p class="none">none</p>')
     else:
         out.append("<table>")
-        out += [f"<tr><td><code>{_h(x.subject)}</code></td></tr>"
-                for x in sorted(endpoints, key=lambda i: i.subject)]
+        for x in sorted(endpoints, key=lambda i: i.subject):
+            purpose = x.attributes.get("purpose", "")
+            country = x.attributes.get("country", "")
+            asn = x.attributes.get("asn", "")
+            geo = ", ".join(p for p in (country, asn) if p)
+            out.append(f"<tr><td><code>{_h(x.subject)}</code></td>"
+                       f"<td>{_h(purpose)}</td><td>{_h(geo)}</td></tr>")
+        out.append("</table>")
+
+    out.append("<h2>IP endpoints</h2>")
+    if not ip_endpoints:
+        out.append('<p class="none">none</p>')
+    else:
+        out.append("<table>")
+        out += [f"<tr><td><code>{_h(x.subject)}</code></td>"
+                f"<td>{_h(x.attributes.get('scope', ''))}</td></tr>"
+                for x in sorted(ip_endpoints, key=lambda i: i.subject)]
         out.append("</table>")
 
     out.append("<h2>Native</h2>")

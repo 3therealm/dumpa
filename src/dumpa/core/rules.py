@@ -254,12 +254,14 @@ def _parse_domains(raw: object, ctx: str) -> tuple[str, ...]:
 def _parse_attributes(table: dict[str, Any], ctx: str) -> dict[str, str]:
     """Collect optional tracker metadata into a string map.
 
-    `category`/`owner`/`purpose` describe a tracker; `data_use` is its likely data use
-    (the Phase 5 SDK data-use mapping); `mediator`/`network` are the endpoints of a
-    mediation-adapter edge (the Phase 5 ad-mediation graph).
+    `category`/`owner`/`product`/`purpose` describe a tracker (the SDK-owner mapping);
+    `data_use` is its likely data use (the Phase 5 SDK data-use mapping); `mediator`/
+    `network` are the endpoints of a mediation-adapter edge (the Phase 5 ad-mediation
+    graph). `product`/`purpose` default from code maps in `core.report` when a rule omits
+    them; a rule value overrides that default.
     """
     attrs: dict[str, str] = {}
-    for key in ("category", "owner", "purpose", "data_use", "mediator", "network"):
+    for key in ("category", "owner", "product", "purpose", "data_use", "mediator", "network"):
         value = table.get(key)
         if value is None:
             continue
