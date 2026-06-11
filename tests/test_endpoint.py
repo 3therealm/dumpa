@@ -118,3 +118,71 @@ def test_url_host_ip_not_double_counted_as_bare(tmp_path: Path) -> None:
     # captured once as a URL host, not again as a bare ip-endpoint
     assert "203.0.113.7" in {f.subject for f in findings if f.kind == "endpoint"}
     assert _ips(findings) == {}
+
+
+def test_bracketed_ipv6_with_port_harvested(tmp_path: Path) -> None:
+    # a globally-routable address (the 2001:db8::/32 doc range classifies as private)
+    ws = _ws(tmp_path)
+    (ws.extracted_dir / "a.txt").write_bytes(b'connect [2606:4700:4700::1111]:443 now')
+    ips = _ips(endpoint.scan(ws))
+    assert ips["2606:4700:4700::1111"].attributes["scope"] == "public"
+    assert ips["2606:4700:4700::1111"].locations[0].domain is None  # kept out of exports
+
+
+def test_bracketed_ipv6_multicast_and_linklocal(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    (ws.extracted_dir / "a.txt").write_bytes(b'[ff02::1] and [fe80::1]:5353')
+    ips = _ips(endpoint.scan(ws))
+    assert ips["ff02::1"].attributes["scope"] == "multicast"
+    assert ips["fe80::1"].attributes["scope"] == "private"
+
+
+def test_bracketed_ipv6_loopback_and_unspecified_dropped(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    (ws.extracted_dir / "a.txt").write_bytes(b'[::1]:80 and [::]:80')
+    assert _ips(endpoint.scan(ws)) == {}
+
+
+def test_bare_unbracketed_ipv6_not_harvested(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    (ws.extracted_dir / "a.txt").write_bytes(b'addr 2001:db8::1 plain text')
+    assert _ips(endpoint.scan(ws)) == {}
+
+
+def test_malformed_bracket_content_ignored(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    (ws.extracted_dir / "a.txt").write_bytes(b'[gg::zz]:1 [not-an-addr]')
+    assert _ips(endpoint.scan(ws)) == {}
+
+
+def test_url_ipv6_host_not_double_counted(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    (ws.extracted_dir / "a.txt").write_bytes(b'https://[2001:db8::1]:443/path')
+    findings = endpoint.scan(ws)
+    # captured once as a URL host (canonical IPv6), not again as a bare ip-endpoint
+    assert "2001:db8::1" in {f.subject for f in findings if f.kind == "endpoint"}
+    assert _ips(findings) == {}
+
+
+def test_scan_recovers_from_transient_open_fault(tmp_path: Path, monkeypatch) -> None:
+    """A load-induced EMFILE at open() is retried, not swallowed — the host is still found."""
+    import errno
+
+    from dumpa.core import fs
+
+    ws = _ws(tmp_path)
+    (ws.extracted_dir / "config.json").write_bytes(b'{"u":"https://kept.example.com"}')
+    monkeypatch.setattr(fs.time, "sleep", lambda _s: None)
+    real_open = Path.open
+    state = {"failed": False}
+
+    def flaky_open(self, *a, **k):
+        if self.name == "config.json" and not state["failed"]:
+            state["failed"] = True
+            raise OSError(errno.EMFILE, "too many open files")
+        return real_open(self, *a, **k)
+
+    monkeypatch.setattr(Path, "open", flaky_open)
+    hosts = {f.subject for f in endpoint.scan(ws) if f.kind == "endpoint"}
+    assert state["failed"]                         # the first open really faulted
+    assert "kept.example.com" in hosts             # ...and the retry recovered the file

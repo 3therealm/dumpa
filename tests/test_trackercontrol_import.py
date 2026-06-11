@@ -63,8 +63,8 @@ def test_version_is_deterministic_for_same_data(tmp_path) -> None:
     a = trackercontrol_records_to_bundle_toml(data, fetched="2026-06-09")
     b = trackercontrol_records_to_bundle_toml(data, fetched="2030-01-01")
     # version hashes the rule body, not the fetch date -> stable across re-imports.
-    va = next(l for l in a.splitlines() if l.startswith("version"))
-    vb = next(l for l in b.splitlines() if l.startswith("version"))
+    va = next(line for line in a.splitlines() if line.startswith("version"))
+    vb = next(line for line in b.splitlines() if line.startswith("version"))
     assert va == vb and "trackercontrol.1." in va
 
 

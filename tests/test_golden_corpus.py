@@ -22,14 +22,16 @@ from __future__ import annotations
 
 import json
 import os
+import zipfile
 from pathlib import Path
 
 import pytest
 from _golden import project
 
-from dumpa.commands.analyze import report_for_input
+from dumpa.commands.analyze import open_for_diff
 from dumpa.core.errors import ToolNotFoundError
 from dumpa.core.tools import build_default_registry
+from dumpa.core.workspace import Workspace
 
 # Representative, engine-diverse, mostly-small corpus apps. Each present file with
 # a committed golden is checked; missing files / missing goldens skip individually.
@@ -71,6 +73,25 @@ def _offline(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DUMPA_PLAY_LOOKUP", "0")
 
 
+def _assert_extraction_complete(ws: Workspace, name: str) -> None:
+    """Fail loudly on a partial extraction before the findings diff runs.
+
+    `safe_extract_zip` writes every non-directory entry of `app.apk` into `extracted/`
+    or raises — so a complete run has `extracted file count == app.apk entry count`. A
+    transient I/O fault under load can leave fewer files, which would otherwise surface as
+    a confusing *findings* diff (a scanner silently saw fewer inputs). Asserting the
+    invariant first turns that into an unambiguous "partial extraction, re-run" signal,
+    keeping the findings assertion meaningful only for real regressions.
+    """
+    with zipfile.ZipFile(ws.app_apk) as z:
+        expected = sum(1 for zi in z.infolist() if not zi.is_dir())
+    actual = sum(1 for p in ws.extracted_dir.rglob("*") if p.is_file())
+    assert actual == expected, (
+        f"{name}: extracted {actual}/{expected} files from app.apk — partial/bad extraction "
+        f"(likely a transient I/O fault under load), not a findings regression; re-run."
+    )
+
+
 @pytest.mark.parametrize("name", CANDIDATES)
 def test_corpus_app_matches_golden(name: str) -> None:
     app = _CORPUS / name
@@ -79,7 +100,9 @@ def test_corpus_app_matches_golden(name: str) -> None:
     if app.suffix == ".xapk" and not _apktool_available():
         pytest.skip(f"{name} is an xapk and apktool is unavailable")
 
-    snapshot = project(report_for_input(app))
+    with open_for_diff(app) as (ws, report):
+        _assert_extraction_complete(ws, name)
+        snapshot = project(report)
     golden_path = _GOLDEN_DIR / f"{name}.json"
 
     if os.environ.get("DUMPA_UPDATE_GOLDEN") == "1":

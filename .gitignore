@@ -12,6 +12,7 @@ __pycache__/
 .ruff_cache/
 .xapktoapk/
 .dumpa/
+/app-workspace/
 /dumpa.toml
 /xapktoapk.sign.properties
 

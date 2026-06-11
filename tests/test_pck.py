@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from _pck_build import build_pck, build_pck_v2_encrypted, embed_in_binary
 
+from dumpa.core import pck as pck_core
 from dumpa.core.pck import extract, find_embedded, is_encrypted, parse_at, parse_standalone
 
 _FILES = {
@@ -39,6 +41,21 @@ def test_extract_round_trips_contents(tmp_path: Path) -> None:
     assert n == len(_FILES)
     assert (out / "scenes/main.tscn").read_bytes() == _FILES["res://scenes/main.tscn"]
     assert (out / "scripts/player.gd").read_bytes() == _FILES["res://scripts/player.gd"]
+
+
+def test_extract_skips_entries_over_file_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pck = _write(tmp_path, "game.pck", build_pck({
+        "res://small.txt": b"ok",
+        "res://large.txt": b"too large",
+    }))
+    parsed = parse_standalone(pck)
+    assert parsed is not None
+    monkeypatch.setattr(pck_core, "const_max_extract_file_bytes", 4)
+    out = tmp_path / "out"
+
+    assert extract(pck, parsed, out) == 1
+    assert (out / "small.txt").read_bytes() == b"ok"
+    assert not (out / "large.txt").exists()
 
 
 def test_find_embedded_locates_offset(tmp_path: Path) -> None:

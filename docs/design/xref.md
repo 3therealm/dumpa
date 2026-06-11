@@ -68,7 +68,7 @@ class XrefProvenance:
     input_sha256: str
     built: str                  # ISO-8601 UTC (stamped by caller; no Date in core)
     layers_present: tuple[Layer, ...]
-    deferred: tuple[str, ...]   # ("cpp-demangle", "resource-enumeration")
+    deferred: tuple[str, ...]   # currently () — JNI + C++ demangle and resources all ship
 
 @dataclass(frozen=True)
 class Xref:
@@ -133,8 +133,10 @@ Algorithm:
 5. Class path `/`→`.` → dotted FQN.
 
 The CLASS join only needs the dotted class; an imperfect method parse still yields a
-correct class alias, so this is low-risk. C++ Itanium `_Z` demangling is **out of scope**
-(provenance: `cpp-demangle`).
+correct class alias, so this is low-risk. C++ Itanium `_Z` demangling is handled by
+`core/cppname.py` (same contract: class reliable, member best-effort), wired alongside the
+JNI decoder so a native C++ symbol also reads legibly and surfaces its qualified class as a
+join alias (`::`→`.`).
 
 ## 6. Layer mapping (`file_path -> Layer`)
 

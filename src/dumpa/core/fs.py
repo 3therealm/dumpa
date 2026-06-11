@@ -9,14 +9,76 @@ import platform
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Generator
+import time
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, cast
 
 logger = logging.getLogger("dumpa")
 
 const_dir_tmp = ".dumpa"
+
+# OS errors worth retrying: resource exhaustion under heavy parallel load (too many open
+# files / process-wide fd table full / out of memory) and interrupted syscalls. A read that
+# fails with one of these on a file that still exists is not a "missing file" — retrying
+# turns a load-induced fault into a correct read instead of a silently dropped scan target.
+# (Mid-read EINTR is already auto-retried by CPython per PEP 475; EMFILE/ENFILE strike at
+# open() time, which is the case this guards.)
+_TRANSIENT_ERRNOS = frozenset({
+    errno.EMFILE, errno.ENFILE, errno.ENOMEM, errno.EINTR, errno.EAGAIN,
+})
+_RETRY_ATTEMPTS = 3
+_RETRY_BASE_DELAY = 0.05
+
+
+def is_transient_oserror(exc: OSError) -> bool:
+    """True for OS errors worth retrying (resource exhaustion / interrupted syscall)."""
+    return exc.errno in _TRANSIENT_ERRNOS
+
+
+def retry_on_transient[T](fn: Callable[[], T], *, attempts: int = _RETRY_ATTEMPTS,
+                          base_delay: float = _RETRY_BASE_DELAY) -> T:
+    """Call `fn`, retrying transient OS errors with a short linear backoff.
+
+    Re-raises a non-transient OSError immediately (e.g. ENOENT/EACCES — retrying would not
+    help) and re-raises the last transient error once `attempts` are exhausted. Lets a caller
+    recover from a load-induced EMFILE/ENFILE fault instead of treating it as a permanent
+    failure and silently dropping the file.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn()
+        except OSError as exc:
+            if attempt >= attempts or not is_transient_oserror(exc):
+                raise
+            err_no = exc.errno
+            err_name = errno.errorcode.get(err_no, err_no) if err_no is not None else "unknown"
+            logger.debug("transient OS error (%s), retry %d/%d",
+                         err_name, attempt, attempts)
+            time.sleep(base_delay * attempt)
+    raise AssertionError("unreachable")  # loop returns or raises on the last attempt
+
+
+@contextmanager
+def open_resilient(path: Path, mode: str = "rb") -> Generator[BinaryIO]:
+    """Open `path`, retrying a transient OS error at open() time, and always close it.
+
+    The open is the point a load-induced EMFILE/ENFILE strikes (no free fd to hand out), so
+    retrying just the open recovers the common case without re-running any partial read.
+    Non-transient errors (missing file, permission) propagate to the caller unchanged.
+    """
+    handle = retry_on_transient(lambda: cast(BinaryIO, path.open(mode)))
+    try:
+        yield handle
+    finally:
+        handle.close()
+
+
+def read_bytes_resilient(path: Path) -> bytes:
+    """Read a whole file, retrying a transient OS error at open() time (see `open_resilient`)."""
+    with open_resilient(path) as f:
+        return f.read()
 
 
 def is_windows() -> bool:

@@ -12,13 +12,17 @@ import zipfile
 from pathlib import Path
 
 from dumpa.commands.analyze import input_type
-from dumpa.convert.classify import get_apks_of_type, get_main_apk
+from dumpa.convert.classify import config_token, get_apks_of_type, get_main_apk
 from dumpa.convert.models import (
     const_file_xapk_manifest,
     const_file_xapk_manifest_key_package_name,
     const_split_apk_type_arch,
 )
-from dumpa.convert.pipeline import load_xapk_manifest, phase_classify_splits
+from dumpa.convert.pipeline import (
+    load_xapk_manifest,
+    phase_classify_splits,
+    phase_extract_apks,
+)
 from dumpa.core.archive import safe_extract_zip
 from dumpa.core.config import (
     const_default_validation_timeout,
@@ -47,20 +51,33 @@ def _validation_timeout() -> int:
 
 
 def _abi_of_arch_split(file_name: str) -> str | None:
-    """config.<arch>.apk -> canonical ABI label, or None if the name has no config part."""
-    parts = Path(file_name).stem.split('.')
-    if len(parts) < 2:
+    """Arch split file name -> canonical ABI label, or None if it has no config token."""
+    token = config_token(file_name)
+    if token is None:
         return None
-    name = parts[1]
-    return _ARCH_SPLIT_TO_ABI.get(name, name.replace('_', '-'))
+    return _ARCH_SPLIT_TO_ABI.get(token, token.replace('_', '-'))
 
 
-def _xapk_probe_target(xapk_abs: Path, tmp: Path) -> tuple[Path, tuple[str, ...]]:
+def _xapk_probe_target(xapk_abs: Path, tmp: Path) -> tuple[Path, tuple[str, ...] | None]:
     """Extract the xapk, return (base/main apk path, ABIs from arch splits)."""
     safe_extract_zip(xapk_abs, tmp)
     manifest = load_xapk_manifest(tmp / const_file_xapk_manifest)
     package = manifest[const_file_xapk_manifest_key_package_name]
     parts = phase_classify_splits(tmp, package)
+    main = get_main_apk(parts)
+    abis = tuple(
+        abi for p in get_apks_of_type(parts, const_split_apk_type_arch)
+        if (abi := _abi_of_arch_split(p.file_name)) is not None
+    )
+    return main.file_path, abis
+
+
+def _apks_probe_target(apks_abs: Path, tmp: Path) -> tuple[Path, tuple[str, ...] | None]:
+    """Extract a .apks, return (probe apk, ABIs). A universal/standalone bundle has no splits."""
+    mode, location = phase_extract_apks(apks_abs, tmp)
+    if mode == "single":
+        return location, None
+    parts = phase_classify_splits(location, "")
     main = get_main_apk(parts)
     abis = tuple(
         abi for p in get_apks_of_type(parts, const_split_apk_type_arch)
@@ -127,7 +144,7 @@ def _print_info(input_abs: Path, in_type: str, badging: aapt.BadgingInfo,
 
 
 def info(input_file: Path) -> None:
-    """Print fast triage facts for an APK or XAPK."""
+    """Print fast triage facts for an APK, XAPK, or APKS."""
     config = load_config()
     registry = build_default_registry(config.tool_paths)
     input_abs = input_file.resolve()
@@ -136,6 +153,8 @@ def info(input_file: Path) -> None:
     with working_tmp_dir(input_abs.parent) as tmp:
         if in_type == "xapk":
             probe_apk, abis_override = _xapk_probe_target(input_abs, tmp)
+        elif in_type == "apks":
+            probe_apk, abis_override = _apks_probe_target(input_abs, tmp)
         else:
             probe_apk, abis_override = input_abs, None
         badging = _read_badging(registry, probe_apk)

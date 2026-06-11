@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from dumpa.core.abi import ARCH_PREFERENCE as _ARCH_PREFERENCE
 from dumpa.core.errors import DumpaError
 from dumpa.core.tools import ResolvedTool
 
@@ -24,8 +25,7 @@ def _empty_artifacts() -> dict[str, Path]:
 
 _METADATA_NAME = 'global-metadata.dat'
 _BINARY_NAME = 'libil2cpp.so'
-# Preference when an apk ships multiple ABIs and the user did not pin one.
-_ARCH_PREFERENCE = ('arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86')
+# ABI preference (shared with native_r2): see core.abi.ARCH_PREFERENCE.
 
 
 @dataclass(frozen=True)

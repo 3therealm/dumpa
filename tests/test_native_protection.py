@@ -74,7 +74,28 @@ def test_enrich_backfills_native_rva(tmp_path: Path) -> None:
     finding = Finding(kind="protection", subject="marker", confidence=Confidence.HIGH,
                       locations=[Location(file_path=rel, file_offset=payload_off)])
     out = enrich_native_rvas([finding], ws)
-    assert out[0].locations[0].rva == LOAD_VADDR_BASE + payload_off
+    loc = out[0].locations[0]
+    assert loc.rva == LOAD_VADDR_BASE + payload_off
+    assert loc.native_section == ".text"     # payload lands in the allocated .text section
+
+
+def test_enrich_backfills_native_symbol(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    (ws.extracted_dir / "lib" / "arm64-v8a").mkdir(parents=True)
+    # First build to learn the payload's file offset, then rebuild with a symbol whose
+    # span covers that offset's RVA so symbol_at_rva resolves.
+    _, payload_off = build_elf(payload=b"X" * 32)
+    rva = LOAD_VADDR_BASE + payload_off
+    data, _ = build_elf(payload=b"X" * 32, exports=(("track_init", rva, 32),))
+    (ws.extracted_dir / "lib" / "arm64-v8a" / "libt.so").write_bytes(data)
+    rel = "lib/arm64-v8a/libt.so"
+    finding = Finding(kind="tracker", subject="sdk", confidence=Confidence.MEDIUM,
+                      locations=[Location(file_path=rel, file_offset=payload_off)])
+    out = enrich_native_rvas([finding], ws)
+    loc = out[0].locations[0]
+    assert loc.rva == rva
+    assert loc.native_section == ".text"
+    assert loc.native_symbol == "track_init"
 
 
 def test_enrich_leaves_non_lib_findings(tmp_path: Path) -> None:

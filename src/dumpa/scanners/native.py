@@ -8,7 +8,8 @@ offset-located findings are backfilled separately in `scanners.enrich_native_rva
 
 It also emits a per-library grouped printable-string dump (a `native-strings` finding +
 a sidecar under `dumps/native-strings/`), streamed so a hundreds-of-MB `.so` is never
-loaded whole. Suspicious-region mapping and radare2-backed scanning remain future work.
+loaded whole. Entropy/region mapping and the radare2 function inventory live in the
+opt-in `scanners/native_r2.py` (run via `scan-native --tool radare2` / `analyze --r2`).
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import struct
 from pathlib import Path
 
 from dumpa.core.elf import ElfFile, parse_elf
+from dumpa.core.fs import open_resilient
 from dumpa.core.report import Confidence, Evidence, Finding, FindingState, Location
 from dumpa.core.workspace import Workspace
 
@@ -51,7 +53,7 @@ _MACHINES = {
 def _read_elf(path: Path) -> tuple[str, str] | None:
     """Return (bitness, machine) from an ELF header, or None if not a valid ELF."""
     try:
-        with path.open("rb") as f:
+        with open_resilient(path) as f:
             head = f.read(20)
     except OSError:
         return None
@@ -108,7 +110,7 @@ def _extract_strings(path: Path) -> tuple[list[tuple[int, str]], bool]:
             return
         seen[text] = offset
 
-    with path.open("rb") as f:
+    with open_resilient(path) as f:
         tail = b""
         base = 0
         while True:

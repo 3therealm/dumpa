@@ -11,8 +11,8 @@
 # and finds tools on $PATH. Environment variables (DUMPA_*) OVERRIDE file values, so
 # the file is for stable defaults and env is for per-run / secret overrides.
 #
-# Only [signing], [tools], and [il2cpp] are read from this file. The operational
-# knobs at the bottom are environment-only (documented here for reference).
+# [signing], [tools], [il2cpp], [analysis], and [cocos] are read from this file. The
+# operational knobs at the bottom are environment-only (documented here for reference).
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -63,6 +63,18 @@
 #
 # Env equivalent (overrides the above): DUMPA_IL2CPP_ENGINE
 # Per-run override: dumpa dump-il2cpp <apk> --engine inspector
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [cocos] — caller-supplied Cocos2d-x script decryption key.
+# ─────────────────────────────────────────────────────────────────────────────
+# Tried before dumpa's heuristic recovery from the native lib, and still confirmed
+# by trial-decrypt (a wrong key is ignored, nothing is written). Bare value = ASCII
+# key; prefix with `hex:` or `0x` to supply raw key bytes.
+# [cocos]
+# key = "2dxLua...your-key"      # or: key = "hex:32647858..."
+#
+# Env equivalent (overrides the above): DUMPA_COCOS_KEY
 
 
 # ─────────────────────────────────────────────────────────────────────────────

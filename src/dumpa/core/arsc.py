@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dumpa.core.errors import ArscError, ResChunkError
+from dumpa.core.fs import read_bytes_resilient
 from dumpa.core.respool import decode_string_pool, decode_string_pool_with_spans, u16, u32
 
 # Chunk types (ResChunk_header.type).
@@ -50,6 +51,8 @@ _ENTRY_FLAG_COMPACT = 0x0008
 _RES_VALUE_STRING = 0x03
 
 _NO_ENTRY = 0xFFFFFFFF
+_NO_ENTRY_16 = 0xFFFF       # OFFSET16 no-entry sentinel
+_MAP_REC = 12               # ResTable_map: ResTable_ref name (u32) + Res_value (8)
 
 # Defensive caps so pathological input cannot exhaust memory / time.
 _MAX_PACKAGES = 256
@@ -59,11 +62,17 @@ _MAX_ENTRIES_PER_TYPE = 1_000_000
 
 @dataclass(frozen=True)
 class ArscEntry:
-    """One resolved resource entry: its type, name, and (for strings) value + byte span."""
+    """One resolved resource entry: its type, name, and (for strings) value + byte span.
+
+    `config` is a short qualifier label (e.g. `es`, `en-US`, `d320`) for non-default
+    locale/density/screen variants, or None for the default config. A bag (string-array /
+    plurals) yields one entry per string value, its `name` suffixed `name[i]`.
+    """
     type_name: str
     name: str
     value: str | None = None
     value_offset: int | None = None      # absolute offset of the value's bytes in the file
+    config: str | None = None            # qualifier label for non-default variants
 
 
 @dataclass(frozen=True)
@@ -152,7 +161,7 @@ def parse_arsc(data: bytes) -> ArscTable:
 def parse_arsc_file(path: Path) -> ArscTable | None:
     """Parse a resources.arsc file; None on any missing/non-table/unreadable input."""
     try:
-        return parse_arsc(path.read_bytes())
+        return parse_arsc(read_bytes_resilient(path))
     except (ArscError, OSError):
         return None
 
@@ -212,47 +221,121 @@ def _parse_type(data: bytes, off: int, type_strings: list[str], key_strings: lis
         return
     if entry_count > _MAX_ENTRIES_PER_TYPE:
         return
-    # Sparse / 16-bit offset variants are rare in app tables; skip their entries safely.
-    if flags & (_TYPE_FLAG_SPARSE | _TYPE_FLAG_OFFSET16):
-        return
+    try:
+        config_size = u32(data, off + 20)        # ResTable_config.size (config struct at off+20)
+    except ResChunkError:
+        config_size = 0
+    config = _config_label(data, off + 20, config_size)
     type_name = type_strings[type_id - 1] if 1 <= type_id <= len(type_strings) else f"type{type_id}"
     offsets_at = off + header_size
     base = off + entries_start
-    for idx in range(entry_count):
+    for eo in _entry_offsets(data, offsets_at, entry_count, flags):
+        for entry, span in _parse_entry(data, base + eo, type_name, config, key_strings,
+                                        global_strings, global_spans):
+            entries.append(entry)
+            if span is not None and entry.value is not None:
+                spans.append((span[0], span[1], entry.name, entry.value))
+
+
+def _entry_offsets(data: bytes, offsets_at: int, entry_count: int, flags: int) -> Iterator[int]:
+    """Yield each present entry's byte offset (relative to entries_start) for any encoding.
+
+    Dense: u32 offsets, `0xFFFFFFFF` absent. OFFSET16: u16 offsets * 4, `0xFFFF` absent.
+    Sparse: `(u16 idx, u16 offset)` records, offset * 4, only present entries listed.
+    """
+    if flags & _TYPE_FLAG_SPARSE:
+        for idx in range(entry_count):
+            try:
+                eo = u16(data, offsets_at + idx * 4 + 2)
+            except ResChunkError:
+                return
+            yield eo * 4
+    elif flags & _TYPE_FLAG_OFFSET16:
+        for idx in range(entry_count):
+            try:
+                eo = u16(data, offsets_at + idx * 2)
+            except ResChunkError:
+                return
+            if eo != _NO_ENTRY_16:
+                yield eo * 4
+    else:
+        for idx in range(entry_count):
+            try:
+                eo = u32(data, offsets_at + idx * 4)
+            except ResChunkError:
+                return
+            if eo != _NO_ENTRY:
+                yield eo
+
+
+def _config_label(data: bytes, cfg_off: int, cfg_size: int) -> str | None:
+    """Short qualifier for a ResTable_config; None for the default (all-zero) config.
+
+    Decodes locale (language/country) and density when present; otherwise falls back to a
+    hex digest so distinct variants stay distinguishable rather than silently collapsed.
+    Full best-match precedence (which variant wins for a device) is intentionally not done.
+    """
+    if cfg_size < 8:
+        return None
+    body = data[cfg_off + 4:min(cfg_off + cfg_size, len(data))]   # bytes after the size word
+    if not any(body):
+        return None
+    parts: list[str] = []
+    if cfg_off + 12 <= len(data):
+        loc = _locale_str(data[cfg_off + 8:cfg_off + 10], data[cfg_off + 10:cfg_off + 12])
+        if loc:
+            parts.append(loc)
+    if cfg_off + 16 <= len(data):
         try:
-            eo = u32(data, offsets_at + idx * 4)
+            density = u16(data, cfg_off + 14)
         except ResChunkError:
-            break
-        if eo == _NO_ENTRY:
-            continue
-        resolved = _parse_entry(data, base + eo, type_name, key_strings,
-                                global_strings, global_spans)
-        if resolved is None:
-            continue
-        entry, span = resolved
-        entries.append(entry)
-        if span is not None and entry.value is not None:
-            spans.append((span[0], span[1], entry.name, entry.value))
+            density = 0
+        if density:
+            parts.append(f"d{density}")
+    return "-".join(parts) if parts else "cfg" + body.hex()[:8]
 
 
-def _parse_entry(data: bytes, entry_off: int, type_name: str, key_strings: list[str],
-                 global_strings: list[str], global_spans: list[tuple[int, int]],
-                 ) -> tuple[ArscEntry, tuple[int, int] | None] | None:
-    """Decode one ResTable_entry (+ trailing Res_value); return (entry, value byte span)."""
+def _locale_str(lang: bytes, country: bytes) -> str:
+    """ASCII locale (`en`, `en-US`) from packed language/country bytes; '' if absent/packed."""
+    def dec(b: bytes) -> str:
+        if len(b) < 2 or b == b"\x00\x00" or b[0] & 0x80:   # absent, or base-31 3-letter code
+            return ""
+        return bytes(c for c in b if c).decode("ascii", "ignore")
+    lo, co = dec(lang), dec(country)
+    return f"{lo}-{co}" if lo and co else (lo or co)
+
+
+def _parse_entry(data: bytes, entry_off: int, type_name: str, config: str | None,
+                 key_strings: list[str], global_strings: list[str],
+                 global_spans: list[tuple[int, int]],
+                 ) -> list[tuple[ArscEntry, tuple[int, int] | None]]:
+    """Decode one ResTable_entry; return 0..n (entry, value byte span) — n>1 only for bags."""
     try:
         entry_size = u16(data, entry_off)
         entry_flags = u16(data, entry_off + 2)
         key_idx = u32(data, entry_off + 4)
     except ResChunkError:
-        return None
+        return []
     name = key_strings[key_idx] if 0 <= key_idx < len(key_strings) else ""
     if not name:
-        return None
-    bare = ArscEntry(type_name=type_name, name=name)
-    # Complex (bag/array) and compact entries carry no flat Res_value we resolve here.
-    if entry_flags & (_ENTRY_FLAG_COMPLEX | _ENTRY_FLAG_COMPACT):
-        return (bare, None)
-    value_off = entry_off + entry_size
+        return []
+    bare = ArscEntry(type_name=type_name, name=name, config=config)
+    # Complex bags (arrays/styles/plurals): flatten their string-typed map values.
+    if entry_flags & _ENTRY_FLAG_COMPLEX:
+        return _parse_bag(data, entry_off, entry_size, type_name, name, config,
+                          global_strings, global_spans)
+    # Compact entries pack the value in the header differently; keep them name-only for now.
+    if entry_flags & _ENTRY_FLAG_COMPACT:
+        return [(bare, None)]
+    return [_resolve_value(data, entry_off + entry_size, type_name, name, config,
+                           global_strings, global_spans)]
+
+
+def _resolve_value(data: bytes, value_off: int, type_name: str, name: str, config: str | None,
+                   global_strings: list[str], global_spans: list[tuple[int, int]],
+                   ) -> tuple[ArscEntry, tuple[int, int] | None]:
+    """Resolve one Res_value at `value_off`; a pooled string yields value + span, else bare."""
+    bare = ArscEntry(type_name=type_name, name=name, config=config)
     try:
         data_type = data[value_off + 3]
         data_val = u32(data, value_off + 4)
@@ -261,6 +344,29 @@ def _parse_entry(data: bytes, entry_off: int, type_name: str, key_strings: list[
     if data_type != _RES_VALUE_STRING or not (0 <= data_val < len(global_strings)):
         return (bare, None)
     span = global_spans[data_val] if data_val < len(global_spans) else None
-    entry = ArscEntry(type_name=type_name, name=name, value=global_strings[data_val],
+    entry = ArscEntry(type_name=type_name, name=name, config=config,
+                      value=global_strings[data_val],
                       value_offset=span[0] if span is not None else None)
     return (entry, span)
+
+
+def _parse_bag(data: bytes, entry_off: int, entry_size: int, type_name: str, name: str,
+               config: str | None, global_strings: list[str],
+               global_spans: list[tuple[int, int]],
+               ) -> list[tuple[ArscEntry, tuple[int, int] | None]]:
+    """Flatten a ResTable_map_entry's string-typed values into per-index `name[i]` entries."""
+    try:
+        count = u32(data, entry_off + 12)         # parent: u32 @ +8, count: u32 @ +12
+    except ResChunkError:
+        return [(ArscEntry(type_name=type_name, name=name, config=config), None)]
+    maps_at = entry_off + entry_size              # ResTable_map records follow the entry header
+    results: list[tuple[ArscEntry, tuple[int, int] | None]] = []
+    for i in range(min(count, _MAX_ENTRIES_PER_TYPE)):
+        entry, span = _resolve_value(data, maps_at + i * _MAP_REC + 4, type_name,
+                                     f"{name}[{len(results)}]", config,
+                                     global_strings, global_spans)
+        if entry.value is not None:
+            results.append((entry, span))
+    if not results:
+        return [(ArscEntry(type_name=type_name, name=name, config=config), None)]
+    return results

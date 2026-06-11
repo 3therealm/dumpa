@@ -10,9 +10,9 @@
 
 [bundle]
 name = "engines"
-version = "2026.06.1"
+version = "2026.06.2"
 source = "dumpa built-in"
-updated = "2026-06-06"
+updated = "2026-06-10"
 
 [[rule]]
 kind = "engine"
@@ -42,7 +42,10 @@ kind = "engine"
 subject = "Unreal Engine"
 confidence = "high"
 match = "any"
-globs = ["lib/*/libUE4.so", "lib/*/libUnreal.so", "lib/*/libUE*.so"]
+# Native runtime, or a packaged container (UE4 .pak / UE5 IoStore .utoc/.ucas, or a Paks/ dir)
+# so a pak-only split / asset-pack still flags Unreal.
+globs = ["lib/*/libUE4.so", "lib/*/libUnreal.so", "lib/*/libUE*.so",
+         "**/*.pak", "**/*.utoc", "**/*.ucas", "**/Paks/**"]
 
 [[rule]]
 kind = "engine"
@@ -131,7 +134,7 @@ manifest_field = "component"
 
 [[rule]]
 kind = "engine"
-subject = "Unreal"
+subject = "Unreal Engine"
 confidence = "high"
 manifest = ['^com\.epicgames\.']
 manifest_field = "component"

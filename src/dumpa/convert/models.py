@@ -10,10 +10,16 @@ from pathlib import Path
 const_file_target_file = "target"
 const_ext_apk = ".apk"
 const_ext_xapk = ".xapk"
+const_ext_apks = ".apks"
 const_ext_zip = ".zip"
 
 const_file_xapk_manifest = "manifest.json"
 const_file_xapk_manifest_key_package_name = "package_name"
+
+# .apks (bundletool / `bundletool build-apks`) layout markers.
+const_apks_file_universal = "universal.apk"
+const_apks_dir_splits = "splits"
+const_apks_dir_standalones = "standalones"
 
 const_prefix_apk_split_type_config = "config"
 const_suffix_apk_split_type_dpi = "dpi"

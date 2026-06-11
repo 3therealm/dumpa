@@ -7,8 +7,9 @@ external-tool imports, so it sits at the bottom of the dependency graph. The bui
 that fills a report from a real apk lives in `dumpa.reporting`.
 
 A `Finding` carries a kind, a subject, a confidence, an evidence list, and
-zero-or-more locations (a native RVA, a file offset, a DEX class/method, a manifest
-entry, an asset path, or a domain) — whichever apply to that kind of finding.
+zero-or-more locations (a native RVA, a file offset, a DEX class/method, an ELF
+section/symbol, a manifest entry, an asset path, or a domain) — whichever apply to that
+kind of finding.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
-const_report_schema_version = 1
+const_report_schema_version = 2
 
 
 class Confidence(enum.StrEnum):
@@ -74,6 +75,10 @@ class Location:
     file_path: str | None = None       # asset/lib/resource path inside the apk
     dex_class: str | None = None
     dex_method: str | None = None
+    dex_field: str | None = None        # "DefiningClass.name" — accessed/initialized field
+    dex_bytecode_offset: int | None = None   # instruction offset in 16-bit code units
+    native_section: str | None = None        # covering ELF section, e.g. ".text"/".rodata"
+    native_symbol: str | None = None         # containing symbol (demangled) in a lib/*.so
     manifest_entry: str | None = None
     domain: str | None = None
 
@@ -82,6 +87,8 @@ class Location:
         for key, value in {
             "rva": self.rva, "file_offset": self.file_offset, "file_path": self.file_path,
             "dex_class": self.dex_class, "dex_method": self.dex_method,
+            "dex_field": self.dex_field, "dex_bytecode_offset": self.dex_bytecode_offset,
+            "native_section": self.native_section, "native_symbol": self.native_symbol,
             "manifest_entry": self.manifest_entry, "domain": self.domain,
         }.items():
             if value is not None:
@@ -93,8 +100,10 @@ class Location:
         return cls(
             rva=data.get("rva"), file_offset=data.get("file_offset"),
             file_path=data.get("file_path"), dex_class=data.get("dex_class"),
-            dex_method=data.get("dex_method"), manifest_entry=data.get("manifest_entry"),
-            domain=data.get("domain"),
+            dex_method=data.get("dex_method"), dex_field=data.get("dex_field"),
+            dex_bytecode_offset=data.get("dex_bytecode_offset"),
+            native_section=data.get("native_section"), native_symbol=data.get("native_symbol"),
+            manifest_entry=data.get("manifest_entry"), domain=data.get("domain"),
         )
 
 
@@ -237,6 +246,7 @@ class Report:
             "tool_versions": dict(self.tool_versions),
             "findings": [f.to_dict() for f in self.findings],
             "warnings": list(self.warnings),
+            "density": density_score(self),
         }
 
     @classmethod
@@ -336,19 +346,25 @@ def companies(report: Report) -> dict[str, CompanyRollup]:
     }
 
 
-def density_score(report: Report) -> dict[str, float]:
-    """Ad/tracker density metrics derived from the tracker findings."""
+def density_score(report: Report) -> dict[str, Any]:
+    """Ad/tracker density metrics derived from the tracker findings.
+
+    `per_engine_ad_sdks` attributes the ad-SDK count to the detected engine (one engine
+    per report, so `{engine: count}`); it is keyed so `load` can sum it across apps later.
+    """
     trackers = [f for f in report.findings if f.kind == "tracker"]
     owners = {f.attributes["owner"] for f in trackers if f.attributes.get("owner")}
     ad_sdks = [f for f in trackers if f.attributes.get("category") in _AD_CATEGORIES]
     size_mb = report.facts.input_size / (1024 * 1024)
-    out: dict[str, float] = {
+    engine = report.facts.engine or "unknown"
+    out: dict[str, Any] = {
         "trackers": len(trackers),
         "companies": len(owners),
         "ad_sdks": len(ad_sdks),
         "mediation_adapters": len([f for f in trackers
                                    if f.attributes.get("category") == _MEDIATION_CATEGORY]),
         "per_mb": round(len(trackers) / size_mb, 3) if size_mb > 0 else 0.0,
+        "per_engine_ad_sdks": {engine: len(ad_sdks)},
     }
     return out
 
@@ -745,6 +761,8 @@ def render_markdown(report: Report) -> str:
         d = density_score(report)
         lines.append(f"{int(d['trackers'])} tracker(s) from {int(d['companies'])} "
                      f"company(ies); {int(d['ad_sdks'])} ad SDK(s); {d['per_mb']} trackers/MB")
+        per_engine = ", ".join(f"{eng}: {n}" for eng, n in sorted(d["per_engine_ad_sdks"].items()))
+        lines.append(f"ad SDKs per engine — {per_engine}")
         lines.append("")
         by_category: dict[str, list[Finding]] = {}
         for t in trackers:
@@ -819,10 +837,10 @@ def render_markdown(report: Report) -> str:
             for x in sorted(by_cat[category], key=lambda i: i.subject):
                 lines.append(f"- {x.subject} ({x.state.value}, confidence: {x.confidence.value})")
             lines.append("")
-    for a in ad_id_attrs:
-        source = a.attributes.get("source", "unknown")
+    for ad_attr in ad_id_attrs:
+        source = ad_attr.attributes.get("source", "unknown")
         lines.append(f"- AD_ID likely added by: {source} "
-                     f"(confidence: {a.confidence.value})")
+                     f"(confidence: {ad_attr.confidence.value})")
         lines.append("")
 
     lines.append("## Data Safety")
@@ -847,10 +865,10 @@ def render_markdown(report: Report) -> str:
         lines.append("_none_")
     else:
         for x in sorted(endpoints, key=lambda i: i.subject):
-            purpose = x.attributes.get("purpose")
+            endpoint_purpose = x.attributes.get("purpose")
             country = x.attributes.get("country")
             asn = x.attributes.get("asn")
-            tag = f" [{purpose}]" if purpose else ""
+            tag = f" [{endpoint_purpose}]" if endpoint_purpose else ""
             geo = " — " + ", ".join(p for p in (country, asn) if p) if (country or asn) else ""
             lines.append(f"- {x.subject}{tag}{geo}")
     lines.append("")
@@ -885,10 +903,10 @@ def render_markdown(report: Report) -> str:
         lines.append("_none_")
     else:
         for dx in sorted(dexes, key=lambda i: i.subject):
-            a = dx.attributes
-            lines.append(f"- {dx.subject}: {a.get('class_count', '0')} classes, "
-                         f"{a.get('method_count', '0')} methods, "
-                         f"{a.get('field_count', '0')} fields")
+            dex_attrs = dx.attributes
+            lines.append(f"- {dx.subject}: {dex_attrs.get('class_count', '0')} classes, "
+                         f"{dex_attrs.get('method_count', '0')} methods, "
+                         f"{dex_attrs.get('field_count', '0')} fields")
     lines.append("")
 
     lines.append("## Findings")
@@ -1011,6 +1029,9 @@ def render_html(report: Report) -> str:
                    f"{int(d['trackers'])} tracker(s) from {int(d['companies'])} "
                    f"company(ies); {int(d['ad_sdks'])} ad SDK(s); "
                    f"{d['per_mb']} trackers/MB</p>")
+        per_engine = ", ".join(f"{_h(eng)}: {n}"
+                               for eng, n in sorted(d["per_engine_ad_sdks"].items()))
+        out.append(f'<p class="meta">ad SDKs per engine — {per_engine}</p>')
         by_category: dict[str, list[Finding]] = {}
         for t in trackers:
             by_category.setdefault(t.attributes.get("category", "uncategorized"), []).append(t)
@@ -1136,10 +1157,10 @@ def render_html(report: Report) -> str:
     else:
         out.append("<table>")
         for dx in sorted(dexes, key=lambda i: i.subject):
-            a = dx.attributes
-            detail = (f"{a.get('class_count', '0')} classes, "
-                      f"{a.get('method_count', '0')} methods, "
-                      f"{a.get('field_count', '0')} fields")
+            dex_attrs = dx.attributes
+            detail = (f"{dex_attrs.get('class_count', '0')} classes, "
+                      f"{dex_attrs.get('method_count', '0')} methods, "
+                      f"{dex_attrs.get('field_count', '0')} fields")
             out.append(f"<tr><td><code>{_h(dx.subject)}</code></td><td>{_h(detail)}</td></tr>")
         out.append("</table>")
 

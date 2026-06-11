@@ -27,7 +27,7 @@ from dumpa.core.privacy_compare import compare, resolve_disclosure
 from dumpa.core.report import AppFacts, Report
 from dumpa.core.tools import ToolRegistry
 from dumpa.core.workspace import Workspace
-from dumpa.scanners import game_types, primary_engine, run_all
+from dumpa.scanners import game_types, primary_engine, run_all, stamp_provenance
 from dumpa.tools import aapt, apksigner
 
 logger = logging.getLogger("dumpa")
@@ -62,11 +62,13 @@ def _read_signer(registry: ToolRegistry, ws: Workspace) -> apksigner.SignerInfo 
     return apksigner.parse_verify_output(out)
 
 
-def build_report(registry: ToolRegistry, ws: Workspace, *, use_cache: bool = True) -> Report:
+def build_report(registry: ToolRegistry, ws: Workspace, *, use_cache: bool = True,
+                 extra: tuple[str, ...] | None = None) -> Report:
     """Assemble the unified Report for a populated workspace.
 
     Scanner findings are served from the per-scanner content-hash cache when available;
-    pass use_cache=False to force a fresh scan (the `--no-cache` path).
+    pass use_cache=False to force a fresh scan (the `--no-cache` path). `extra` names
+    opt-in scanners to append; omitted means use the workspace marker.
     """
     meta = ws.read_meta()
     if meta is None:
@@ -81,7 +83,12 @@ def build_report(registry: ToolRegistry, ws: Workspace, *, use_cache: bool = Tru
     # failed (and the only source for ABIs, which live in the native-code listing).
     permissions = list(manifest.permissions) if manifest else list(badging.permissions)
 
-    findings = run_all(ws, use_cache=use_cache)
+    findings = run_all(
+        ws,
+        use_cache=use_cache,
+        extra=meta.optional_scanners if extra is None else extra,
+        registry=registry,
+    )
     findings.extend(permission_findings(permissions))
     # AD_ID merge attribution needs the capability findings just appended plus the tracker
     # findings from run_all, so it runs here rather than as a scanner.
@@ -104,6 +111,11 @@ def build_report(registry: ToolRegistry, ws: Workspace, *, use_cache: bool = Tru
         findings = enrich_asn_geo(findings, ws, allow_network=analysis.asn_lookup,
                                   timeout=analysis.play_timeout,
                                   ttl_days=const_asn_ttl_days)
+
+    # Final pass: stamp the dumpa version onto any Evidence still missing a rule_version, so
+    # every finding (scanner, enrichment, or post-pass) carries a reproducible producing
+    # version. Runs last to catch evidence added at every stage above.
+    findings = stamp_provenance(findings)
 
     facts = AppFacts(
         input_sha256=meta.input_sha256,

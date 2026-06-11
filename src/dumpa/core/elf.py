@@ -21,7 +21,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
+from dumpa.core.cppname import demangle_cpp
 from dumpa.core.errors import ElfError
+from dumpa.core.fs import open_resilient
 
 logger = logging.getLogger("dumpa")
 
@@ -36,6 +38,7 @@ _MACHINES = {
 }
 
 # sh_type
+_SHT_NOBITS = 8         # occupies no file space (.bss); its sh_offset is not real content
 _SHT_SYMTAB = 2
 _SHT_DYNSYM = 11
 # p_type
@@ -100,6 +103,39 @@ class ElfFile:
                 return p_vaddr + (offset - p_offset)
         return None
 
+    def section_at(self, offset: int) -> str | None:
+        """Name of the allocated section whose file range covers a file offset, or None.
+
+        Skips `.bss`-style SHT_NOBITS sections (no real file content) and unallocated
+        sections (sh_addr == 0). When several cover the offset, the tightest wins.
+        """
+        best: Section | None = None
+        for sec in self.sections:
+            if (sec.type == _SHT_NOBITS or sec.addr == 0 or sec.size == 0
+                    or not (sec.offset <= offset < sec.offset + sec.size)):
+                continue
+            if best is None or sec.size < best.size:
+                best = sec
+        return best.name if best is not None and best.name else None
+
+    def symbol_at_rva(self, rva: int) -> str | None:
+        """Name of the defined sized symbol whose span covers an RVA, or None.
+
+        Only defined symbols with a non-zero size are considered. C++ symbols are
+        demangled to their qualified name (matching `core/xref.py`); others pass through.
+        """
+        best: Symbol | None = None
+        for sym in self.symbols:
+            if (not sym.defined or sym.size <= 0
+                    or not (sym.value <= rva < sym.value + sym.size)):
+                continue
+            if best is None or sym.size < best.size:
+                best = sym
+        if best is None:
+            return None
+        cpp = demangle_cpp(best.name)
+        return cpp.qualified if cpp is not None else best.name
+
 
 def _read_at(f: BinaryIO, offset: int, size: int) -> bytes:
     f.seek(offset)
@@ -121,7 +157,7 @@ def _cstr(blob: bytes, offset: int) -> str:
 def parse_elf(path: Path) -> ElfFile | None:
     """Parse an ELF shared object. Returns None on any non-ELF/malformed/truncated input."""
     try:
-        with path.open("rb") as f:
+        with open_resilient(path) as f:
             return _parse(f)
     except (ElfError, OSError, struct.error):
         logger.debug("ELF parse failed for %s", path, exc_info=True)

@@ -14,6 +14,7 @@ import platform
 from dataclasses import dataclass
 from pathlib import Path
 
+from dumpa.core import unityasset
 from dumpa.core.config import Config, load_config
 from dumpa.core.errors import ConfigError, ToolExecutionError, ToolTimeoutError
 from dumpa.core.process import run
@@ -82,6 +83,7 @@ def _full_checks(config: Config, registry: ToolRegistry) -> list[EnvCheck]:
         _check_signing(config),
         _check_rule_bundles(),
         _check_signature_db(),
+        _check_unitypy(),
     ]
 
 
@@ -146,3 +148,11 @@ def _check_signature_db() -> EnvCheck:
     if not versions:
         return EnvCheck("signature db", "warn", "no bundles")
     return EnvCheck("signature db", "info", ", ".join(versions))
+
+
+def _check_unitypy() -> EnvCheck:
+    """UnityPy powers Unity serialized-asset parsing; optional (pip install dumpa[unity])."""
+    if not unityasset.available():
+        return EnvCheck("unitypy", "info", "not installed (Unity asset parsing disabled; "
+                        "pip install dumpa[unity])")
+    return EnvCheck("unitypy", "info", unityasset.unitypy_version() or "installed")

@@ -12,14 +12,18 @@ import dataclasses
 from collections.abc import Callable
 from pathlib import PurePosixPath
 
+from dumpa import __version__
 from dumpa.core import cache
 from dumpa.core.arsc import ArscTable, parse_arsc_file
+from dumpa.core.config import load_config
 from dumpa.core.dex import DexFile, parse_dex
 from dumpa.core.domains import DomainOwner, build_domain_table
 from dumpa.core.elf import ElfFile, parse_elf
 from dumpa.core.endpoints import load_endpoint_rules
+from dumpa.core.errors import DumpaError, ToolNotFoundError
 from dumpa.core.report import Confidence, Evidence, Finding, Location
 from dumpa.core.rules import load_builtin
+from dumpa.core.tools import ToolRegistry, build_default_registry
 from dumpa.core.workspace import Workspace, WorkspaceMeta
 from dumpa.scanners import (
     cocos,
@@ -32,14 +36,18 @@ from dumpa.scanners import (
     manifest_privacy,
     mediation,
     native,
+    native_r2,
+    native_symbols,
     privacy,
     protection,
+    protobuf,
     resources,
     secret,
     tracker,
     unity,
     unity_assets,
     unity_rules,
+    unreal,
 )
 
 Scanner = Callable[[Workspace], list[Finding]]
@@ -47,11 +55,12 @@ Scanner = Callable[[Workspace], list[Finding]]
 
 @dataclasses.dataclass(frozen=True)
 class ScannerSpec:
-    """A scanner plus the rule bundles whose versions gate its cached output."""
+    """A scanner plus the rule bundles + tools whose versions gate its cached output."""
     name: str                       # cache id, e.g. "tracker"
     fn: Scanner
     bundles: tuple[str, ...] = ()    # builtin bundle names the scanner consumes
     cacheable: bool = True           # False: always re-run (e.g. networked / TTL-driven)
+    tools: tuple[str, ...] = ()      # external tool names whose version gates the cache
 
 
 # Registration order is the run order; engine detection first so its findings exist
@@ -66,9 +75,14 @@ SCANNERS: tuple[ScannerSpec, ...] = (
     ScannerSpec("protection", protection.scan, ("protections", "protections_apkid")),
     ScannerSpec("secret", secret.scan, ("secrets",)),
     ScannerSpec("native", native.scan),
+    # native_symbols runs after native so the dumps/native/ sidecars it consumes exist.
+    ScannerSpec("native_symbols", native_symbols.scan, ("native_symbols",)),
     ScannerSpec("dex", dex.scan),
     ScannerSpec("resources", resources.scan),
     ScannerSpec("endpoint", endpoint.scan),
+    # protobuf decodes .pb-like blobs (code-only, keyed on the dumpa version) and reuses the
+    # secrets bundle, so its cache key folds in that bundle's version.
+    ScannerSpec("protobuf", protobuf.scan, ("secrets",)),
     # gametype resolves a networked, TTL-bound Play genre -> never cached (the
     # dumps/gametype.json sidecar already memoizes the fetch within a workspace).
     ScannerSpec("gametype", gametype.scan, cacheable=False),
@@ -77,12 +91,13 @@ SCANNERS: tuple[ScannerSpec, ...] = (
     ScannerSpec("dumpcs", dumpcs.scan, dumpcs.const_dumpcs_bundles, cacheable=False),
 )
 # Unity deep helpers run only when the engine scanner flagged Unity. unity_rules consumes
-# the `unity` bundle (cache-keyed on its version); unity.scan and unity_assets.scan are
-# code-only (keyed on the dumpa version).
+# the `unity` bundle (cache-keyed on its version); unity.scan is code-only (keyed on the
+# dumpa version). unity_assets writes TextAsset dump artifacts to dumps/unity/, so it is
+# uncached for the same reason as cocos/godot (partial output must not poison a workspace).
 UNITY_SPECS: tuple[ScannerSpec, ...] = (
     ScannerSpec("unity", unity.scan),
     ScannerSpec("unity_rules", unity_rules.scan, ("unity",)),
-    ScannerSpec("unity_assets", unity_assets.scan),
+    ScannerSpec("unity_assets", unity_assets.scan, cacheable=False),
 )
 # Cocos2d-x deep helper runs only when the engine scanner flagged Cocos2d-x. It writes
 # decrypted bundle artifacts, so keep it uncached until those sidecars are part of the key.
@@ -94,6 +109,18 @@ COCOS_SPECS: tuple[ScannerSpec, ...] = (
 GODOT_SPECS: tuple[ScannerSpec, ...] = (
     ScannerSpec("godot", godot.scan, cacheable=False),
 )
+# Unreal deep helper runs only when the engine scanner flagged Unreal Engine. It extracts
+# pak resources, so keep it uncached until those sidecars are part of the key.
+UNREAL_SPECS: tuple[ScannerSpec, ...] = (
+    ScannerSpec("unreal", unreal.scan, cacheable=False),
+)
+# Opt-in scanners: not in the always-run pipeline. native_r2 invokes radare2 (slow,
+# optional), so it runs only when requested via `analyze --r2` / `scan-native --tool
+# radare2`. It is not cached: tool absence, timeouts, and partial output should retry
+# rather than poisoning a workspace with empty findings.
+OPTIONAL_SPECS: dict[str, ScannerSpec] = {
+    "native_r2": ScannerSpec("native_r2", native_r2.scan, tools=("radare2",), cacheable=False),
+}
 
 _CONFIDENCE_RANK = {Confidence.HIGH: 3, Confidence.MEDIUM: 2, Confidence.LOW: 1}
 
@@ -105,10 +132,15 @@ def _is_lib_so(rel: str) -> bool:
 
 
 def enrich_native_rvas(findings: list[Finding], ws: Workspace) -> list[Finding]:
-    """Backfill Location.rva on any finding located by file offset inside a lib/*.so.
+    """Backfill native ELF context on any finding located by file offset in a lib/*.so.
 
     Cross-cutting pass: protection/tracker/secret findings carry a file offset but no
-    RVA; map each through the covering PT_LOAD segment. Each library is parsed once.
+    ELF context. Map each offset through the parsed library to:
+      * its virtual address (via the covering PT_LOAD segment);
+      * the covering ELF section (`section_at`);
+      * the containing defined symbol (`symbol_at_rva`, demangled), when one covers it.
+    Each library is parsed once. A location already carrying an rva, or one that resolves
+    to nothing, passes through unchanged.
     """
     cache: dict[str, ElfFile | None] = {}
 
@@ -129,28 +161,39 @@ def enrich_native_rvas(findings: list[Finding], ws: Workspace) -> list[Finding]:
             if elf is None:
                 continue
             rva = elf.offset_to_rva(loc.file_offset)
-            if rva is None:
+            section = elf.section_at(loc.file_offset)
+            symbol = elf.symbol_at_rva(rva) if rva is not None else None
+            if rva is None and section is None and symbol is None:
                 continue
             if new_locs is None:
                 new_locs = list(finding.locations)
-            new_locs[i] = dataclasses.replace(loc, rva=rva)
+            new_locs[i] = dataclasses.replace(
+                loc, rva=rva, native_section=section, native_symbol=symbol)
         out.append(dataclasses.replace(finding, locations=new_locs)
                    if new_locs is not None else finding)
     return out
 
 
 const_dex_xref_tool = "dex-string-xref"
+dex_field_xref_tool = "dex-field-xref"
+dex_instruction_tool = "dex-instruction"
 _DEX_XREF_MAX = 8                       # cap referencers enumerated in evidence
 
 
 def enrich_dex_locations(findings: list[Finding], ws: Workspace) -> list[Finding]:
-    """Backfill Location.dex_class/.dex_method on any finding located by offset in a .dex.
+    """Backfill DEX location detail on any finding located by offset in a .dex.
 
     Twin of enrich_native_rvas: a content scanner records (file_path=<dex>, file_offset);
-    map each offset through the parsed dex to its owning class (and method, when the offset
-    lands in bytecode). Each dex is parsed once. Findings already carrying a dex_class, or
-    whose offset resolves to nothing structurally (e.g. a plain string constant), pass
-    through unchanged.
+    map each offset through the parsed dex to:
+      * its owning class, and method when the offset lands in bytecode (`locate`);
+      * for a bytecode hit, the instruction's bytecode offset + accessed field
+        (`locate_instruction`);
+      * for a string-constant hit, the method(s) that `const-string`-load it
+        (`locate_string_xref`) and the static field(s) it initializes
+        (`locate_field_init`).
+    Each dex is parsed once. Findings already carrying a dex_class, or whose offset resolves
+    to nothing, pass through unchanged. Ambiguous (multi-referencer) results are surfaced as
+    evidence rather than a single misleading owner.
     """
     cache: dict[str, DexFile | None] = {}
 
@@ -174,22 +217,39 @@ def enrich_dex_locations(findings: list[Finding], ws: Workspace) -> list[Finding
             hit = dex_file.locate(loc.file_offset)
             if hit is not None:
                 dex_class, dex_method = hit
+                updated = dataclasses.replace(loc, dex_class=dex_class, dex_method=dex_method)
+                # Code-offset hits refine to the exact instruction (bytecode offset, opcode)
+                # and, for a field-access op, the accessed field. Returns None for a
+                # descriptor-string hit, leaving the string case untouched.
+                instr = dex_file.locate_instruction(
+                    ws.extracted_dir / loc.file_path, loc.file_offset)
+                if instr is not None:
+                    updated = dataclasses.replace(
+                        updated, dex_bytecode_offset=instr.bytecode_offset,
+                        dex_field=instr.field)
+                    if instr.opcode >= 0:
+                        if new_evidence is None:
+                            new_evidence = []
+                        detail = f" accessing {instr.field}" if instr.field else ""
+                        new_evidence.append(Evidence(
+                            description=f"instruction op 0x{instr.opcode:02x} at bytecode "
+                                        f"+0x{instr.bytecode_offset:x}{detail}",
+                            tool=dex_instruction_tool))
                 if new_locs is None:
                     new_locs = list(finding.locations)
-                new_locs[i] = dataclasses.replace(loc, dex_class=dex_class,
-                                                  dex_method=dex_method)
+                new_locs[i] = updated
                 continue
             # No structural owner: the offset is in a plain string constant. Resolve the
-            # method(s) whose const-string loads it.
+            # method(s) whose const-string loads it and the static field(s) it initializes.
             refs = dex_file.locate_string_xref(loc.file_offset)
-            if not refs:
+            fields = dex_file.locate_field_init(loc.file_offset)
+            if not refs and not fields:
                 continue
+            updated = loc
             if len(refs) == 1:
                 cls, meth = refs[0]
-                if new_locs is None:
-                    new_locs = list(finding.locations)
-                new_locs[i] = dataclasses.replace(loc, dex_class=cls, dex_method=meth)
-            else:
+                updated = dataclasses.replace(updated, dex_class=cls, dex_method=meth)
+            elif len(refs) > 1:
                 # Loaded from several methods: naming one owner would mislead, so surface
                 # all referencers as evidence instead.
                 if new_evidence is None:
@@ -199,6 +259,24 @@ def enrich_dex_locations(findings: list[Finding], ws: Workspace) -> list[Finding
                 new_evidence.append(Evidence(
                     description=f"string constant loaded by {len(refs)} methods",
                     snippet=shown + more, tool=const_dex_xref_tool))
+            if len(fields) == 1:
+                desc = fields[0]
+                updated = dataclasses.replace(updated, dex_field=desc)
+                if updated.dex_class is None and "." in desc:
+                    updated = dataclasses.replace(updated, dex_class=desc.rsplit(".", 1)[0])
+            elif len(fields) > 1:
+                # Initializes several static fields (one shared constant): surface all.
+                if new_evidence is None:
+                    new_evidence = []
+                shown = ", ".join(fields[:_DEX_XREF_MAX])
+                more = "" if len(fields) <= _DEX_XREF_MAX else f" (+{len(fields) - _DEX_XREF_MAX} more)"
+                new_evidence.append(Evidence(
+                    description=f"string constant initializes {len(fields)} static fields",
+                    snippet=shown + more, tool=dex_field_xref_tool))
+            if updated is not loc:
+                if new_locs is None:
+                    new_locs = list(finding.locations)
+                new_locs[i] = updated
         if new_locs is None and new_evidence is None:
             out.append(finding)
         else:
@@ -418,16 +496,32 @@ def enrich_endpoint_purpose(findings: list[Finding], ws: Workspace) -> list[Find
     return out
 
 
-def _run_spec(ws: Workspace, spec: ScannerSpec, meta: WorkspaceMeta | None) -> list[Finding]:
+def _tool_versions(registry: ToolRegistry | None, tools: tuple[str, ...]) -> dict[str, str]:
+    """Resolve each tool's version for the cache key; 'absent' when it cannot be found."""
+    if not tools or registry is None:
+        return {}
+    out: dict[str, str] = {}
+    for name in tools:
+        try:
+            out[name] = registry.resolve(name).version or "?"
+        except ToolNotFoundError:
+            out[name] = "absent"
+    return out
+
+
+def _run_spec(ws: Workspace, spec: ScannerSpec, meta: WorkspaceMeta | None,
+              registry: ToolRegistry | None = None) -> list[Finding]:
     """Run one scanner, serving from / writing to the content-hash cache when possible.
 
     Caching is active only for a marked workspace (meta present); without it there is no
     input hash to key on, so the scanner just runs (the case for in-memory unit tests).
+    A scanner that invokes an external tool keys its cache on that tool's version too.
     """
     if meta is None or not spec.cacheable:
         return list(spec.fn(ws))
     key = cache.compute_scanner_key(
-        meta.input_sha256, {b: load_builtin(b).version for b in spec.bundles}
+        meta.input_sha256, {b: load_builtin(b).version for b in spec.bundles},
+        _tool_versions(registry, spec.tools),
     )
     cached = cache.read_scanner_cache(ws, spec.name, key)
     if cached is not None:
@@ -437,34 +531,93 @@ def _run_spec(ws: Workspace, spec: ScannerSpec, meta: WorkspaceMeta | None) -> l
     return produced
 
 
-def run_all(ws: Workspace, *, use_cache: bool = True) -> list[Finding]:
-    """Run every registered scanner over the workspace and concatenate their findings.
+def _apply_enrichments(findings: list[Finding], ws: Workspace) -> list[Finding]:
+    """Run the cross-cutting enrichment passes over an assembled finding list.
 
-    Per-scanner findings are memoized under a content-hash key (input + dumpa + rule-bundle
-    versions); pass use_cache=False to force a fresh scan. `enrich_native_rvas`,
-    `enrich_dex_locations`, `enrich_resource_names`, `enrich_domain_attribution`, and
-    `enrich_endpoint_purpose` run on the assembled list every time — cheap deterministic
-    post-passes, so they stay uncached. Domain attribution then endpoint-purpose run last so
-    they see every endpoint/tracker finding (including engine-helper-emitted endpoints).
+    Cheap deterministic post-passes, so they stay uncached. Domain attribution then
+    endpoint-purpose run last so they see every endpoint/tracker finding (including any
+    engine-helper-emitted endpoints). Shared by run_all and run_selected.
     """
-    meta = ws.read_meta() if use_cache else None
-    findings: list[Finding] = []
-    for spec in SCANNERS:
-        findings.extend(_run_spec(ws, spec, meta))
-    if any(f.kind == "engine" and f.subject == "Unity" for f in findings):
-        for spec in UNITY_SPECS:
-            findings.extend(_run_spec(ws, spec, meta))
-    if any(f.kind == "engine" and f.subject == "Cocos2d-x" for f in findings):
-        for spec in COCOS_SPECS:
-            findings.extend(_run_spec(ws, spec, meta))
-    if any(f.kind == "engine" and f.subject == "Godot" for f in findings):
-        for spec in GODOT_SPECS:
-            findings.extend(_run_spec(ws, spec, meta))
     findings = enrich_native_rvas(findings, ws)
     findings = enrich_dex_locations(findings, ws)
     findings = enrich_resource_names(findings, ws)
     findings = enrich_domain_attribution(findings, ws)
     return enrich_endpoint_purpose(findings, ws)
+
+
+def stamp_provenance(findings: list[Finding]) -> list[Finding]:
+    """Backfill a provenance version onto every Evidence that lacks one.
+
+    Rule-driven findings already record their bundle version in Evidence.rule_version;
+    code-generated scanners and enrichment passes do not. Stamp the dumpa core version on
+    those so every Evidence carries a reproducible "version of the producing logic", without
+    touching the ~30 individual call sites. Evidence/Finding are frozen, so rebuild via
+    dataclasses.replace; an evidence list with no gaps is returned unchanged.
+    """
+    out: list[Finding] = []
+    for f in findings:
+        ev = [e if e.rule_version else dataclasses.replace(e, rule_version=__version__)
+              for e in f.evidence]
+        out.append(f if ev == f.evidence else dataclasses.replace(f, evidence=ev))
+    return out
+
+
+def run_all(ws: Workspace, *, use_cache: bool = True, extra: tuple[str, ...] = (),
+            registry: ToolRegistry | None = None) -> list[Finding]:
+    """Run every registered scanner over the workspace and concatenate their findings.
+
+    Per-scanner findings are memoized under a content-hash key (input + dumpa + rule-bundle
+    versions + any tool version); pass use_cache=False to force a fresh scan. `extra` names
+    opt-in scanners from OPTIONAL_SPECS to append (e.g. "native_r2" for `analyze --r2`).
+    The `_apply_enrichments` passes run on the assembled list every time.
+    """
+    meta = ws.read_meta() if use_cache else None
+    if registry is None:
+        registry = build_default_registry(load_config().tool_paths)
+    findings: list[Finding] = []
+    for spec in SCANNERS:
+        findings.extend(_run_spec(ws, spec, meta, registry))
+    if any(f.kind == "engine" and f.subject == "Unity" for f in findings):
+        for spec in UNITY_SPECS:
+            findings.extend(_run_spec(ws, spec, meta, registry))
+    if any(f.kind == "engine" and f.subject == "Cocos2d-x" for f in findings):
+        for spec in COCOS_SPECS:
+            findings.extend(_run_spec(ws, spec, meta, registry))
+    if any(f.kind == "engine" and f.subject == "Godot" for f in findings):
+        for spec in GODOT_SPECS:
+            findings.extend(_run_spec(ws, spec, meta, registry))
+    if any(f.kind == "engine" and f.subject == "Unreal Engine" for f in findings):
+        for spec in UNREAL_SPECS:
+            findings.extend(_run_spec(ws, spec, meta, registry))
+    for name in extra:
+        optional_spec = OPTIONAL_SPECS.get(name)
+        if optional_spec is not None:
+            findings.extend(_run_spec(ws, optional_spec, meta, registry))
+    return _apply_enrichments(findings, ws)
+
+
+_SCANNERS_BY_NAME: dict[str, ScannerSpec] = {s.name: s for s in SCANNERS}
+
+
+def run_selected(ws: Workspace, names: list[str], *,
+                 registry: ToolRegistry | None = None) -> list[Finding]:
+    """Run a named subset of the registered scanners, then the shared enrichment tail.
+
+    Analysis-only (uncached, like scan-native): each named scanner runs fresh and the
+    full enrichment tail is applied. The endpoint/purpose passes are no-ops when no
+    endpoint findings exist, so a tracker- or protection-only run is safe while still
+    getting dex/RVA/resource backfill and (for trackers) owner/domain attribution.
+    Raises DumpaError for an unknown scanner name.
+    """
+    if registry is None:
+        registry = build_default_registry(load_config().tool_paths)
+    findings: list[Finding] = []
+    for name in names:
+        spec = _SCANNERS_BY_NAME.get(name)
+        if spec is None:
+            raise DumpaError(f"unknown scanner {name!r}")
+        findings.extend(spec.fn(ws))
+    return _apply_enrichments(findings, ws)
 
 
 def primary_engine(findings: list[Finding]) -> str | None:

@@ -7,8 +7,10 @@ from dumpa.commands.doctor import (
     _check_python,
     _check_rule_bundles,
     _check_signature_db,
+    _check_unitypy,
     _full_checks,
 )
+from dumpa.core import unityasset
 from dumpa.core.config import load_config
 from dumpa.core.tools import build_default_registry
 
@@ -20,7 +22,7 @@ def test_full_checks_cover_all_dimensions() -> None:
     names = {c.name for c in checks}
     assert names == {
         "python runtime", "java runtime", "android sdk",
-        "signing config", "rule bundles", "signature db",
+        "signing config", "rule bundles", "signature db", "unitypy",
     }
     assert all(isinstance(c, EnvCheck) for c in checks)
     assert all(c.status in ("ok", "warn", "info") for c in checks)
@@ -44,3 +46,15 @@ def test_signature_db_reports_versions() -> None:
     assert check.status == "info"
     # each entry is "<bundle>=<version>"
     assert "engines=" in check.detail
+
+
+def test_unitypy_check_reports_presence(monkeypatch) -> None:
+    monkeypatch.setattr(unityasset, "available", lambda: False)
+    absent = _check_unitypy()
+    assert absent.status == "info"
+    assert "not installed" in absent.detail
+
+    monkeypatch.setattr(unityasset, "available", lambda: True)
+    monkeypatch.setattr(unityasset, "unitypy_version", lambda: "1.25.0")
+    present = _check_unitypy()
+    assert present.detail == "1.25.0"

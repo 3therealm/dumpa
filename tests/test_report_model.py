@@ -100,11 +100,31 @@ def test_density_score() -> None:
     assert d["companies"] == 2
     assert d["ad_sdks"] == 1
     assert d["per_mb"] == 1.0
+    assert d["per_engine_ad_sdks"] == {"unknown": 1}
 
 
 def test_location_omits_none() -> None:
     loc = Location(domain="x.com")
     assert loc.to_dict() == {"domain": "x.com"}
+
+
+def test_location_dex_field_round_trip() -> None:
+    loc = Location(file_path="classes.dex", file_offset=42, dex_class="com.x.A",
+                   dex_method="foo", dex_field="com.x.A.KEY", dex_bytecode_offset=3)
+    restored = Location.from_dict(loc.to_dict())
+    assert restored == loc
+    assert restored.dex_field == "com.x.A.KEY"
+    assert restored.dex_bytecode_offset == 3
+
+
+def test_location_native_fields_round_trip() -> None:
+    loc = Location(file_path="lib/arm64-v8a/libt.so", file_offset=120, rva=0x10078,
+                   native_section=".text", native_symbol="Foo::Bar::baz")
+    restored = Location.from_dict(loc.to_dict())
+    assert restored == loc
+    assert restored.native_section == ".text"
+    assert restored.native_symbol == "Foo::Bar::baz"
+    assert "native_section" in loc.to_dict() and "native_symbol" in loc.to_dict()
 
 
 def test_evidence_omits_none() -> None:
@@ -113,7 +133,13 @@ def test_evidence_omits_none() -> None:
 
 
 def test_schema_version_default() -> None:
-    assert _sample().to_dict()["schema_version"] == 1
+    assert _sample().to_dict()["schema_version"] == 2
+
+
+def test_to_dict_persists_density() -> None:
+    d = _sample().to_dict()["density"]
+    assert "per_engine_ad_sdks" in d
+    assert "per_mb" in d
 
 
 def test_markdown_renders_key_fields() -> None:

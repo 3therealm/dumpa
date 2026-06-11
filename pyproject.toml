@@ -12,6 +12,17 @@ dependencies = [
     "typer>=0.12",
 ]
 
+[project.optional-dependencies]
+# radare2 region scanning uses the external `radare2`/`r2` binary via the tool registry.
+radare2 = []
+# Unity serialized-asset parsing (`.assets` / UnityFS AssetBundles -> TextAsset/MonoBehaviour
+# strings) is backed by UnityPy. Optional: absent -> the unity_assets scanner warns + skips.
+unity = ["UnityPy>=1.20"]
+# Unreal pak/IoStore decryption: AES-256 (cryptography) for encrypted entries/indexes and LZ4
+# blocks (lz4). Optional: absent -> the unreal scanner detects-and-defers encrypted/LZ4 content
+# (Oodle has no open decompressor and stays deferred regardless).
+unreal = ["cryptography>=42", "lz4>=4.0"]
+
 [project.scripts]
 dumpa = "dumpa.cli:app"
 

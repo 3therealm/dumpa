@@ -31,10 +31,19 @@ const_dir_cache_scanners = "scanners"
 const_cache_schema = 1
 
 
-def compute_scanner_key(input_sha256: str, bundle_versions: dict[str, str]) -> str:
-    """Content-hash key for one scanner: input + dumpa version + its bundle versions."""
+def compute_scanner_key(input_sha256: str, bundle_versions: dict[str, str],
+                        tool_versions: dict[str, str] | None = None) -> str:
+    """Content-hash key for one scanner: input + dumpa + bundle versions + tool versions.
+
+    `tool_versions` keys the cache on the resolved version of any external tool a scanner
+    invokes (e.g. radare2), so a tool upgrade misses the cache instead of serving stale
+    output. Omitted/empty reproduces the bundle-only key (back-compat).
+    """
     parts = [input_sha256, __version__]
     parts.extend(f"{name}:{bundle_versions[name]}" for name in sorted(bundle_versions))
+    resolved_tool_versions = tool_versions or {}
+    parts.extend(f"tool:{name}:{resolved_tool_versions[name]}"
+                 for name in sorted(resolved_tool_versions))
     return hashlib.sha256("\x00".join(parts).encode("UTF-8")).hexdigest()
 
 

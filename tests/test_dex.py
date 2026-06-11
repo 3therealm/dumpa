@@ -96,6 +96,75 @@ def test_string_xref_skips_payload_bytes(tmp_path: Path) -> None:
     assert dex.locate_string_xref(hello_start) == ()                    # payload byte ignored
 
 
+def test_field_init_xref_resolves_static_field(tmp_path: Path) -> None:
+    url = "https://k.example.com/cfg"
+    data, info = build_dex(static_string=url)
+    dex = parse_dex(_write(tmp_path, data))
+    assert dex is not None
+    start, end = info["str_content"][url]
+    assert dex.locate_field_init(start) == ("com.x.A.KEY",)
+    assert dex.locate_field_init(end - 1) == ("com.x.A.KEY",)
+    # the value string is not loaded by any const-string, and is not a class descriptor.
+    assert dex.locate_string_xref(start) == ()
+    assert dex.locate(start) is None
+
+
+def test_field_init_unreferenced_is_empty(tmp_path: Path) -> None:
+    data, info = build_dex(static_string="https://k.example.com/cfg")
+    dex = parse_dex(_write(tmp_path, data))
+    assert dex is not None
+    start, _ = info["str_content"]["hello"]            # initializes no static field
+    assert dex.locate_field_init(start) == ()
+
+
+def test_field_init_absent_without_statics(tmp_path: Path) -> None:
+    data, _ = build_dex()                              # no static field at all
+    dex = parse_dex(_write(tmp_path, data))
+    assert dex is not None
+    assert dex.field_init_spans == ()
+
+
+def test_locate_instruction_field_access(tmp_path: Path) -> None:
+    import struct
+    insns = struct.pack("<HH", 0x0060, 0)              # sget v0, field@0 (com.x.A.bar)
+    data, info = build_dex(insns=insns)
+    path = _write(tmp_path, data)
+    dex = parse_dex(path)
+    assert dex is not None
+    hit = dex.locate_instruction(path, info["code_off"] + 16 + 1)   # inside the sget insn
+    assert hit is not None
+    assert hit.opcode == 0x60
+    assert hit.bytecode_offset == 0
+    assert hit.field == "com.x.A.bar"
+
+
+def test_locate_instruction_non_field_op(tmp_path: Path) -> None:
+    data, info = build_dex()                           # default body: const-string v0
+    path = _write(tmp_path, data)
+    dex = parse_dex(path)
+    assert dex is not None
+    hit = dex.locate_instruction(path, info["code_off"] + 16 + 1)
+    assert hit is not None
+    assert hit.opcode == 0x1A
+    assert hit.field is None
+
+
+def test_locate_instruction_outside_code_is_none(tmp_path: Path) -> None:
+    data, info = build_dex()
+    path = _write(tmp_path, data)
+    dex = parse_dex(path)
+    assert dex is not None
+    assert dex.locate_instruction(path, 0) is None                  # the header
+    assert dex.locate_instruction(path, info["code_off"]) is None   # code_item header, not insns
+
+
+def test_field_descriptors_populated(tmp_path: Path) -> None:
+    data, _ = build_dex()
+    dex = parse_dex(_write(tmp_path, data))
+    assert dex is not None
+    assert dex.field_descriptors == ("com.x.A.bar",)
+
+
 def test_locate_gap_is_none(tmp_path: Path) -> None:
     data, _ = build_dex()
     dex = parse_dex(_write(tmp_path, data))
