@@ -8,6 +8,7 @@ import pytest
 from _unrealpak_build import (
     build_pak,
     build_pak_encrypted_index,
+    build_pak_pathhash,
     build_pak_pathhash_index,
 )
 
@@ -129,12 +130,51 @@ def test_encrypted_index_and_entries_full_roundtrip(tmp_path: Path) -> None:
     assert (out / "Content/data.json").read_bytes() == _FILES["Content/data.json"]
 
 
-def test_pathhash_index_deferred(tmp_path: Path) -> None:
+def test_pathhash_index_without_directory_deferred(tmp_path: Path) -> None:
+    # a v11 primary index with no full directory index -> paths unrecoverable -> deferred
     pak = unrealpak.parse_standalone(_write(tmp_path, build_pak_pathhash_index(version=11)))
     assert pak is not None
     assert pak.version == 11
     assert unrealpak.is_deferred(pak)
-    assert "v11" in (pak.deferred_reason or "")
+    assert "full directory index" in (pak.deferred_reason or "")
+
+
+def test_pathhash_index_parsed_and_extracted(tmp_path: Path) -> None:
+    path = _write(tmp_path, build_pak_pathhash(_FILES, version=11))
+    pak = unrealpak.parse_standalone(path)
+    assert pak is not None
+    assert not unrealpak.is_deferred(pak)
+    assert pak.version == 11
+    assert {e.path for e in pak.entries} == set(_FILES)
+    out = tmp_path / "out"
+    assert unrealpak.extract(path, pak, out) == 2
+    assert (out / "Config/DefaultEngine.ini").read_bytes() == _FILES["Config/DefaultEngine.ini"]
+    assert (out / "Content/data.json").read_bytes() == _FILES["Content/data.json"]
+
+
+def test_pathhash_zlib_parsed_and_extracted(tmp_path: Path) -> None:
+    path = _write(tmp_path, build_pak_pathhash(_FILES, version=11, compress="zlib"))
+    pak = unrealpak.parse_standalone(path)
+    assert pak is not None and not unrealpak.is_deferred(pak)
+    assert all(e.compression == "zlib" for e in pak.entries)
+    out = tmp_path / "out"
+    assert unrealpak.extract(path, pak, out) == 2
+    assert (out / "Content/data.json").read_bytes() == _FILES["Content/data.json"]
+
+
+def test_pathhash_encrypted_index_and_entries_roundtrip(tmp_path: Path) -> None:
+    pytest.importorskip("cryptography")
+    path = _write(tmp_path, build_pak_pathhash(
+        _FILES, version=11, compress="zlib",
+        encrypt_entries=True, encrypt_index=True, aes_key=_AES_KEY))
+    # no key -> the encrypted primary index is opaque -> deferred
+    assert unrealpak.is_deferred(unrealpak.parse_standalone(path))
+    # with key -> primary + full directory index decrypt, entries decrypt + extract
+    pak = unrealpak.parse_standalone(path, aes_key=_AES_KEY)
+    assert pak is not None and not unrealpak.is_deferred(pak)
+    out = tmp_path / "out"
+    assert unrealpak.extract(path, pak, out, aes_key=_AES_KEY) == 2
+    assert (out / "Content/data.json").read_bytes() == _FILES["Content/data.json"]
 
 
 def test_path_traversal_rejected(tmp_path: Path) -> None:

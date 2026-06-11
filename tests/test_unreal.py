@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
-from _unrealpak_build import build_pak, build_pak_encrypted_index
+from _unrealpak_build import build_pak, build_pak_encrypted_index, build_pak_pathhash
 
 from dumpa.core.config import const_env_unreal_aes
 from dumpa.core.workspace import Workspace, make_meta
@@ -180,3 +180,17 @@ def test_encrypted_index_pak_extracted_with_key(
     assert not any(f.subject.startswith("Unreal pak deferred") for f in findings)
     out = ws.dumps_dir / "unreal" / "pak" / "base" / "Game" / "Content/notes.txt"
     assert out.read_bytes() == b"hello"
+
+
+def test_pathhash_pak_listed_and_extracted(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    _touch(ws.extracted_dir, "base/Game.pak", build_pak_pathhash(_FILES, version=11))
+    findings = unreal.scan(ws)
+    subjects = {f.subject for f in findings}
+    assert "Unreal Engine pak version 11" in subjects
+    assert any(s.startswith("Unreal pak:") for s in subjects)
+    assert not any(s.startswith("Unreal pak deferred") for s in subjects)
+    out = ws.dumps_dir / "unreal" / "pak" / "base" / "Game" / "Content/notes.txt"
+    assert out.read_bytes() == b"hello"
+    # the endpoint harvested from the v11-indexed config flows through the shared tail
+    assert any(f.kind == "endpoint" and f.subject == "api.mygame.example" for f in findings)

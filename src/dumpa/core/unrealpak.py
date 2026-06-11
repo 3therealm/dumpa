@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import struct
 import zlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import BinaryIO
 
@@ -212,6 +212,180 @@ def _parse_methods(buf: bytes, pos: int, version: int) -> list[str]:
     return methods
 
 
+# --- UE4.25+ path-hash / full-directory index (FPakInfo v10/v11) -------------
+# Layout cross-referenced from repak (trumank/repak) and CUE4Parse, which agree verbatim.
+# UE serializes a bool as a 4-byte int32; the per-file entry is bit-encoded (DecodePakEntry).
+
+class _Trunc(Exception):
+    """Internal: a bounds-checked read ran past the buffer (untrusted pak bytes)."""
+
+
+class _Cur:
+    """Little-endian cursor over a bytes buffer; raises _Trunc on any overrun."""
+
+    __slots__ = ("b", "p")
+
+    def __init__(self, b: bytes, p: int = 0) -> None:
+        self.b = b
+        self.p = p
+
+    def _need(self, n: int) -> None:
+        if n < 0 or self.p + n > len(self.b):
+            raise _Trunc
+
+    def i32(self) -> int:
+        self._need(4); v = struct.unpack_from("<i", self.b, self.p)[0]; self.p += 4; return v
+
+    def u32(self) -> int:
+        self._need(4); v = struct.unpack_from("<I", self.b, self.p)[0]; self.p += 4; return v
+
+    def u64(self) -> int:
+        self._need(8); v = struct.unpack_from("<Q", self.b, self.p)[0]; self.p += 8; return v
+
+    def i64(self) -> int:
+        self._need(8); v = struct.unpack_from("<q", self.b, self.p)[0]; self.p += 8; return v
+
+    def skip(self, n: int) -> None:
+        self._need(n); self.p += n
+
+    def take(self, n: int) -> bytes:
+        self._need(n); v = self.b[self.p:self.p + n]; self.p += n; return v
+
+    def fstring(self) -> str:
+        r = _read_fstring(self.b, self.p)
+        if r is None:
+            raise _Trunc
+        text, self.p = r
+        return text
+
+
+def _serialized_entry_size_v8(compressed: bool, block_count: int) -> int:
+    """Inline FPakEntry header size for v8+ (u32 method index, no timestamp) — DecodePakEntry's
+    `offset_base`: off+csize+usize (8*3) + method(4) + hash(20) + [blocks i32 + (i64,i64)*n] +
+    encrypted(1) + blockSize(4)."""
+    size = 8 + 8 + 8 + 4 + _HASH_LEN + 1 + 4
+    if compressed:
+        size += 4 + 16 * block_count
+    return size
+
+
+def _decode_encoded_entry(blob: bytes, pos: int, methods: list[str]) -> PakEntry | None:
+    """Decode one bit-encoded FPakEntry at blob[pos]; block (start,end) are absolute file offsets."""
+    try:
+        cur = _Cur(blob, pos)
+        value = cur.u32()
+        comp_index = (value >> 23) & 0x3f
+        off_u32 = bool(value & (1 << 31))
+        usize_u32 = bool(value & (1 << 30))
+        size_u32 = bool(value & (1 << 29))
+        encrypted = bool(value & (1 << 22))
+        block_count = (value >> 6) & 0xffff
+        token = value & 0x3f
+        block_size = cur.u32() if token == 0x3f else (token << 11)
+        offset = cur.u32() if off_u32 else cur.u64()
+        usize = cur.u32() if usize_u32 else cur.u64()
+        size = (cur.u32() if size_u32 else cur.u64()) if comp_index != 0 else usize
+        blocks: list[tuple[int, int]] = []
+        if comp_index != 0:
+            base = _serialized_entry_size_v8(True, block_count)
+            if block_count == 1 and not encrypted:
+                start = offset + base               # single-block: no per-block size array
+                blocks = [(start, start + size)]
+            else:
+                index = base
+                for _ in range(block_count):
+                    bsize = cur.u32()               # raw (unaligned) compressed size of the block
+                    blocks.append((offset + index, offset + index + bsize))
+                    index += _align16(bsize) if encrypted else bsize
+    except _Trunc:
+        return None
+    if offset < 0 or size < 0 or usize < 0:
+        return None
+    return PakEntry(path="", offset=offset, size=size, uncompressed_size=usize,
+                    compression=_method_name(methods, comp_index), encrypted=encrypted,
+                    blocks=blocks, compression_block_size=block_size)
+
+
+def _pak_path(mount: str, dir_name: str, fname: str) -> str:
+    """Full per-file path. dir_name carries leading+trailing '/'; the cook-root mount is dropped
+    (as for the legacy index) since _safe_dest sanitizes the per-file path on extract."""
+    return (dir_name + fname).lstrip("/")
+
+
+def _parse_full_directory_index(fdi: bytes, mount: str, encoded: bytes, methods: list[str],
+                                file_size: int) -> list[PakEntry] | None:
+    """Walk the full-directory-index map (dir -> file -> encoded-entry offset) into PakEntries."""
+    try:
+        cur = _Cur(fdi)
+        num_dirs = cur.i32()
+        if num_dirs < 0 or num_dirs > _MAX_ENTRIES:
+            return None
+        entries: list[PakEntry] = []
+        for _ in range(num_dirs):
+            dir_name = cur.fstring()
+            num_files = cur.i32()
+            if num_files < 0 or num_files > _MAX_ENTRIES:
+                return None
+            for _ in range(num_files):
+                fname = cur.fstring()
+                enc_off = cur.i32()
+                if enc_off < 0:
+                    continue                        # non-encoded entry: deferred
+                entry = _decode_encoded_entry(encoded, enc_off, methods)
+                if entry is None or entry.offset + entry.size > file_size:
+                    continue
+                entries.append(replace(entry, path=_pak_path(mount, dir_name, fname)))
+        return entries
+    except _Trunc:
+        return None
+
+
+def _parse_pathhash_index(version: int, primary: bytes, methods: list[str], key_guid: bytes | None,
+                          file_size: int, f: BinaryIO, aes_key: bytes | None,
+                          index_encrypted: bool) -> Pak | None:
+    """Parse the v10+ primary index, then its full directory index, into a listed Pak."""
+    try:
+        cur = _Cur(primary)
+        mount = cur.fstring()
+        cur.i32()                                   # NumEntries (recomputed from the dir index)
+        cur.skip(8)                                 # PathHashSeed (u64)
+        if cur.i32():                               # bReaderHasPathHashIndex (int32)
+            cur.skip(8 + 8 + _HASH_LEN)             # its offset/size/hash (path hashes, not paths)
+        if not cur.i32():                           # bReaderHasFullDirectoryIndex (int32)
+            return Pak(version, mount, [], index_encrypted, key_guid, methods,
+                       "path-hash index without a full directory index (paths unrecoverable)")
+        fdi_offset = cur.i64()
+        fdi_size = cur.i64()
+        cur.skip(_HASH_LEN)
+        enc_size = cur.i32()
+        if enc_size < 0:
+            return None
+        encoded = cur.take(enc_size)
+    except _Trunc:
+        return None
+    if fdi_offset < 0 or fdi_size <= 0 or fdi_offset + fdi_size > file_size:
+        return Pak(version, mount, [], index_encrypted, key_guid, methods,
+                   "invalid full directory index extent")
+    try:
+        f.seek(fdi_offset)
+        fdi = f.read(fdi_size)
+    except OSError:
+        return None
+    if len(fdi) < fdi_size:
+        return None
+    if index_encrypted:
+        decrypted = _decrypt_index(fdi, aes_key)
+        if decrypted is None:
+            return Pak(version, mount, [], True, key_guid, methods,
+                       "encrypted full directory index (decryption deferred — needs dumpa[unreal] + key)")
+        fdi = decrypted
+    entries = _parse_full_directory_index(fdi, mount, encoded, methods, file_size)
+    if entries is None:
+        return Pak(version, mount, [], index_encrypted, key_guid, methods,
+                   "unparseable full directory index")
+    return Pak(version, mount, entries, False, key_guid, methods, None)
+
+
 def _decrypt_index(index: bytes, key: bytes | None) -> bytes | None:
     """AES-ECB-decrypt a block-aligned encrypted pak index; None if the key/extra is absent."""
     if key is None or not unrealcrypto.aes_available():
@@ -224,9 +398,9 @@ def _decrypt_index(index: bytes, key: bytes | None) -> bytes | None:
 def parse_standalone(path: Path, *, aes_key: bytes | None = None) -> Pak | None:
     """Parse a `.pak` file: footer at EOF + (for version < 10) the legacy index.
 
-    An AES-encrypted legacy index is decrypted when `aes_key` and the dumpa[unreal] extra
-    (cryptography) are both present; otherwise it stays deferred. The v10+ path-hash /
-    full-directory index format is not parsed (deferred) regardless of encryption.
+    Handles both the legacy index (v < 10) and the v10/v11 path-hash + full-directory index
+    (UE4.25+). An AES-encrypted index (primary and/or full-directory) is decrypted when
+    `aes_key` and the dumpa[unreal] extra (cryptography) are both present; otherwise deferred.
     """
     try:
         file_size = path.stat().st_size
@@ -238,9 +412,6 @@ def parse_standalone(path: Path, *, aes_key: bytes | None = None) -> Pak | None:
             if footer is None:
                 return None
             version, index_offset, index_size, index_encrypted, key_guid, methods = footer
-            if version >= _V_PATH_HASH_INDEX:
-                return Pak(version, "", [], index_encrypted, key_guid, methods,
-                           f"path-hash index format v{version} (UE4.25+) not supported")
             if index_size <= 0 or index_size > file_size:
                 return Pak(version, "", [], index_encrypted, key_guid, methods,
                            "empty or invalid index")
@@ -254,6 +425,9 @@ def parse_standalone(path: Path, *, aes_key: bytes | None = None) -> Pak | None:
                     return Pak(version, "", [], True, key_guid, methods,
                                "encrypted index (AES; decryption deferred — needs dumpa[unreal] + key)")
                 index = decrypted
+            if version >= _V_PATH_HASH_INDEX:
+                return _parse_pathhash_index(version, index, methods, key_guid, file_size,
+                                             f, aes_key, index_encrypted)
             return _parse_legacy_index(version, index, methods, key_guid, file_size)
     except OSError:
         return None
@@ -446,7 +620,9 @@ def _decrypted_payload(f: BinaryIO, entry: PakEntry, data_offset: int,
     for start, end in entry.blocks:
         if end < start or end - start > entry.size + (1 << 20):
             return None
-        enc = _read_decrypt(f, start, end - start, key)
+        # The encrypted region is 16-aligned; a block (start,end) may carry the unaligned
+        # true size (path-hash index) or the aligned size (legacy) — align16 covers both.
+        enc = _read_decrypt(f, start, _align16(end - start), key)
         if enc is None:
             return None
         out = _zlib_block_inmem(enc, wbits, entry.uncompressed_size - total)
@@ -490,9 +666,12 @@ def _lz4_blocks(f: BinaryIO, entry: PakEntry, data_offset: int, key: bytes) -> b
     for start, end in blocks:
         if end < start or end - start > entry.size + (1 << 20):
             return None
+        # encrypted block data is 16-aligned on disk; the (start,end) may be the unaligned
+        # true size (path-hash) or already aligned (legacy) — align16 reads the right span.
+        raw_size = _align16(end - start) if entry.encrypted else (end - start)
         f.seek(start)
-        comp = f.read(end - start)
-        if len(comp) != end - start:
+        comp = f.read(raw_size)
+        if len(comp) != raw_size:
             return None
         if entry.encrypted:
             comp = unrealcrypto.decrypt_aes_ecb(comp, key)

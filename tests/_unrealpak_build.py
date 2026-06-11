@@ -129,9 +129,125 @@ def build_pak_encrypted_index(version: int = 8) -> bytes:
 
 
 def build_pak_pathhash_index(version: int = 11) -> bytes:
-    """A v11 footer (path-hash index format the parser does not parse — deferred)."""
+    """A v11 primary index lacking a full directory index — paths unrecoverable, so deferred."""
+    mount = "../../../Game/"
+    primary = (_fstring(mount) + struct.pack("<i", 0) + struct.pack("<Q", 0)
+               + struct.pack("<i", 0)            # bReaderHasPathHashIndex = 0
+               + struct.pack("<i", 0)            # bReaderHasFullDirectoryIndex = 0 -> defer
+               + struct.pack("<i", 0)            # EncodedPakEntries (empty)
+               + struct.pack("<i", 0))           # NumNonEncodedEntries
     body = b"\x00" * 64
-    return body + _footer(version, 0, 0, index_encrypted=False)
+    return body + primary + _footer(version, len(body), len(primary), index_encrypted=False)
+
+
+def _split_path(path: str) -> tuple[str, str]:
+    """Split a relative pak path into (dir, filename); dir carries leading + trailing '/'."""
+    if "/" in path:
+        head, tail = path.rsplit("/", 1)
+        return "/" + head + "/", tail
+    return "/", path
+
+
+def _encode_pathhash_entry(offset: int, stored_size: int, usize: int, method_index: int,
+                           encrypted: bool, block_size: int, block_sizes: list[int]) -> bytes:
+    """Bit-encode one FPakEntry exactly per DecodePakEntry (repak/CUE4Parse layout)."""
+    off_u32 = offset <= 0xffffffff
+    usize_u32 = usize <= 0xffffffff
+    size_u32 = stored_size <= 0xffffffff
+    block_count = len(block_sizes) if method_index != 0 else 0
+    value = 0
+    if off_u32:
+        value |= (1 << 31)
+    if usize_u32:
+        value |= (1 << 30)
+    if size_u32:
+        value |= (1 << 29)
+    value |= (method_index & 0x3f) << 23
+    if encrypted:
+        value |= (1 << 22)
+    value |= (block_count & 0xffff) << 6
+    extra = b""
+    if method_index != 0:
+        token = block_size >> 11
+        if token <= 0x3e and (token << 11) == block_size:
+            value |= token
+        else:
+            value |= 0x3f
+            extra = struct.pack("<I", block_size)
+    out = struct.pack("<I", value) + extra
+    out += struct.pack("<I", offset) if off_u32 else struct.pack("<q", offset)
+    out += struct.pack("<I", usize) if usize_u32 else struct.pack("<q", usize)
+    if method_index != 0:
+        out += struct.pack("<I", stored_size) if size_u32 else struct.pack("<q", stored_size)
+        if not (block_count == 1 and not encrypted):   # single unencrypted block stores no sizes
+            for bs in block_sizes:
+                out += struct.pack("<I", bs)
+    return out
+
+
+def build_pak_pathhash(files: dict[str, bytes], *, version: int = 11,
+                       mount: str = "../../../Game/", compress: str | None = None,
+                       encrypt_entries: bool = False, encrypt_index: bool = False,
+                       aes_key: bytes | None = None) -> bytes:
+    """Build a UE4.25+ v11 pak with a path-hash primary index + full directory index.
+
+    Layout: [data records][full directory index][primary index][footer]. Supports uncompressed
+    and zlib single-block entries, optionally with AES-encrypted entries and/or index — enough
+    to exercise the v10+ decode path end to end.
+    """
+    method_index = {None: 0, "zlib": 1, "gzip": 2, "lz4": 4}[compress]
+
+    data = b""
+    encoded = b""
+    dir_map: dict[str, list[tuple[str, int]]] = {}
+    for path, raw in files.items():
+        if method_index == 1:
+            payload = zlib.compress(raw)
+        elif method_index == 2:
+            payload = _gzip(raw)
+        elif method_index == 4:
+            payload = _lz4(raw)
+        else:
+            payload = raw
+        stored_size = len(payload)
+        if encrypt_entries and aes_key is not None:
+            payload = _aes_encrypt(payload, aes_key)
+        record_offset = len(data)
+        block_count = 1 if method_index != 0 else 0
+        header_size = _entry_size(method_index, block_count)
+        payload_off = record_offset + header_size
+        blocks_abs = [(payload_off, payload_off + len(payload))] if method_index != 0 else []
+        inline = _entry(record_offset, stored_size, len(raw), method_index, blocks_abs, encrypt_entries)
+        assert len(inline) == header_size
+        data += inline + payload
+
+        enc_off = len(encoded)
+        block_sizes = [stored_size] if method_index != 0 else []
+        encoded += _encode_pathhash_entry(record_offset, stored_size, len(raw), method_index,
+                                          encrypt_entries, _BLOCK_SIZE, block_sizes)
+        d, fname = _split_path(path)
+        dir_map.setdefault(d, []).append((fname, enc_off))
+
+    fdi = struct.pack("<i", len(dir_map))
+    for d, items in dir_map.items():
+        fdi += _fstring(d) + struct.pack("<i", len(items))
+        for fname, enc_off in items:
+            fdi += _fstring(fname) + struct.pack("<i", enc_off)
+    if encrypt_index and aes_key is not None:
+        fdi = _aes_encrypt(fdi, aes_key)
+    fdi_offset = len(data)
+
+    primary = (_fstring(mount) + struct.pack("<i", len(files)) + struct.pack("<Q", 0)
+               + struct.pack("<i", 0)                       # bReaderHasPathHashIndex = 0
+               + struct.pack("<i", 1)                       # bReaderHasFullDirectoryIndex = 1
+               + struct.pack("<q", fdi_offset) + struct.pack("<q", len(fdi)) + _HASH
+               + struct.pack("<i", len(encoded)) + encoded
+               + struct.pack("<i", 0))                      # NumNonEncodedEntries
+    if encrypt_index and aes_key is not None:
+        primary = _aes_encrypt(primary, aes_key)
+    index_offset = len(data) + len(fdi)
+    footer = _footer(version, index_offset, len(primary), index_encrypted=encrypt_index)
+    return data + fdi + primary + footer
 
 
 def _footer(version: int, index_offset: int, index_size: int, *, index_encrypted: bool) -> bytes:
