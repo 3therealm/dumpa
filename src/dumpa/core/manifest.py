@@ -16,6 +16,7 @@ from pathlib import Path
 
 from dumpa.core.axml import AttrValue, AxmlElement, parse_axml
 from dumpa.core.errors import AxmlError
+from dumpa.core.fs import read_bytes_resilient
 from dumpa.core.workspace import Workspace
 
 logger = logging.getLogger("dumpa")
@@ -181,7 +182,7 @@ def parse_manifest_bytes(data: bytes) -> ManifestInfo:
 @lru_cache(maxsize=8)
 def _cached_parse(path: str, size: int, mtime_ns: int) -> ManifestInfo | None:
     try:
-        data = Path(path).read_bytes()
+        data = read_bytes_resilient(Path(path))
         return parse_manifest_bytes(data)
     except (OSError, AxmlError):
         logger.debug("manifest parse failed for %s", path, exc_info=True)

@@ -23,6 +23,8 @@ import struct
 from dataclasses import dataclass
 from pathlib import Path
 
+from dumpa.core.fs import open_resilient
+
 const_magic = b"-==--==--==--==-"      # 16 bytes
 
 # EIoContainerFlags bitmask.
@@ -51,7 +53,7 @@ class Toc:
 def parse_toc(path: Path) -> Toc | None:
     """Parse the FIoStoreTocHeader at the start of a `.utoc`. Enumerate-only."""
     try:
-        with path.open("rb") as f:
+        with open_resilient(path) as f:
             head = f.read(144)              # header is < 144 bytes across the v1-5 range
     except OSError:
         return None

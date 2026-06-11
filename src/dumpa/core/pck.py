@@ -22,6 +22,8 @@ import struct
 from dataclasses import dataclass
 from pathlib import Path
 
+from dumpa.core.fs import open_resilient
+
 const_magic = b"GDPC"
 _TRAILER = struct.Struct("<QI")     # embedded footer: u64 pack size, u32 magic
 _MAX_FILES = 5_000_000
@@ -52,7 +54,7 @@ def is_encrypted(pck: Pck) -> bool:
 def parse_standalone(path: Path) -> Pck | None:
     """Parse a `.pck` whose GDPC header is at the start of the file."""
     try:
-        with path.open("rb") as f:
+        with open_resilient(path) as f:
             if f.read(4) != const_magic:
                 return None
     except OSError:
@@ -66,7 +68,7 @@ def find_embedded(path: Path) -> int | None:
         size = path.stat().st_size
         if size < _TRAILER.size + 4:
             return None
-        with path.open("rb") as f:
+        with open_resilient(path) as f:
             f.seek(size - _TRAILER.size)
             trailer = f.read(_TRAILER.size)
             if len(trailer) < _TRAILER.size:
@@ -91,7 +93,7 @@ def parse_at(path: Path, start: int) -> Pck | None:
     """Parse the GDPC header (and v1 directory) located at byte `start`."""
     try:
         size = path.stat().st_size
-        with path.open("rb") as f:
+        with open_resilient(path) as f:
             f.seek(start)
             head = f.read(20)
             if len(head) < 20 or head[:4] != const_magic:
@@ -159,7 +161,7 @@ def extract(path: Path, pck: Pck, out_dir: Path) -> int:
         return 0
     written = 0
     try:
-        with path.open("rb") as f:
+        with open_resilient(path) as f:
             for e in pck.entries:
                 dest = _safe_dest(out_dir, e.path)
                 if dest is None:

@@ -42,7 +42,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 
 from dumpa.core.errors import ConfigError
-from dumpa.core.fs import open_resilient
+from dumpa.core.fs import open_resilient, read_bytes_resilient
 from dumpa.core.report import Confidence, Evidence, Finding, FindingState, Location
 
 if TYPE_CHECKING:
@@ -1092,7 +1092,7 @@ def _lazy_manifest(extracted_dir: Path) -> ManifestInfo | None:
     from dumpa.core.manifest import const_manifest_name, parse_manifest_bytes
     path = extracted_dir / const_manifest_name
     try:
-        return parse_manifest_bytes(path.read_bytes())
+        return parse_manifest_bytes(read_bytes_resilient(path))
     except (OSError, AxmlError):
         logger.debug("manifest rule: cannot parse %s", extracted_dir, exc_info=True)
         return None

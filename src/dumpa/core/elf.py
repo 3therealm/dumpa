@@ -23,6 +23,7 @@ from typing import BinaryIO
 
 from dumpa.core.cppname import demangle_cpp
 from dumpa.core.errors import ElfError
+from dumpa.core.fs import open_resilient
 
 logger = logging.getLogger("dumpa")
 
@@ -156,7 +157,7 @@ def _cstr(blob: bytes, offset: int) -> str:
 def parse_elf(path: Path) -> ElfFile | None:
     """Parse an ELF shared object. Returns None on any non-ELF/malformed/truncated input."""
     try:
-        with path.open("rb") as f:
+        with open_resilient(path) as f:
             return _parse(f)
     except (ElfError, OSError, struct.error):
         logger.debug("ELF parse failed for %s", path, exc_info=True)

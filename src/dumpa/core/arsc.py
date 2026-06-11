@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dumpa.core.errors import ArscError, ResChunkError
+from dumpa.core.fs import read_bytes_resilient
 from dumpa.core.respool import decode_string_pool, decode_string_pool_with_spans, u16, u32
 
 # Chunk types (ResChunk_header.type).
@@ -160,7 +161,7 @@ def parse_arsc(data: bytes) -> ArscTable:
 def parse_arsc_file(path: Path) -> ArscTable | None:
     """Parse a resources.arsc file; None on any missing/non-table/unreadable input."""
     try:
-        return parse_arsc(path.read_bytes())
+        return parse_arsc(read_bytes_resilient(path))
     except (ArscError, OSError):
         return None
 
