@@ -140,17 +140,25 @@ def enrich_native_rvas(findings: list[Finding], ws: Workspace) -> list[Finding]:
 
 
 const_dex_xref_tool = "dex-string-xref"
+dex_field_xref_tool = "dex-field-xref"
+dex_instruction_tool = "dex-instruction"
 _DEX_XREF_MAX = 8                       # cap referencers enumerated in evidence
 
 
 def enrich_dex_locations(findings: list[Finding], ws: Workspace) -> list[Finding]:
-    """Backfill Location.dex_class/.dex_method on any finding located by offset in a .dex.
+    """Backfill DEX location detail on any finding located by offset in a .dex.
 
     Twin of enrich_native_rvas: a content scanner records (file_path=<dex>, file_offset);
-    map each offset through the parsed dex to its owning class (and method, when the offset
-    lands in bytecode). Each dex is parsed once. Findings already carrying a dex_class, or
-    whose offset resolves to nothing structurally (e.g. a plain string constant), pass
-    through unchanged.
+    map each offset through the parsed dex to:
+      * its owning class, and method when the offset lands in bytecode (`locate`);
+      * for a bytecode hit, the instruction's bytecode offset + accessed field
+        (`locate_instruction`);
+      * for a string-constant hit, the method(s) that `const-string`-load it
+        (`locate_string_xref`) and the static field(s) it initializes
+        (`locate_field_init`).
+    Each dex is parsed once. Findings already carrying a dex_class, or whose offset resolves
+    to nothing, pass through unchanged. Ambiguous (multi-referencer) results are surfaced as
+    evidence rather than a single misleading owner.
     """
     cache: dict[str, DexFile | None] = {}
 
@@ -174,22 +182,39 @@ def enrich_dex_locations(findings: list[Finding], ws: Workspace) -> list[Finding
             hit = dex_file.locate(loc.file_offset)
             if hit is not None:
                 dex_class, dex_method = hit
+                updated = dataclasses.replace(loc, dex_class=dex_class, dex_method=dex_method)
+                # Code-offset hits refine to the exact instruction (bytecode offset, opcode)
+                # and, for a field-access op, the accessed field. Returns None for a
+                # descriptor-string hit, leaving the string case untouched.
+                instr = dex_file.locate_instruction(
+                    ws.extracted_dir / loc.file_path, loc.file_offset)
+                if instr is not None:
+                    updated = dataclasses.replace(
+                        updated, dex_bytecode_offset=instr.bytecode_offset,
+                        dex_field=instr.field)
+                    if instr.opcode >= 0:
+                        if new_evidence is None:
+                            new_evidence = []
+                        detail = f" accessing {instr.field}" if instr.field else ""
+                        new_evidence.append(Evidence(
+                            description=f"instruction op 0x{instr.opcode:02x} at bytecode "
+                                        f"+0x{instr.bytecode_offset:x}{detail}",
+                            tool=dex_instruction_tool))
                 if new_locs is None:
                     new_locs = list(finding.locations)
-                new_locs[i] = dataclasses.replace(loc, dex_class=dex_class,
-                                                  dex_method=dex_method)
+                new_locs[i] = updated
                 continue
             # No structural owner: the offset is in a plain string constant. Resolve the
-            # method(s) whose const-string loads it.
+            # method(s) whose const-string loads it and the static field(s) it initializes.
             refs = dex_file.locate_string_xref(loc.file_offset)
-            if not refs:
+            fields = dex_file.locate_field_init(loc.file_offset)
+            if not refs and not fields:
                 continue
+            updated = loc
             if len(refs) == 1:
                 cls, meth = refs[0]
-                if new_locs is None:
-                    new_locs = list(finding.locations)
-                new_locs[i] = dataclasses.replace(loc, dex_class=cls, dex_method=meth)
-            else:
+                updated = dataclasses.replace(updated, dex_class=cls, dex_method=meth)
+            elif len(refs) > 1:
                 # Loaded from several methods: naming one owner would mislead, so surface
                 # all referencers as evidence instead.
                 if new_evidence is None:
@@ -199,6 +224,24 @@ def enrich_dex_locations(findings: list[Finding], ws: Workspace) -> list[Finding
                 new_evidence.append(Evidence(
                     description=f"string constant loaded by {len(refs)} methods",
                     snippet=shown + more, tool=const_dex_xref_tool))
+            if len(fields) == 1:
+                desc = fields[0]
+                updated = dataclasses.replace(updated, dex_field=desc)
+                if updated.dex_class is None and "." in desc:
+                    updated = dataclasses.replace(updated, dex_class=desc.rsplit(".", 1)[0])
+            elif len(fields) > 1:
+                # Initializes several static fields (one shared constant): surface all.
+                if new_evidence is None:
+                    new_evidence = []
+                shown = ", ".join(fields[:_DEX_XREF_MAX])
+                more = "" if len(fields) <= _DEX_XREF_MAX else f" (+{len(fields) - _DEX_XREF_MAX} more)"
+                new_evidence.append(Evidence(
+                    description=f"string constant initializes {len(fields)} static fields",
+                    snippet=shown + more, tool=dex_field_xref_tool))
+            if updated is not loc:
+                if new_locs is None:
+                    new_locs = list(finding.locations)
+                new_locs[i] = updated
         if new_locs is None and new_evidence is None:
             out.append(finding)
         else:

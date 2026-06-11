@@ -74,6 +74,8 @@ class Location:
     file_path: str | None = None       # asset/lib/resource path inside the apk
     dex_class: str | None = None
     dex_method: str | None = None
+    dex_field: str | None = None        # "DefiningClass.name" — accessed/initialized field
+    dex_bytecode_offset: int | None = None   # instruction offset in 16-bit code units
     manifest_entry: str | None = None
     domain: str | None = None
 
@@ -82,6 +84,7 @@ class Location:
         for key, value in {
             "rva": self.rva, "file_offset": self.file_offset, "file_path": self.file_path,
             "dex_class": self.dex_class, "dex_method": self.dex_method,
+            "dex_field": self.dex_field, "dex_bytecode_offset": self.dex_bytecode_offset,
             "manifest_entry": self.manifest_entry, "domain": self.domain,
         }.items():
             if value is not None:
@@ -93,8 +96,9 @@ class Location:
         return cls(
             rva=data.get("rva"), file_offset=data.get("file_offset"),
             file_path=data.get("file_path"), dex_class=data.get("dex_class"),
-            dex_method=data.get("dex_method"), manifest_entry=data.get("manifest_entry"),
-            domain=data.get("domain"),
+            dex_method=data.get("dex_method"), dex_field=data.get("dex_field"),
+            dex_bytecode_offset=data.get("dex_bytecode_offset"),
+            manifest_entry=data.get("manifest_entry"), domain=data.get("domain"),
         )
 
 

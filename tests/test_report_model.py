@@ -107,6 +107,15 @@ def test_location_omits_none() -> None:
     assert loc.to_dict() == {"domain": "x.com"}
 
 
+def test_location_dex_field_round_trip() -> None:
+    loc = Location(file_path="classes.dex", file_offset=42, dex_class="com.x.A",
+                   dex_method="foo", dex_field="com.x.A.KEY", dex_bytecode_offset=3)
+    restored = Location.from_dict(loc.to_dict())
+    assert restored == loc
+    assert restored.dex_field == "com.x.A.KEY"
+    assert restored.dex_bytecode_offset == 3
+
+
 def test_evidence_omits_none() -> None:
     ev = Evidence(description="hi")
     assert ev.to_dict() == {"description": "hi"}

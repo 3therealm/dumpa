@@ -31,7 +31,8 @@ def _write_sidecar(ws: Workspace, pkg: ArscPackage) -> str | None:
         "package": pkg.name,
         "id": pkg.id,
         "type_counts": pkg.type_counts(),
-        "strings": [{"type": e.type_name, "name": e.name, "value": e.value}
+        "strings": [{"type": e.type_name, "name": e.name, "value": e.value,
+                     **({"config": e.config} if e.config else {})}
                     for e in pkg.entries if e.value is not None],
     }
     try:

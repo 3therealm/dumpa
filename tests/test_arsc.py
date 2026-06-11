@@ -12,7 +12,12 @@ from dumpa.core.errors import ArscError
 from dumpa.core.report import Confidence, Finding, FindingState, Location
 from dumpa.core.workspace import Workspace
 from dumpa.scanners import enrich_resource_names, resources
-from _arsc_build import build_arsc
+from _arsc_build import (
+    build_arsc,
+    build_arsc_bag,
+    build_arsc_encoded,
+    build_arsc_localized,
+)
 
 
 def test_parses_package_and_string_entries() -> None:
@@ -45,6 +50,40 @@ def test_locate_maps_value_offset_to_resource() -> None:
     assert table.locate(offset) == ("api_url", url)
     assert table.locate(offset + 5) == ("api_url", url)      # mid-string still attributes
     assert table.locate(0) is None                            # in the header, owns nothing
+
+
+@pytest.mark.parametrize("kind", ["dense", "offset16", "sparse"])
+def test_offset_encodings_resolve_same_entries(kind: str) -> None:
+    entries = [("api_url", "https://api.example.com/v1"), ("app_name", "Demo")]
+    table = parse_arsc(build_arsc_encoded("com.example", "string", entries, kind))
+    by_name = {e.name: e.value for e in table.packages[0].entries}
+    assert by_name == {"api_url": "https://api.example.com/v1", "app_name": "Demo"}
+
+
+@pytest.mark.parametrize("kind", ["offset16", "sparse"])
+def test_offset_encodings_locate_value(kind: str) -> None:
+    url = "https://api.example.com/v1"
+    table = parse_arsc(build_arsc_encoded("com.example", "string", [("api_url", url)], kind))
+    offset = next(o for _p, _t, _n, _v, o in table.iter_strings())
+    assert table.locate(offset) == ("api_url", url)
+
+
+def test_bag_flattens_string_array_values() -> None:
+    urls = ["https://a.example.com", "https://b.example.com"]
+    table = parse_arsc(build_arsc_bag("com.example", "array", "hosts", urls))
+    entries = table.packages[0].entries
+    assert {e.name: e.value for e in entries} == {"hosts[0]": urls[0], "hosts[1]": urls[1]}
+    # a content scanner offset inside a bag value attributes back to its indexed resource
+    offset = next(o for _p, _t, n, _v, o in table.iter_strings() if n == "hosts[1]")
+    assert table.locate(offset) == ("hosts[1]", urls[1])
+
+
+def test_config_variant_is_distinct_labelled_row() -> None:
+    table = parse_arsc(build_arsc_localized(
+        "com.example", "string", "greeting", "Hello", "Hola", b"es", b""))
+    rows = {(e.config, e.value) for e in table.packages[0].entries if e.name == "greeting"}
+    assert (None, "Hello") in rows                  # default config: no label
+    assert ("es", "Hola") in rows                   # locale variant: not collapsed, labelled
 
 
 def test_not_a_table_raises() -> None:
