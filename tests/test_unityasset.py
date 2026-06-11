@@ -144,3 +144,28 @@ def test_parse_container_failsoft_on_garbage(tmp_path: Path) -> None:
     bad = tmp_path / "not.assets"
     bad.write_bytes(b"this is not a unity serialized file" * 4)
     assert unityasset.parse_container(bad, "not.assets") == []
+
+
+def test_parse_container_passes_unitycn_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    UnityPy = pytest.importorskip("UnityPy")
+    seen: dict[str, bytes] = {}
+    monkeypatch.setattr(UnityPy, "set_assetbundle_decrypt_key", lambda k: seen.update(key=k))
+    monkeypatch.setattr(UnityPy, "load", lambda _p: type("E", (), {"objects": []})())
+    bundle = tmp_path / "enc.bundle"
+    bundle.write_bytes(b"UnityFS\x00")
+    key = bytes(range(16))
+    unityasset.parse_container(bundle, "enc.bundle", decrypt_key=key)
+    assert seen.get("key") == key                      # UnityCN key forwarded to UnityPy
+
+
+def test_parse_container_bad_key_is_failsoft(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    UnityPy = pytest.importorskip("UnityPy")
+
+    def _reject(_k: object) -> None:
+        raise ValueError("AssetBundle Key length is wrong")
+
+    monkeypatch.setattr(UnityPy, "set_assetbundle_decrypt_key", _reject)
+    monkeypatch.setattr(UnityPy, "load", lambda _p: type("E", (), {"objects": []})())
+    bundle = tmp_path / "enc.bundle"
+    bundle.write_bytes(b"UnityFS\x00")
+    assert unityasset.parse_container(bundle, "enc.bundle", decrypt_key=b"short") == []

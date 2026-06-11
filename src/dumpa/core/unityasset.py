@@ -159,17 +159,26 @@ def _extract_object(obj: object, container: str, *, max_bytes_per_obj: int,
 
 def parse_container(path: Path, container_rel: str, *, max_obj: int = const_max_obj,
                     max_bytes_per_obj: int = const_max_bytes_per_obj,
-                    max_strings_per_obj: int = const_max_strings_per_obj) -> list[ExtractedString]:
+                    max_strings_per_obj: int = const_max_strings_per_obj,
+                    decrypt_key: bytes | None = None) -> list[ExtractedString]:
     """Extract strings from one Unity serialized container. Bounded and fail-soft.
 
     Raises UnityPyUnavailable if the dependency is missing (callers gate on available()).
     A non-Unity / corrupt file, or any per-object read error, yields no findings rather than
-    raising, so one bad asset never aborts an analysis.
+    raising, so one bad asset never aborts an analysis. `decrypt_key` (16 bytes) is the UnityCN
+    AssetBundle key — when set, UnityPy decrypts UnityCN-encrypted bundles; a bad key or a
+    non-UnityCN custom scheme just yields no objects (deferred), never a raise.
     """
     try:
         import UnityPy
     except ImportError as exc:  # pragma: no cover - exercised via available() gate
         raise UnityPyUnavailable("UnityPy is not installed") from exc
+
+    if decrypt_key is not None:
+        try:
+            UnityPy.set_assetbundle_decrypt_key(decrypt_key)
+        except (ValueError, TypeError):
+            logger.warning("unityasset: invalid UnityCN key (need 16 bytes); ignoring it")
 
     try:
         env = UnityPy.load(str(path))

@@ -273,3 +273,36 @@ def test_unity_assets_rerun_reproduces_dumps(
     assets_scanner.scan(ws)
     on_disk = list((ws.dumps_dir / "unity" / "assets").iterdir())
     assert on_disk and on_disk[0].read_bytes() == body
+
+
+def test_ress_endpoint_swept(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    _touch(ws.extracted_dir, "data/stream.resS",
+           b"\x00\x01\x02 https://stream.example.com/v1/track padding")
+    findings = assets_scanner._ress_endpoints(ws)
+    assert any(f.kind == "endpoint" and f.subject == "stream.example.com" for f in findings)
+
+
+def test_ress_media_skipped(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    # an OggS-magic .resS is audio noise -> skipped, its URL not harvested
+    _touch(ws.extracted_dir, "audio/music.resS", b"OggS\x00\x02 https://hidden.example.com/x")
+    assert assets_scanner._ress_endpoints(ws) == []
+
+
+def test_unity_key_threaded_to_parse_container(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    key = bytes(range(16))
+    monkeypatch.setenv("DUMPA_UNITY_KEY", "0x" + key.hex())
+    ws = _ws(tmp_path)
+    _touch(ws.extracted_dir, "data.assets")
+    seen: dict[str, object] = {}
+
+    def fake(path: Path, rel: str, **kw: object) -> list:
+        seen["key"] = kw.get("decrypt_key")
+        return []
+
+    monkeypatch.setattr(unityasset, "available", lambda: True)
+    monkeypatch.setattr(unityasset, "parse_container", fake)
+    assets_scanner.scan(ws)
+    assert seen["key"] == key                          # DUMPA_UNITY_KEY reached parse_container

@@ -44,6 +44,9 @@ const_env_cocos_key = 'DUMPA_COCOS_KEY'
 # Caller-provided Unreal pak/IoStore AES key. Recorded for provenance; decryption itself
 # is deferred to a future dumpa[unreal] extra (stdlib has no AES) — see scanners/unreal.py.
 const_env_unreal_aes = 'DUMPA_UNREAL_AES'
+# Caller-provided Unity UnityCN AssetBundle key (16 bytes). When set, UnityPy decrypts
+# UnityCN-encrypted bundles — see core/unityasset.py.
+const_env_unity_key = 'DUMPA_UNITY_KEY'
 
 const_default_validation_timeout = 300
 const_default_il2cpp_engine = 'dumper'
@@ -105,6 +108,9 @@ class Config:
     # Caller-supplied Unreal AES key (decoded bytes), or None. Recorded as provenance by
     # the Unreal scanner; actual decryption is deferred (no stdlib AES).
     unreal_aes: bytes | None = None
+    # Caller-supplied Unity UnityCN AssetBundle key (decoded bytes, 16), or None. Passed to
+    # UnityPy to decrypt UnityCN-encrypted bundles.
+    unity_key: bytes | None = None
 
 
 def _find_config_file(explicit_path: Path | None) -> Path | None:
@@ -274,6 +280,15 @@ def _load_unreal_aes(sec: dict[str, Any]) -> bytes | None:
     return _decode_key(raw, const_env_unreal_aes)
 
 
+def _load_unity_key(sec: dict[str, Any]) -> bytes | None:
+    raw = os.environ.get(const_env_unity_key) or sec.get('key')
+    if raw is None or raw == '':
+        return None
+    if not isinstance(raw, str):
+        raise ConfigError(f"[unity] key ({const_env_unity_key}) must be a string")
+    return _decode_key(raw, const_env_unity_key)
+
+
 def _load_il2cpp_engine(sec: dict[str, Any]) -> str:
     engine = os.environ.get(const_env_il2cpp_engine) or sec.get('engine') or const_default_il2cpp_engine
     if not isinstance(engine, str) or engine not in const_il2cpp_engines:
@@ -291,4 +306,5 @@ def load_config(explicit_path: Path | None = None) -> Config:
         analysis=_load_analysis(_section(toml, 'analysis')),
         cocos_key=_load_cocos_key(_section(toml, 'cocos')),
         unreal_aes=_load_unreal_aes(_section(toml, 'unreal')),
+        unity_key=_load_unity_key(_section(toml, 'unity')),
     )

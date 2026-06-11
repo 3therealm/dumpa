@@ -29,6 +29,7 @@ from pathlib import Path
 
 from dumpa import __version__
 from dumpa.core import unityasset
+from dumpa.core.config import load_config
 from dumpa.core.fs import open_resilient
 from dumpa.core.report import Confidence, Evidence, Finding, FindingState, Location
 from dumpa.core.rules import apply_bundle, load_builtin
@@ -332,6 +333,7 @@ def _serialized_assets(ws: Workspace) -> list[Finding]:
     if not containers:
         return []
 
+    decrypt_key = load_config().unity_key      # UnityCN AssetBundle key (16B), or None
     strings: list[ExtractedString] = []
     parsed: list[tuple[str, int]] = []
     total = 0
@@ -348,7 +350,7 @@ def _serialized_assets(ws: Workspace) -> list[Finding]:
             break
         total += size
         rel = path.relative_to(ws.extracted_dir).as_posix()
-        extracted = unityasset.parse_container(path, rel)
+        extracted = unityasset.parse_container(path, rel, decrypt_key=decrypt_key)
         strings.extend(extracted)
         parsed.append((rel, len(extracted)))
 
@@ -363,6 +365,60 @@ def _serialized_assets(ws: Workspace) -> list[Finding]:
     return findings
 
 
+# --- .resS streamed-resource endpoint sweep ---------------------------------
+
+const_ress_glob = "**/*.resS"
+const_max_ress = 200
+# Streamed resources are mostly media; skip files whose magic marks them audio/image so the
+# URL sweep only sees data-like blobs (where a game occasionally stows config/endpoints).
+_RESS_MEDIA_MAGIC = (b"OggS", b"RIFF", b"\x89PNG", b"\xff\xd8\xff", b"fLaC", b"ID3", b"\x1aE\xdf\xa3")
+
+
+def _is_media(path: Path) -> bool:
+    try:
+        with open_resilient(path) as f:
+            head = f.read(12)
+    except OSError:
+        return True
+    return any(head.startswith(magic) for magic in _RESS_MEDIA_MAGIC)
+
+
+def _ress_endpoints(ws: Workspace) -> list[Finding]:
+    """Sweep binary `.resS` streamed-resource files for endpoint URLs (low confidence).
+
+    `.resS` holds streamed resource data (audio/texture/binary) referenced by `.assets`. Most
+    is media noise, so files with a known media magic are skipped; the rest are streamed through
+    the endpoint URL matcher in case a game stashed config/endpoints there. Reuses `_scan_file`.
+    """
+    if not ws.extracted_dir.is_dir():
+        return []
+    root = ws.extracted_dir.resolve()
+    files = [p for p in sorted(ws.extracted_dir.glob(const_ress_glob))
+             if p.is_file() and p.resolve().is_relative_to(root)]
+    if not files:
+        return []
+    hosts: dict[str, _HostHits] = {}
+    for path in files[:const_max_ress]:
+        if len(hosts) >= const_max_hosts:
+            break
+        try:
+            if path.stat().st_size > const_max_file_bytes or _is_media(path):
+                continue
+            _scan_file(path, path.relative_to(ws.extracted_dir).as_posix(), hosts)
+        except OSError:
+            logger.debug("resS scan: cannot read %s", path, exc_info=True)
+    findings: list[Finding] = []
+    for host, hit in sorted(hosts.items()):
+        findings.append(Finding(
+            kind="endpoint", subject=host, confidence=Confidence.LOW,
+            state=FindingState.PRESENT, attributes={},
+            evidence=[Evidence(description=f"URL {url}", snippet=url, tool="unity-ress")
+                      for url in hit.samples],
+            locations=[Location(file_path=hit.file, file_offset=hit.offset, domain=host)],
+        ))
+    return findings
+
+
 def scan(ws: Workspace) -> list[Finding]:
-    """Addressables attribution + UnityPy serialized-asset parsing (each self-gating)."""
-    return _addressables(ws) + _serialized_assets(ws)
+    """Addressables attribution + UnityPy serialized-asset parsing + .resS sweep (each self-gating)."""
+    return _addressables(ws) + _serialized_assets(ws) + _ress_endpoints(ws)
