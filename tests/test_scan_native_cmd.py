@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 from _elf_build import build_elf
 
 from dumpa.commands import scan_native as cmd
-from dumpa.core.config import AnalysisConfig
+from dumpa.core.config import AnalysisConfig, const_env_native_r2_all_abis
 from dumpa.core.errors import DumpaError, ToolNotFoundError
 from dumpa.core.r2 import R2Analysis, R2Function, R2Section
 from dumpa.core.workspace import Workspace, make_meta
@@ -64,6 +65,14 @@ def test_radare2_path_adds_regions(tmp_path: Path, capsys, monkeypatch) -> None:
     out = capsys.readouterr().out
     assert "native-region" in out
     assert "packed" in out
+
+
+def test_all_abis_env_override_is_restored(tmp_path: Path, capsys, monkeypatch) -> None:
+    monkeypatch.delenv(const_env_native_r2_all_abis, raising=False)
+    _patch_r2(monkeypatch)
+    cmd.scan_native(_ws_dir(tmp_path), tool="radare2", all_abis=True)
+    capsys.readouterr()
+    assert const_env_native_r2_all_abis not in os.environ
 
 
 def test_radare2_absent_still_prints_elf(tmp_path: Path, capsys, monkeypatch) -> None:

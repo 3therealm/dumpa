@@ -9,7 +9,6 @@ inputs are linked in directly.
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
@@ -25,7 +24,7 @@ from dumpa.core.config import (
     const_env_validation_timeout,
     load_config,
 )
-from dumpa.core.env import env_positive_int
+from dumpa.core.env import env_positive_int, temporary_env
 from dumpa.core.errors import DumpaError, ToolNotFoundError
 from dumpa.core.hashing import sha256_file
 from dumpa.core.report import Report, write_json
@@ -182,43 +181,45 @@ def analyze(input_file: Path, *, workspace: Path | None = None, force: bool = Fa
             no_dump: bool = False, no_network: bool = False, jadx: bool = False,
             xref: bool = False, r2: bool = False, all_abis: bool = False) -> None:
     """Extract input_file into a reproducible workspace, reusing it when unchanged."""
+    env = {}
     if no_network:
-        os.environ[const_env_play_lookup] = "0"  # scanners read play_lookup from config/env
-    if all_abis:
-        os.environ[const_env_native_r2_all_abis] = "1"  # native_r2 reads this from config/env
-    config = load_config()
-    registry = build_default_registry(config.tool_paths)
-    sign_config = resolve_signing(signing, config, registry)
-    autodump_enabled = config.analysis.auto_dump and not no_dump
+        env[const_env_play_lookup] = "0"  # scanners read play_lookup from config/env
+    if r2 and all_abis:
+        env[const_env_native_r2_all_abis] = "1"  # native_r2 reads this from config/env
+    with temporary_env(env):
+        config = load_config()
+        registry = build_default_registry(config.tool_paths)
+        sign_config = resolve_signing(signing, config, registry)
+        autodump_enabled = config.analysis.auto_dump and not no_dump
 
-    input_abs = input_file.resolve()
-    in_type = input_type(input_abs)
-    if in_type in const_build_input_types:
-        prepare_convert(registry, sign_config)
+        input_abs = input_file.resolve()
+        in_type = input_type(input_abs)
+        if in_type in const_build_input_types:
+            prepare_convert(registry, sign_config)
 
-    requested_optional = (const_optional_native_r2,) if r2 else ()
-    input_sha = sha256_file(input_abs)
-    build_options = workspace_build_options(in_type, sign_config)
-    signed_expected = in_type in const_build_input_types and sign_config is not None
-    ws_path = workspace.resolve() if workspace else Path.cwd() / f'{input_abs.stem}-workspace'
+        requested_optional = (const_optional_native_r2,) if r2 else ()
+        input_sha = sha256_file(input_abs)
+        build_options = workspace_build_options(in_type, sign_config)
+        signed_expected = in_type in const_build_input_types and sign_config is not None
+        ws_path = workspace.resolve() if workspace else Path.cwd() / f'{input_abs.stem}-workspace'
 
-    with open_workspace(ws_path) as ws:
-        if decide_reuse(ws, input_sha, force=force, build_options=build_options):
-            logger.info("reusing workspace %s (input unchanged)", ws.root)
-            meta = ws.read_meta()
-            size = meta.input_size if meta else input_abs.stat().st_size
-            _merge_optional_scanners(ws, requested_optional)
-            _maybe_autodump(registry, ws, config, enabled=autodump_enabled)
-            _report_workspace(registry, ws, signed_expected=signed_expected, input_size=size,
-                              use_cache=use_cache)
-        else:
-            build_workspace(registry, ws, input_abs, in_type, input_sha, sign_config, build_options,
-                            optional_scanners=requested_optional)
-            logger.info("workspace ready")
-            _maybe_autodump(registry, ws, config, enabled=autodump_enabled)
-            _report_workspace(registry, ws, signed_expected=signed_expected,
-                              input_size=input_abs.stat().st_size, use_cache=use_cache)
-        _maybe_xref(ws, enabled=xref)
-        decompile_ws = ws.root
+        with open_workspace(ws_path) as ws:
+            if decide_reuse(ws, input_sha, force=force, build_options=build_options):
+                logger.info("reusing workspace %s (input unchanged)", ws.root)
+                meta = ws.read_meta()
+                size = meta.input_size if meta else input_abs.stat().st_size
+                _merge_optional_scanners(ws, requested_optional)
+                _maybe_autodump(registry, ws, config, enabled=autodump_enabled)
+                _report_workspace(registry, ws, signed_expected=signed_expected, input_size=size,
+                                  use_cache=use_cache)
+            else:
+                build_workspace(registry, ws, input_abs, in_type, input_sha, sign_config,
+                                build_options, optional_scanners=requested_optional)
+                logger.info("workspace ready")
+                _maybe_autodump(registry, ws, config, enabled=autodump_enabled)
+                _report_workspace(registry, ws, signed_expected=signed_expected,
+                                  input_size=input_abs.stat().st_size, use_cache=use_cache)
+            _maybe_xref(ws, enabled=xref)
+            decompile_ws = ws.root
 
-    _maybe_decompile(decompile_ws, enabled=jadx)
+        _maybe_decompile(decompile_ws, enabled=jadx)
