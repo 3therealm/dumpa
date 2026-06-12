@@ -84,8 +84,8 @@ structural work; these tools cover the jobs that need a real toolchain:
 ## Install
 
 ```bash
-git clone https://github.com/3therealm/xapk-to-apk
-cd xapk-to-apk
+git clone https://github.com/3therealm/dumpa
+cd dumpa
 pip install .        # or: uv pip install .   (use -e for an editable dev install)
 # with extras:
 pip install '.[unity,unreal]'
