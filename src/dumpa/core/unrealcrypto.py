@@ -46,6 +46,29 @@ def decrypt_aes_ecb(data: bytes, key: bytes) -> bytes | None:
         return None
 
 
+def decrypt_aes_cfb(data: bytes, key: bytes, iv: bytes) -> bytes | None:
+    """AES-CFB-decrypt `data` with a 16/24/32-byte `key` and a 16-byte `iv`.
+
+    Godot's `FileAccessEncrypted` encrypts with AES in full-block CFB (CFB128) mode, not the
+    ECB Unreal uses, so this is a distinct primitive sharing the same optional-`cryptography`
+    boundary. CFB is a stream mode (no block alignment required); the caller trims the result
+    to the stored plaintext length. Empty `data` is allowed — Godot's FileAccessEncrypted wraps
+    zero-length files, which decrypt to b"". Returns None on a bad key/iv length or backend error.
+    """
+    if len(key) not in _AES_KEY_LENS or len(iv) != _AES_BLOCK:
+        return None
+    try:
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
+        try:    # CFB moved to `decrepit` in cryptography 49; fall back for older versions.
+            from cryptography.hazmat.decrepit.ciphers.modes import CFB
+        except ImportError:
+            from cryptography.hazmat.primitives.ciphers.modes import CFB
+        decryptor = Cipher(algorithms.AES(key), CFB(iv)).decryptor()
+        return decryptor.update(data) + decryptor.finalize()
+    except (ImportError, ValueError, TypeError):
+        return None
+
+
 def decompress_lz4_block(data: bytes, uncompressed_size: int) -> bytes | None:
     """LZ4 *block*-format decompress `data` to a known `uncompressed_size`.
 

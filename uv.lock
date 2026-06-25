@@ -178,6 +178,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+godot = [
+    { name = "cryptography" },
+]
 unity = [
     { name = "unitypy" },
 ]
@@ -193,12 +196,13 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", marker = "extra == 'godot'", specifier = ">=42" },
     { name = "cryptography", marker = "extra == 'unreal'", specifier = ">=42" },
     { name = "lz4", marker = "extra == 'unreal'", specifier = ">=4.0" },
     { name = "typer", specifier = ">=0.12" },
     { name = "unitypy", marker = "extra == 'unity'", specifier = ">=1.20" },
 ]
-provides-extras = ["radare2", "unity", "unreal"]
+provides-extras = ["radare2", "unity", "unreal", "godot"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8" }]

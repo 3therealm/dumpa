@@ -47,6 +47,9 @@ const_env_unreal_aes = 'DUMPA_UNREAL_AES'
 # Caller-provided Unity UnityCN AssetBundle key (16 bytes). When set, UnityPy decrypts
 # UnityCN-encrypted bundles — see core/unityasset.py.
 const_env_unity_key = 'DUMPA_UNITY_KEY'
+# Caller-provided Godot AES key (32 bytes). When set, the Godot scanner decrypts encrypted-
+# directory / per-file-encrypted PCK entries (FileAccessEncrypted) — see core/pck.py.
+const_env_godot_key = 'DUMPA_GODOT_AES'
 
 const_default_validation_timeout = 300
 const_default_il2cpp_engine = 'dumper'
@@ -111,6 +114,9 @@ class Config:
     # Caller-supplied Unity UnityCN AssetBundle key (decoded bytes, 16), or None. Passed to
     # UnityPy to decrypt UnityCN-encrypted bundles.
     unity_key: bytes | None = None
+    # Caller-supplied Godot AES key (decoded bytes, 32), or None. Used by the Godot scanner
+    # to decrypt encrypted-directory / per-file-encrypted PCK entries (AES-256-CFB).
+    godot_key: bytes | None = None
 
 
 def _find_config_file(explicit_path: Path | None) -> Path | None:
@@ -289,6 +295,20 @@ def _load_unity_key(sec: dict[str, Any]) -> bytes | None:
     return _decode_key(raw, const_env_unity_key)
 
 
+def _load_godot_key(sec: dict[str, Any]) -> bytes | None:
+    raw = os.environ.get(const_env_godot_key) or sec.get('aes_key')
+    if raw is None or raw == '':
+        return None
+    if not isinstance(raw, str):
+        raise ConfigError(f"[godot] aes_key ({const_env_godot_key}) must be a string")
+    key = _decode_key(raw, const_env_godot_key)
+    if len(key) != 32:
+        raise ConfigError(
+            f"[godot] aes_key ({const_env_godot_key}) must decode to 32 bytes (AES-256), "
+            f"got {len(key)}")
+    return key
+
+
 def _load_il2cpp_engine(sec: dict[str, Any]) -> str:
     engine = os.environ.get(const_env_il2cpp_engine) or sec.get('engine') or const_default_il2cpp_engine
     if not isinstance(engine, str) or engine not in const_il2cpp_engines:
@@ -307,4 +327,5 @@ def load_config(explicit_path: Path | None = None) -> Config:
         cocos_key=_load_cocos_key(_section(toml, 'cocos')),
         unreal_aes=_load_unreal_aes(_section(toml, 'unreal')),
         unity_key=_load_unity_key(_section(toml, 'unity')),
+        godot_key=_load_godot_key(_section(toml, 'godot')),
     )

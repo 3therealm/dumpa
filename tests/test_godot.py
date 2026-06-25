@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from _pck_build import build_pck, build_pck_v2_encrypted, embed_in_binary
+import pytest
+from _gdc_build import build_gdc_v3, str_variant
+from _pck_build import GODOT_KEY, build_pck, build_pck_v2_encrypted, build_pck_v4, embed_in_binary
 
 from dumpa.core.report import FindingState
 from dumpa.core.workspace import Workspace, make_meta
@@ -42,7 +44,7 @@ def test_standalone_pck_listed_and_extracted(tmp_path: Path) -> None:
     subjects = {f.subject for f in findings}
     assert "Godot version 3.5.2" in subjects
     assert any(s.startswith("Godot PCK: assets/game.pck") for s in subjects)
-    assert any(s.startswith("Godot resources extracted (2)") for s in subjects)
+    assert any(s.startswith("Godot resources extracted (2/2)") for s in subjects)
     assert (ws.dumps_dir / "godot" / "pck" / "assets" / "game" / "scenes/main.tscn").read_bytes() \
         == _FILES["res://scenes/main.tscn"]
     assert (ws.dumps_dir / "godot" / ".dumpa-godot.json").is_file()
@@ -104,6 +106,91 @@ def test_config_endpoints_harvested_from_pck(tmp_path: Path) -> None:
     assert ep is not None
     assert ep.subject == "api.mygame.example"
     assert ep.locations[0].domain == "api.mygame.example"
+    assert ep.locations[0].file_path.startswith("dumps/godot/pck/")
+
+
+def test_v4_encrypted_pck_extracted_with_caller_key(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("cryptography")
+    monkeypatch.setenv("DUMPA_GODOT_AES", "hex:" + GODOT_KEY.hex())
+    ws = _ws(tmp_path)
+    files = {"res://a.txt": b"alpha", "res://b.txt": b"bravo"}
+    _touch(ws.extracted_dir, "assets/game4.pck",
+           build_pck_v4(files, fmt=4, key=GODOT_KEY, enc_dir=True))
+    findings = godot.scan(ws)
+    subjects = {f.subject for f in findings}
+    assert not any(s.startswith("Godot PCK deferred") for s in subjects)
+    assert any(s.startswith("Godot resources extracted (2/2)") for s in subjects)
+    assert "Godot AES key provided (used for decryption)" in subjects
+    assert (ws.dumps_dir / "godot" / "pck" / "assets" / "game4" / "a.txt").read_bytes() == b"alpha"
+
+
+def test_v4_per_file_encrypted_no_key_partially_deferred(tmp_path: Path) -> None:
+    pytest.importorskip("cryptography")
+    ws = _ws(tmp_path)
+    files = {"res://a.txt": b"alpha", "res://b.txt": b"bravo"}
+    _touch(ws.extracted_dir, "assets/game4.pck",
+           build_pck_v4(files, fmt=4, key=GODOT_KEY, enc_files=True))
+    findings = godot.scan(ws)            # no DUMPA_GODOT_AES -> encrypted entries skipped
+    subjects = {f.subject for f in findings}
+    assert any(s.startswith("Godot PCK partially deferred") for s in subjects)
+    assert any(s.startswith("Godot resources extracted (0/2)") for s in subjects)
+
+
+def test_v4_delta_entries_partially_deferred(tmp_path: Path) -> None:
+    from dumpa.core.pck import PACK_FILE_DELTA
+    ws = _ws(tmp_path)
+    files = {"res://a.txt": b"alpha", "res://patch.bin": b"delta"}
+    blob = build_pck_v4(files, fmt=4, entry_flags={"res://patch.bin": PACK_FILE_DELTA})
+    _touch(ws.extracted_dir, "assets/game4.pck", blob)
+    findings = godot.scan(ws)
+    deferred = next(f for f in findings if f.subject.startswith("Godot PCK partially deferred"))
+    assert deferred.attributes["reason"] == "delta/removal entries unsupported"
+    assert any(s.startswith("Godot resources extracted (1/2)") for s in {f.subject for f in findings})
+
+
+def test_malformed_aes_key_defers_not_aborts(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("cryptography")
+    monkeypatch.setenv("DUMPA_GODOT_AES", "bad")     # not 32 bytes -> ConfigError, must not abort
+    ws = _ws(tmp_path)
+    _touch(ws.extracted_dir, "assets/game4.pck",
+           build_pck_v4({"res://a.txt": b"alpha"}, fmt=4, key=GODOT_KEY, enc_files=True))
+    findings = godot.scan(ws)            # scans through despite the bad key
+    assert any(f.subject.startswith("Godot PCK partially deferred") for f in findings)
+
+
+def test_v4_per_file_encrypted_wrong_key_partially_deferred(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("cryptography")
+    wrong = bytes(range(1, 33))
+    monkeypatch.setenv("DUMPA_GODOT_AES", "hex:" + wrong.hex())
+    ws = _ws(tmp_path)
+    files = {"res://a.txt": b"alpha", "res://b.txt": b"bravo"}
+    _touch(ws.extracted_dir, "assets/game4.pck",
+           build_pck_v4(files, fmt=4, key=GODOT_KEY, enc_files=True))
+    findings = godot.scan(ws)            # right shape, wrong key -> MD5 verify fails
+    deferred = next(f for f in findings if f.subject.startswith("Godot PCK partially deferred"))
+    assert deferred.attributes["reason"] == "per-file encrypted (decrypt failed)"
+    assert any(s.startswith("Godot resources extracted (0/2)") for s in {f.subject for f in findings})
+
+
+def test_gdc_strings_mined_for_endpoints_and_secrets(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    # The .gdc lives inside the PCK (the real Godot layout); mining must reach the script
+    # after it is extracted into dumps/godot/pck/, not only loose .gdc under extracted/.
+    gdc_blob = build_gdc_v3(
+        ["NetCfg"],
+        [str_variant("https://telemetry.example/collect"),
+         str_variant("AIzaSyA1234567890abcdefghijklmnopqrstuv")])
+    files = dict(_FILES)
+    files["res://scripts/net.gdc"] = gdc_blob
+    _touch(ws.extracted_dir, "assets/game.pck", build_pck(files))
+    findings = godot.scan(ws)
+    endpoints = {f.subject for f in findings if f.kind == "endpoint"}
+    assert "telemetry.example" in endpoints
+    assert any(f.kind == "secret" for f in findings)
+    ep = next(f for f in findings if f.kind == "endpoint" and f.subject == "telemetry.example")
     assert ep.locations[0].file_path.startswith("dumps/godot/pck/")
 
 
