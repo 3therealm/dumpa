@@ -19,11 +19,46 @@ import enum
 import html
 import io
 import json
+import re
+import shutil
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
 const_report_schema_version = 2
+
+# On-disk storage: report.json is a thin index; findings live split by category under
+# reports/findings/<category>.json. This is a storage concern only — the in-memory/export
+# document model (to_dict/to_json, schema_version) is unchanged.
+const_storage_schema_version = 1
+const_storage_layout = "split-v1"
+const_dir_findings = "findings"
+const_category_other = "other"
+# Stable order the index + category files are written in.
+const_category_order = (
+    "patterns", "trackers", "network", "security", "native", "engine", "other",
+)
+_CATEGORY_RE = re.compile(r"[a-z]+")  # used with fullmatch: no trailing-newline ($) escape
+# Finding.kind -> category bucket; unmapped kinds fall to `other`.
+_CATEGORY_OF_KIND: dict[str, str] = {
+    "dumpcs": "patterns",
+    "tracker": "trackers", "mediation-adapter": "trackers", "ad-id-attribution": "trackers",
+    "endpoint": "network", "ip-endpoint": "network",
+    "secret": "security", "protection": "security", "manifest": "security",
+    "manifest-risk": "security", "capability": "security", "data-access": "security",
+    "data-safety": "security", "data-safety-gap": "security",
+    "native": "native", "native-symbol": "native", "native-strings": "native",
+    "native-symbol-marker": "native", "native-region": "native",
+    "native-function-summary": "native",
+    "engine": "engine", "engine-detail": "engine", "game-type": "engine",
+    "dex": "engine", "resource-table": "engine",
+}
+
+
+def category_of(kind: str) -> str:
+    """The split-storage category bucket for a finding kind; unknown kinds -> `other`."""
+    return _CATEGORY_OF_KIND.get(kind, const_category_other)
 
 
 class Confidence(enum.StrEnum):
@@ -268,14 +303,186 @@ def to_json(report: Report) -> str:
     return json.dumps(report.to_dict(), indent=2, sort_keys=True) + "\n"
 
 
+def _category_file(category: str) -> str:
+    """The index `file` value (and on-disk relative path) for a category sidecar."""
+    return f"{const_dir_findings}/{category}.json"
+
+
+def clear_report(reports_dir: Path) -> None:
+    """Delete report.json and every split sidecar under reports/findings/.
+
+    The single source of the unlink logic, shared by write_json's stale-cleanup step and
+    report invalidation (dump-il2cpp). Sidecars go first and report.json **last**, so if
+    cleanup hits an un-removable artifact and raises, the existing (valid) report.json is
+    still intact rather than stranded. A symlinked findings dir is removed as a link (never
+    followed) so cleanup can't reach outside the workspace; a stray directory at a sidecar
+    path (corruption in our own namespace) is removed wholesale.
+    """
+    findings_dir = reports_dir / const_dir_findings
+    if findings_dir.is_symlink() or (findings_dir.exists() and not findings_dir.is_dir()):
+        findings_dir.unlink(missing_ok=True)  # symlink or stray file -> remove the entry itself
+    elif findings_dir.is_dir():
+        for sidecar in findings_dir.glob("*.json"):
+            if sidecar.is_dir() and not sidecar.is_symlink():
+                shutil.rmtree(sidecar)        # a *.json directory is corruption -> drop it
+            else:
+                sidecar.unlink(missing_ok=True)  # unlinks the link itself if symlinked (safe)
+    (reports_dir / "report.json").unlink(missing_ok=True)  # header last: see docstring
+
+
 def write_json(report: Report, path: Path) -> None:
-    """Write a report as JSON, creating the parent directory if needed."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(to_json(report), encoding="UTF-8")
+    """Write a report as a thin index (report.json) plus per-category finding sidecars.
+
+    Findings are split by `category_of(kind)` into reports/findings/<category>.json; each
+    finding keeps a global `_ordinal` so read_json reassembles the exact original order.
+    Writes are fail-closed: stale files are cleared, sidecars written, then report.json
+    last — a torn write leaves report.json absent so read_json returns None and rebuilds.
+    """
+    reports_dir = path.parent
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    clear_report(reports_dir)
+
+    # A fresh per-write id (not report.created, which `rewrite` preserves across writes) so
+    # a sidecar can only be read with the report.json from the same write.
+    report_id = uuid.uuid4().hex
+
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for ordinal, finding in enumerate(report.findings):
+        entry = {"_ordinal": ordinal, **finding.to_dict()}
+        buckets.setdefault(category_of(finding.kind), []).append(entry)
+
+    findings_dir = reports_dir / const_dir_findings
+    index: list[dict[str, Any]] = []
+    for category in const_category_order:
+        items = buckets.get(category)
+        if not items:
+            continue
+        findings_dir.mkdir(parents=True, exist_ok=True)
+        payload = {"category": category, "count": len(items),
+                   "report_id": report_id, "findings": items}
+        sidecar = findings_dir / f"{category}.json"
+        sidecar.unlink(missing_ok=True)  # never write through a symlink clear_report left
+        sidecar.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="UTF-8")
+        # `ordinals` binds which global positions this category owns, in the trusted header,
+        # so corrupting a sidecar's _ordinal (silent reorder) is detectable on read.
+        index.append({"category": category, "file": _category_file(category),
+                      "count": len(items), "ordinals": [it["_ordinal"] for it in items]})
+
+    data = report.to_dict()
+    data["findings"] = None  # sentinel: old readers fail closed (None) rather than read empty
+    data["findings_index"] = index
+    data["findings_total"] = len(report.findings)  # guards against a dropped tail category
+    data["storage_schema_version"] = const_storage_schema_version
+    data["findings_layout"] = const_storage_layout
+    data["report_id"] = report_id
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="UTF-8")
+
+
+def _read_split_findings(reports_dir: Path, index: Any, report_id: Any,
+                         total: Any) -> list[dict[str, Any]] | None:
+    """Reassemble findings from the split sidecars named by `index`; None if malformed.
+
+    Strict: `report_id` must be a non-empty string; `total` the header-level finding count;
+    index a list of {category, file, count, ordinals} dicts with unique safe categories
+    (full `[a-z]+`). Each sidecar's category/report_id/count must match the index, and its
+    findings' `_ordinal`s must equal the header-declared `ordinals` for that category — so
+    swapping ordinals between sidecars is detected. Every ordinal is bounds-checked against
+    `total` (never `set(range(total))`, which an attacker-controlled total could blow up),
+    and the union must cover exactly `total` positions, so a dropped category fails too. A
+    symlinked findings dir/sidecar, or an on-disk sidecar not in the index, is refused.
+    Findings come back in ordinal order with `_ordinal` stripped.
+    """
+    if not isinstance(index, list):
+        return None
+    if not isinstance(report_id, str) or not report_id:
+        return None
+    if not isinstance(total, int) or isinstance(total, bool) or total < 0:
+        return None
+    findings_dir = reports_dir / const_dir_findings
+    if findings_dir.is_symlink():
+        return None
+    seen_categories: set[str] = set()
+    collected: list[tuple[int, dict[str, Any]]] = []
+    seen_ordinals: set[int] = set()
+
+    def _valid_ordinal(value: Any) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool) and 0 <= value < total
+
+    for entry in index:
+        if not isinstance(entry, dict):
+            return None
+        category = entry.get("category")
+        count = entry.get("count")
+        if not isinstance(category, str) or not _CATEGORY_RE.fullmatch(category):
+            return None
+        if category in seen_categories:
+            return None
+        seen_categories.add(category)
+        if not isinstance(count, int) or isinstance(count, bool):
+            return None
+        if entry.get("file") != _category_file(category):
+            return None
+        # the header's declared ordinals for this category: unique, in-range, no cross-
+        # category overlap. This is the trusted ordering anchor a sidecar can't override.
+        declared = entry.get("ordinals")
+        if not isinstance(declared, list) or len(declared) != count:
+            return None
+        declared_set: set[int] = set()
+        for value in declared:
+            if not _valid_ordinal(value) or value in declared_set or value in seen_ordinals:
+                return None
+            declared_set.add(value)
+
+        sidecar = findings_dir / f"{category}.json"
+        if sidecar.is_symlink():
+            return None
+        try:
+            payload = json.loads(sidecar.read_text(encoding="UTF-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("category") != category or payload.get("report_id") != report_id:
+            return None
+        findings = payload.get("findings")
+        if not isinstance(findings, list) or len(findings) != count:
+            return None
+        own_count = payload.get("count")
+        if not isinstance(own_count, int) or isinstance(own_count, bool) or own_count != count:
+            return None
+        side_ordinals: set[int] = set()
+        for item in findings:
+            if not isinstance(item, dict):
+                return None
+            ordinal = item.get("_ordinal")
+            if not _valid_ordinal(ordinal) or ordinal in side_ordinals:
+                return None
+            side_ordinals.add(ordinal)
+            collected.append((ordinal, {k: v for k, v in item.items() if k != "_ordinal"}))
+        if side_ordinals != declared_set:        # sidecar ordinals must match the header
+            return None
+        seen_ordinals |= declared_set
+
+    # bounds + uniqueness above guarantee seen_ordinals ⊆ {0..total-1}; requiring the full
+    # count means every position is present exactly once (no dropped category, no gap).
+    if len(seen_ordinals) != total:
+        return None
+    # no unreferenced sidecars on disk (a stale extra category file is corruption)
+    if findings_dir.is_dir():
+        on_disk = {p.stem for p in findings_dir.glob("*.json")}
+        if on_disk - seen_categories:
+            return None
+    return [finding for _, finding in sorted(collected, key=lambda pair: pair[0])]
 
 
 def read_json(path: Path) -> Report | None:
-    """Load a report from JSON; None if absent or malformed."""
+    """Load a report from the split layout (or an old monolithic file); None if malformed.
+
+    Branches on `findings_index` presence, not on the `findings` key. Both inline findings
+    and an index, or neither, is malformed. Missing/inconsistent sidecars yield None so the
+    caller rebuilds.
+    """
     if not path.is_file():
         return None
     try:
@@ -284,9 +491,29 @@ def read_json(path: Path) -> Report | None:
         return None
     if not isinstance(loaded, dict):
         return None
+
+    if "findings_index" in loaded:
+        # A split file must carry the exact envelope write_json emits: the findings:null
+        # sentinel (so old readers fail closed) plus a known storage version/layout. Reject
+        # anything else — a missing sentinel, an inline findings list (ambiguous), or a
+        # future/foreign layout we can't be sure we understand.
+        if "findings" not in loaded or loaded["findings"] is not None:
+            return None
+        if loaded.get("storage_schema_version") != const_storage_schema_version:
+            return None
+        if loaded.get("findings_layout") != const_storage_layout:
+            return None
+        merged = _read_split_findings(path.parent, loaded["findings_index"],
+                                      loaded.get("report_id"), loaded.get("findings_total"))
+        if merged is None:
+            return None
+        loaded = {**loaded, "findings": merged}
+    elif not isinstance(loaded.get("findings"), list):
+        return None  # neither a split index nor inline findings -> not a report
+
     try:
         return Report.from_dict(cast("dict[str, Any]", loaded))
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError, AttributeError):
         return None
 
 

@@ -20,10 +20,15 @@ def test_invalidate_report_removes_report_json(tmp_path) -> None:
     report = ws.reports_dir / "report.json"
     report.parent.mkdir(parents=True)
     report.write_text("{}", encoding="UTF-8")
+    # split sidecars must go too, else humans browsing reports/findings/ see stale data
+    sidecar = ws.reports_dir / "findings" / "trackers.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text("{}", encoding="UTF-8")
 
     _invalidate_report(ws)
 
     assert not report.exists()
+    assert not sidecar.exists()
 
 
 def test_invalidate_report_missing_is_ok(tmp_path) -> None:

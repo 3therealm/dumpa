@@ -10,13 +10,14 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from dumpa.commands.analyze import const_file_report_json, input_type
+from dumpa.commands.analyze import input_type
 from dumpa.convert.pipeline import build_workspace
 from dumpa.core.archive import safe_extract_zip
 from dumpa.core.config import load_config
 from dumpa.core.errors import DumpaError, ToolNotFoundError
 from dumpa.core.fs import working_tmp_dir
 from dumpa.core.hashing import sha256_file
+from dumpa.core.report import clear_report
 from dumpa.core.tools import ResolvedTool, ToolRegistry, build_default_registry
 from dumpa.core.workspace import Workspace, open_workspace
 from dumpa.tools.il2cpp import (
@@ -32,14 +33,11 @@ const_dump_cs = "dump.cs"
 
 
 def _invalidate_report(ws: Workspace) -> None:
-    """Drop report.json after dump.cs changes so export rebuilds scanner findings."""
-    report_path = ws.reports_dir / const_file_report_json
+    """Drop report.json + its split sidecars after dump.cs changes, so export rebuilds."""
     try:
-        report_path.unlink()
-    except FileNotFoundError:
-        return
+        clear_report(ws.reports_dir)
     except OSError:
-        logger.debug("could not invalidate report %s", report_path, exc_info=True)
+        logger.debug("could not invalidate report under %s", ws.reports_dir, exc_info=True)
 
 
 def autodump_workspace(registry: ToolRegistry, ws: Workspace, *, engine_name: str) -> bool:
