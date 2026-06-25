@@ -47,7 +47,7 @@ class Il2CppDumperEngine:
         dump_cs = out_dir / 'dump.cs'
         try:
             run(tool.argv(str(inputs.binary), str(inputs.metadata), str(out_dir)),
-                fail_msg='Il2CppDumper failed')
+                fail_msg='Il2CppDumper failed', quiet=True)
         except ToolExecutionError:
             # Il2CppDumper writes all output, then crashes on its interactive
             # "Press any key to exit" prompt when stdin is not a TTY. Tolerate the

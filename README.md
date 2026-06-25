@@ -45,7 +45,7 @@ When `analyze` recognizes the engine, it goes past "this is X" and extracts:
 
 - **Unity** — scripting backend (IL2CPP vs Mono), IL2CPP metadata version, auto `dump.cs`, and `.assets`/AssetBundle string extraction (UnityPy extra).
 - **Cocos2d-x** — JS/Lua runtime, version, and XXTEA-decryption of `*.jsc`/`*.luac` bundles when the key is recoverable.
-- **Godot** — PCK discovery (standalone or appended to `libgodot*.so`), inventory, and resource extraction (Godot 4 v2/encrypted packs are detected and deferred).
+- **Godot** — PCK discovery (standalone or appended to `libgodot*.so`), inventory, and v1-v4 resource extraction, plus `.gdc` GDScript string mining. Encrypted directories/entries decrypt with the `godot` extra and a caller-supplied key (`DUMPA_GODOT_AES`); sparse/delta bundles stay deferred.
 - **Unreal** — UE4 `.pak` + UE5 IoStore (`.utoc`/`.ucas`) inventory and the harvestable-subset extraction (AES/LZ4 via the `unreal` extra; Oodle stays deferred).
 
 ## Requirements
@@ -59,6 +59,7 @@ When `analyze` recognizes the engine, it goes past "this is X" and extracts:
 |-------|---------|------|
 | `unity` | `pip install dumpa[unity]` | [`UnityPy`](https://github.com/K0lb3/UnityPy) — Unity serialized-asset (`.assets`/AssetBundle) string extraction. |
 | `unreal` | `pip install dumpa[unreal]` | `cryptography` + `lz4` — AES-256 / LZ4 decryption for Unreal pak/IoStore. |
+| `godot` | `pip install dumpa[godot]` | `cryptography` — AES-256-CFB decryption for Godot encrypted-PCK directories/entries (needs a caller key via `DUMPA_GODOT_AES` / `[godot] aes_key`). |
 
 Without an extra, the matching analysis is skipped (or detect-and-deferred); everything else still runs.
 

@@ -11,7 +11,7 @@
 # and finds tools on $PATH. Environment variables (DUMPA_*) OVERRIDE file values, so
 # the file is for stable defaults and env is for per-run / secret overrides.
 #
-# [signing], [tools], [il2cpp], [analysis], and [cocos] are read from this file. The
+# [signing], [tools], [il2cpp], [analysis], [cocos], and [godot] are read from this file. The
 # operational knobs at the bottom are environment-only (documented here for reference).
 
 
@@ -75,6 +75,18 @@
 # key = "2dxLua...your-key"      # or: key = "hex:32647858..."
 #
 # Env equivalent (overrides the above): DUMPA_COCOS_KEY
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [godot] — caller-supplied Godot AES key for encrypted PCKs.
+# ─────────────────────────────────────────────────────────────────────────────
+# Decrypts encrypted-directory / per-file-encrypted Godot 4 PCK entries
+# (AES-256-CFB FileAccessEncrypted) when set; needs the optional `dumpa[godot]`
+# extra (`cryptography`). Must decode to 32 bytes. Key bytes are never persisted.
+# [godot]
+# aes_key = "hex:000102...0001f"   # 64 hex chars = 32 bytes (AES-256)
+#
+# Env equivalent (overrides the above): DUMPA_GODOT_AES
 
 
 # ─────────────────────────────────────────────────────────────────────────────
